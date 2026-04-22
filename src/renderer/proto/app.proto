@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+message SetThemeRequest {
+  string theme = 1;
+}
+
+message WindowState {
+  bool isMaximized = 1;
+}
+
+service AppService {
+  rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
+  rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ToggleMaximizeWindow(google.protobuf.Empty) returns (WindowState);
+  rpc CloseWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc GetWindowState(google.protobuf.Empty) returns (WindowState);
+}

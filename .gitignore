@@ -1,0 +1,17 @@
+# Node dependencies.
+node_modules/
+
+# Build output.
+build/
+dist/
+out/
+
+# Generated code.
+gen/
+
+# macOS metadata.
+.DS_Store
+
+# Scaffold artifacts (local only).
+_extract/
+create-mobrowser-app-*.tgz
