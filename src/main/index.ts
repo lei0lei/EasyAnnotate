@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
-import { SetThemeRequest } from './gen/app';
+import { SelectDirectoryRequest, SetThemeRequest } from './gen/app';
 import { GreetService, AppService } from './gen/ipc_service';
 import { installApplicationMenu } from "./app-menu";
 
@@ -44,5 +44,30 @@ ipc.registerService(AppService({
   },
   async GetWindowState(_request) {
     return { isMaximized: win.isMaximized }
+  },
+  async SelectDirectory(request: SelectDirectoryRequest) {
+    try {
+      const result = await app.showOpenDialog({
+        parentWindow: win,
+        title: request.title || "选择目录",
+        ...(request.defaultPath ? { defaultPath: request.defaultPath } : {}),
+        selectionPolicy: "directories",
+        features: {
+          allowMultiple: false,
+          canCreateDirectories: true,
+        },
+      })
+      return {
+        canceled: result.canceled,
+        path: result.paths[0] ?? "",
+        errorMessage: "",
+      }
+    } catch (error) {
+      return {
+        canceled: true,
+        path: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
   },
 }))

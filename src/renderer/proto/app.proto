@@ -10,10 +10,22 @@ message WindowState {
   bool isMaximized = 1;
 }
 
+message SelectDirectoryRequest {
+  string title = 1;
+  string default_path = 2;
+}
+
+message SelectDirectoryResponse {
+  bool canceled = 1;
+  string path = 2;
+  string error_message = 3;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
   rpc ToggleMaximizeWindow(google.protobuf.Empty) returns (WindowState);
   rpc CloseWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
   rpc GetWindowState(google.protobuf.Empty) returns (WindowState);
+  rpc SelectDirectory(SelectDirectoryRequest) returns (SelectDirectoryResponse);
 }
