@@ -2,7 +2,9 @@ import { STORAGE_KEYS } from "@/lib/storage/keys"
 import { readLocalJson, writeLocalJson } from "@/lib/storage/json-local"
 
 /** 与磁盘上 JSON 结构版本号一致，便于做迁移；升级时加 migrate 逻辑即可 */
-const APP_CONFIG_VERSION = 1
+const APP_CONFIG_VERSION = 2
+
+export type ModelsDefaultPage = "hub" | "auto" | "training"
 
 export type AppConfig = {
   version: typeof APP_CONFIG_VERSION
@@ -13,6 +15,21 @@ export type AppConfig = {
   storagePaths: {
     databaseDir: string
     assetsDir: string
+    globalConfigDir: string
+  }
+  pageFlow: {
+    workflow: {
+      /** 新建流程后自动进入编辑页 */
+      openEditorOnCreate: boolean
+    }
+    models: {
+      /** 访问 `/models` 时默认进入的子页面 */
+      defaultPage: ModelsDefaultPage
+    }
+    monitor: {
+      /** 新建 monitor 后自动进入编辑页 */
+      openEditorOnCreate: boolean
+    }
   }
   /** 快捷键 id -> 用户自定义展示串，未设则回退到界面默认表 */
   shortcuts: Partial<Record<string, string>>
@@ -21,11 +38,37 @@ export type AppConfig = {
 const DEFAULT: AppConfig = {
   version: APP_CONFIG_VERSION,
   backend: { host: "127.0.0.1", port: "8080" },
-  storagePaths: { databaseDir: "", assetsDir: "" },
+  storagePaths: { databaseDir: "", assetsDir: "", globalConfigDir: "" },
+  pageFlow: {
+    workflow: { openEditorOnCreate: true },
+    models: { defaultPage: "hub" },
+    monitor: { openEditorOnCreate: true },
+  },
   shortcuts: {},
 }
 
-function isAppConfigV1(d: unknown): d is AppConfig {
+type AppConfigV1 = {
+  version: 1
+  backend: {
+    host: string
+    port: string
+  }
+  storagePaths?: {
+    databaseDir?: string
+    assetsDir?: string
+    imagesDir?: string
+    annotationsDir?: string
+  }
+  shortcuts?: Partial<Record<string, string>>
+}
+
+type AppConfigAnyVersion = AppConfig | AppConfigV1
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null
+}
+
+function isAppConfigV1(d: unknown): d is AppConfigV1 {
   if (typeof d !== "object" || d === null) return false
   const o = d as Record<string, unknown>
   if (o.version !== 1) return false
@@ -40,9 +83,67 @@ function isAppConfigV1(d: unknown): d is AppConfig {
   return true
 }
 
+function isModelsDefaultPage(v: unknown): v is ModelsDefaultPage {
+  return v === "hub" || v === "auto" || v === "training"
+}
+
+function isAppConfigV2(d: unknown): d is AppConfig {
+  if (!isRecord(d)) return false
+  if (d.version !== APP_CONFIG_VERSION) return false
+  if (!isRecord(d.backend) || typeof d.backend.host !== "string" || typeof d.backend.port !== "string") return false
+  if (
+    !isRecord(d.storagePaths) ||
+    typeof d.storagePaths.databaseDir !== "string" ||
+    typeof d.storagePaths.assetsDir !== "string" ||
+    typeof d.storagePaths.globalConfigDir !== "string"
+  ) {
+    return false
+  }
+  if (
+    !isRecord(d.pageFlow) ||
+    !isRecord(d.pageFlow.workflow) ||
+    typeof d.pageFlow.workflow.openEditorOnCreate !== "boolean" ||
+    !isRecord(d.pageFlow.models) ||
+    !isModelsDefaultPage(d.pageFlow.models.defaultPage) ||
+    !isRecord(d.pageFlow.monitor) ||
+    typeof d.pageFlow.monitor.openEditorOnCreate !== "boolean"
+  ) {
+    return false
+  }
+  if (!isRecord(d.shortcuts) && d.shortcuts != null) return false
+  return true
+}
+
+function isAppConfigAnyVersion(d: unknown): d is AppConfigAnyVersion {
+  return isAppConfigV2(d) || isAppConfigV1(d)
+}
+
 export function loadAppConfig(): AppConfig {
-  const raw = readLocalJson(STORAGE_KEYS.appConfig, isAppConfigV1, DEFAULT)
-  const legacyStoragePaths = raw.storagePaths as Partial<AppConfig["storagePaths"]> & {
+  const raw = readLocalJson<AppConfigAnyVersion>(STORAGE_KEYS.appConfig, isAppConfigAnyVersion, DEFAULT)
+  if (raw.version === APP_CONFIG_VERSION) {
+    return {
+      version: APP_CONFIG_VERSION,
+      backend: { ...DEFAULT.backend, ...raw.backend },
+      storagePaths: { ...DEFAULT.storagePaths, ...raw.storagePaths },
+      pageFlow: {
+        workflow: {
+          ...DEFAULT.pageFlow.workflow,
+          ...raw.pageFlow.workflow,
+        },
+        models: {
+          ...DEFAULT.pageFlow.models,
+          ...raw.pageFlow.models,
+        },
+        monitor: {
+          ...DEFAULT.pageFlow.monitor,
+          ...raw.pageFlow.monitor,
+        },
+      },
+      shortcuts: { ...DEFAULT.shortcuts, ...raw.shortcuts },
+    }
+  }
+
+  const legacyStoragePaths = (raw.storagePaths ?? {}) as Partial<AppConfig["storagePaths"]> & {
     imagesDir?: string
     annotationsDir?: string
   }
@@ -51,9 +152,11 @@ export function loadAppConfig(): AppConfig {
     backend: { ...DEFAULT.backend, ...raw.backend },
     storagePaths: {
       ...DEFAULT.storagePaths,
-      ...raw.storagePaths,
+      ...(raw.storagePaths ?? {}),
       assetsDir: legacyStoragePaths.assetsDir ?? legacyStoragePaths.imagesDir ?? legacyStoragePaths.annotationsDir ?? "",
+      globalConfigDir: typeof legacyStoragePaths.globalConfigDir === "string" ? legacyStoragePaths.globalConfigDir : "",
     },
+    pageFlow: { ...DEFAULT.pageFlow },
     shortcuts: { ...DEFAULT.shortcuts, ...raw.shortcuts },
   }
 }
@@ -62,10 +165,26 @@ export function updateAppConfig(patch: {
   backend?: Partial<AppConfig["backend"]>
   storagePaths?: Partial<AppConfig["storagePaths"]>
   shortcuts?: Partial<AppConfig["shortcuts"]>
+  pageFlow?: {
+    workflow?: Partial<AppConfig["pageFlow"]["workflow"]>
+    models?: Partial<AppConfig["pageFlow"]["models"]>
+    monitor?: Partial<AppConfig["pageFlow"]["monitor"]>
+  }
 }): void {
   const cur = loadAppConfig()
   const backend = { ...cur.backend, ...patch.backend }
   const storagePaths = { ...cur.storagePaths, ...patch.storagePaths }
+  const pageFlow = {
+    workflow: { ...cur.pageFlow.workflow, ...patch.pageFlow?.workflow },
+    models: {
+      ...cur.pageFlow.models,
+      ...patch.pageFlow?.models,
+      defaultPage: isModelsDefaultPage(patch.pageFlow?.models?.defaultPage)
+        ? patch.pageFlow.models.defaultPage
+        : cur.pageFlow.models.defaultPage,
+    },
+    monitor: { ...cur.pageFlow.monitor, ...patch.pageFlow?.monitor },
+  }
   const shortcuts = { ...cur.shortcuts, ...patch.shortcuts }
   if (patch.shortcuts) {
     for (const k of Object.keys(patch.shortcuts)) {
@@ -75,7 +194,14 @@ export function updateAppConfig(patch: {
       }
     }
   }
-  writeLocalJson(STORAGE_KEYS.appConfig, { ...cur, version: APP_CONFIG_VERSION, backend, storagePaths, shortcuts })
+  writeLocalJson(STORAGE_KEYS.appConfig, {
+    ...cur,
+    version: APP_CONFIG_VERSION,
+    backend,
+    storagePaths,
+    pageFlow,
+    shortcuts,
+  })
 }
 
 export function resetAppConfigToDefaults(): void {

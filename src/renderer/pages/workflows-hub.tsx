@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { loadAppConfig } from "@/lib/app-config-storage"
 import {
   addWorkflowBoard,
   createWorkflowBoard,
@@ -31,6 +32,10 @@ function formatUpdated(iso: string): string {
 export default function WorkflowsHubPage() {
   const navigate = useNavigate()
   const [boards, setBoards] = useState<WorkflowBoard[]>(() => loadWorkflowBoards())
+  const openEditorOnCreate = useMemo(
+    () => loadAppConfig().pageFlow.workflow.openEditorOnCreate,
+    [],
+  )
 
   const refresh = useCallback(() => {
     setBoards(loadWorkflowBoards())
@@ -40,8 +45,12 @@ export default function WorkflowsHubPage() {
     const board = createWorkflowBoard()
     addWorkflowBoard(board)
     refresh()
-    navigate(`/workflows/${board.id}`)
-  }, [navigate, refresh])
+    if (openEditorOnCreate) {
+      navigate(`/workflows/${board.id}`)
+      return
+    }
+    navigate("/workflows")
+  }, [navigate, openEditorOnCreate, refresh])
 
   const handleDelete = useCallback(
     (id: string, name: string) => {

@@ -6,7 +6,7 @@ import { ipc } from "@/gen/ipc"
 import { loadAppConfig, updateAppConfig } from "@/lib/app-config-storage"
 import { cn } from "@/lib/utils"
 import { CheckCircle2, Database, FolderOpen, Images, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
-import { useCallback, useId, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useId, useState, type ReactNode } from "react"
 
 const SHORTCUT_ROWS: { id: string; label: string; defaultBinding: string }[] = [
   { id: "img-prev", label: "上一张图像", defaultBinding: "A 或 ←" },
@@ -142,10 +142,13 @@ function DirectoryPathField({
 export default function SettingsPage() {
   const baseId = useId()
   const initial = loadAppConfig()
+  const [defaultGlobalConfigDir, setDefaultGlobalConfigDir] = useState(initial.storagePaths.globalConfigDir)
   const [host, setHost] = useState(initial.backend.host)
   const [port, setPort] = useState(initial.backend.port)
   const [databaseDir, setDatabaseDir] = useState(initial.storagePaths.databaseDir)
   const [assetsDir, setAssetsDir] = useState(initial.storagePaths.assetsDir)
+  const [globalConfigDir, setGlobalConfigDir] = useState(initial.storagePaths.globalConfigDir)
+  const [backendStatus, setBackendStatus] = useState<CompletionStatus>(null)
   const [storageStatus, setStorageStatus] = useState<CompletionStatus>(null)
   const [shortcutStatus, setShortcutStatus] = useState<CompletionStatus>(null)
   const [shortcutDraft, setShortcutDraft] = useState<Record<string, string>>(() => ({
@@ -153,33 +156,74 @@ export default function SettingsPage() {
     ...savedShortcutMap(),
   }))
 
+  useEffect(() => {
+    void ipc.app
+      .GetDefaultGlobalConfigDir({})
+      .then((result) => {
+        setDefaultGlobalConfigDir(result.path)
+        setGlobalConfigDir((current) => (current.trim() ? current : result.path))
+      })
+      .catch(() => {
+        /* ignore */
+      })
+  }, [])
+
+  const persistConfigToDisk = useCallback((globalConfigDirOverride?: string) => {
+    const nextConfig = loadAppConfig()
+    const persistedGlobalConfigDir = (globalConfigDirOverride ?? nextConfig.storagePaths.globalConfigDir).trim() || defaultGlobalConfigDir
+    const payload = {
+      ...nextConfig,
+      storagePaths: {
+        ...nextConfig.storagePaths,
+        globalConfigDir: persistedGlobalConfigDir,
+      },
+    }
+    void ipc.app.SaveAppConfigToDisk({
+      globalConfigDir: persistedGlobalConfigDir,
+      appConfigJson: JSON.stringify(payload, null, 2),
+    }).catch((error) => {
+      const message = error instanceof Error && error.message ? error.message : "未知错误"
+      window.alert(`无法写入配置文件：${message}\n请检查“全局配置存储路径”是否可访问。`)
+    })
+  }, [defaultGlobalConfigDir])
+
   const handleApplyBackend = useCallback(() => {
     updateAppConfig({
       backend: { host: host.trim() || DEFAULT_BACKEND.host, port: port.trim() || DEFAULT_BACKEND.port },
     })
-  }, [host, port])
+    setBackendStatus("applied")
+    persistConfigToDisk()
+  }, [host, persistConfigToDisk, port])
 
   const handleApplyStoragePaths = useCallback(() => {
+    const resolvedGlobalConfigDir = globalConfigDir.trim() || defaultGlobalConfigDir
     updateAppConfig({
       storagePaths: {
         databaseDir: databaseDir.trim(),
         assetsDir: assetsDir.trim(),
+        globalConfigDir: resolvedGlobalConfigDir,
       },
     })
+    setGlobalConfigDir(resolvedGlobalConfigDir)
     setStorageStatus("applied")
-  }, [assetsDir, databaseDir])
+    persistConfigToDisk(resolvedGlobalConfigDir)
+  }, [assetsDir, databaseDir, defaultGlobalConfigDir, globalConfigDir, persistConfigToDisk])
 
   const handleStorageDefaults = useCallback(() => {
+    const resolvedGlobalConfigDir = defaultGlobalConfigDir
     setDatabaseDir("")
     setAssetsDir("")
+    setGlobalConfigDir(resolvedGlobalConfigDir)
     updateAppConfig({
       storagePaths: {
         databaseDir: "",
         assetsDir: "",
+        globalConfigDir: resolvedGlobalConfigDir,
       },
     })
     setStorageStatus("reset")
-  }, [])
+    persistConfigToDisk(resolvedGlobalConfigDir)
+  }, [defaultGlobalConfigDir, persistConfigToDisk])
 
   const handleApplyShortcuts = useCallback(() => {
     const patch: Record<string, string> = {}
@@ -189,7 +233,8 @@ export default function SettingsPage() {
     }
     updateAppConfig({ shortcuts: patch })
     setShortcutStatus("applied")
-  }, [shortcutDraft])
+    persistConfigToDisk()
+  }, [persistConfigToDisk, shortcutDraft])
 
   const handleShortcutDefaults = useCallback(() => {
     const defaults = defaultShortcutMap()
@@ -198,13 +243,16 @@ export default function SettingsPage() {
       shortcuts: Object.fromEntries(SHORTCUT_ROWS.map((row) => [row.id, ""])),
     })
     setShortcutStatus("reset")
-  }, [])
+    persistConfigToDisk()
+  }, [persistConfigToDisk])
 
   const handleBackendDefaults = useCallback(() => {
     updateAppConfig({ backend: { ...DEFAULT_BACKEND } })
     setHost(DEFAULT_BACKEND.host)
     setPort(DEFAULT_BACKEND.port)
-  }, [])
+    setBackendStatus("reset")
+    persistConfigToDisk()
+  }, [persistConfigToDisk])
 
   return (
     <div className="min-h-full bg-background">
@@ -225,7 +273,10 @@ export default function SettingsPage() {
         </header>
 
         <section className="space-y-3">
-          <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">后端</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">后端</h2>
+            <CompletionIcon status={backendStatus} />
+          </div>
           <Card className="border-border/80 shadow-sm">
             <CardHeader>
               <div className="flex items-center gap-2">
@@ -324,6 +375,15 @@ export default function SettingsPage() {
                 value={assetsDir}
                 onChange={setAssetsDir}
               />
+              <DirectoryPathField
+                id={`${baseId}-global-config-dir`}
+                icon={<FolderOpen className="h-4 w-4" aria-hidden />}
+                label="全局配置存储路径"
+                description="用于存放软件级配置 JSON（workflow/models/monitor 流程配置等）"
+                placeholder="/home/user/EasyAnnotate/config"
+                value={globalConfigDir}
+                onChange={setGlobalConfigDir}
+              />
               <p className="text-xs text-muted-foreground">
                 当前目录会随「应用」一起写入应用配置；「选择目录」通过主进程原生目录选择 IPC 获取本机绝对路径。
               </p>
@@ -332,7 +392,7 @@ export default function SettingsPage() {
                   应用
                 </Button>
                 <Button type="button" size="sm" variant="outline" onClick={handleStorageDefaults}>
-                  还原默认
+                  使用默认
                 </Button>
               </div>
             </CardContent>
@@ -389,7 +449,7 @@ export default function SettingsPage() {
                   应用
                 </Button>
                 <Button type="button" size="sm" variant="outline" onClick={handleShortcutDefaults}>
-                  还原默认
+                  使用默认
                 </Button>
               </div>
             </CardContent>

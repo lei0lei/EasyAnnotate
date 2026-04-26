@@ -10,7 +10,9 @@ import { ModelsOutlet } from "@/pages/models-outlet"
 import ModelsTrainingPage from "@/pages/models-training"
 import ProjectDetailPage from "@/pages/project-detail"
 import ProjectsCreatePage from "@/pages/projects-create"
+import ProjectsCreateConfigPage from "@/pages/projects-create-config"
 import ProjectsHubPage from "@/pages/projects-hub"
+import ProjectsImportPage from "@/pages/projects-import"
 import ProjectsMinePage from "@/pages/projects-mine"
 import { ProjectsOutlet } from "@/pages/projects-outlet"
 import { MonitorDetailOutlet } from "@/pages/monitor-detail-outlet"
@@ -33,6 +35,8 @@ export default function App() {
           <Route path="projects" element={<ProjectsOutlet />}>
             <Route index element={<ProjectsHubPage />} />
             <Route path="new" element={<ProjectsCreatePage />} />
+            <Route path="new/config" element={<ProjectsCreateConfigPage />} />
+            <Route path="import" element={<ProjectsImportPage />} />
             <Route path="mine" element={<ProjectsMinePage />} />
             <Route path=":projectId" element={<ProjectDetailPage />} />
           </Route>

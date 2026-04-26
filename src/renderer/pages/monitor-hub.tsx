@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { loadAppConfig } from "@/lib/app-config-storage"
 import {
   addMonitor,
   createMonitorItem,
@@ -31,6 +32,10 @@ function formatUpdated(iso: string): string {
 export default function MonitorHubPage() {
   const navigate = useNavigate()
   const [monitors, setMonitors] = useState<MonitorItem[]>(() => loadMonitors())
+  const openEditorOnCreate = useMemo(
+    () => loadAppConfig().pageFlow.monitor.openEditorOnCreate,
+    [],
+  )
 
   const refresh = useCallback(() => {
     setMonitors(loadMonitors())
@@ -40,8 +45,12 @@ export default function MonitorHubPage() {
     const item = createMonitorItem()
     addMonitor(item)
     refresh()
-    navigate(`/monitor/${item.id}`)
-  }, [navigate, refresh])
+    if (openEditorOnCreate) {
+      navigate(`/monitor/${item.id}`)
+      return
+    }
+    navigate("/monitor")
+  }, [navigate, openEditorOnCreate, refresh])
 
   const handleDelete = useCallback(
     (id: string, name: string) => {

@@ -3,6 +3,7 @@
  *
  * 分层（概念上）:
  * - **应用配置** `ea-app-config`：与安装/本机环境相关、跟随软件的偏好（后端、快捷键、其它全局开关）。
+ * - **标注数据库** 使用 SQLite（`better-sqlite3`）通过主进程维护，不在 localStorage 放业务记录。
  * - **内容数据** `ea-*` 独立 key：工作流、Monitor 等用户业务实体（列表型 JSON 数组或文档）。
  * - **UI 即时状态** 侧栏折叠、主题等：可继续用 localStorage 独立 key，升级时可并入 `app-config`。
  */

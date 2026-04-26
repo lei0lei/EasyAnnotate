@@ -1,8 +1,37 @@
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
-import { SelectDirectoryRequest, SetThemeRequest } from './gen/app';
+import {
+  CreateProjectRequest,
+  CreateProjectResponse,
+  DefaultGlobalConfigDirResponse,
+  DeleteAnnotationProjectRequest,
+  DeleteAnnotationRequest,
+  GetProjectRequest,
+  GetProjectResponse,
+  ListAnnotationProjectsRequest,
+  ListAnnotationsByProjectRequest,
+  ListProjectsRequest,
+  ValidateProjectDirectoryRequest,
+  ValidateProjectDirectoryResponse,
+  SelectDirectoryRequest,
+  SaveAppConfigToDiskRequest,
+  SetThemeRequest,
+  UpsertAnnotationProjectRequest,
+  UpsertAnnotationRequest,
+} from './gen/app';
 import { GreetService, AppService } from './gen/ipc_service';
 import { installApplicationMenu } from "./app-menu";
+import {
+  deleteAnnotation,
+  deleteAnnotationProject,
+  listAnnotationProjects,
+  listAnnotationsByProject,
+  upsertAnnotation,
+  upsertAnnotationProject,
+} from "./annotation-sqlite";
+import { getDefaultGlobalConfigDir, saveAppConfigToDisk } from "./app-config-disk";
+import { validateProjectDirectory } from "./project-directory";
+import { createProject, getProject, listProjects } from "./project-storage";
 
 // Create a new window.
 const win = new BrowserWindow()
@@ -69,5 +98,168 @@ ipc.registerService(AppService({
         errorMessage: error instanceof Error ? error.message : String(error),
       }
     }
+  },
+  async ValidateProjectDirectory(request: ValidateProjectDirectoryRequest): Promise<ValidateProjectDirectoryResponse> {
+    const validation = validateProjectDirectory(request.path)
+    return {
+      isEmpty: validation.isEmpty,
+      errorMessage: validation.errorMessage,
+    }
+  },
+  async CreateProject(request: CreateProjectRequest): Promise<CreateProjectResponse> {
+    try {
+      const project = createProject({
+        globalConfigDir: request.globalConfigDir,
+        name: request.name,
+        projectInfo: request.projectInfo,
+        projectType: request.projectType,
+        storageType: request.storageType === "remote" ? "remote" : "local",
+        localPath: request.localPath,
+        remoteIp: request.remoteIp,
+        remotePort: request.remotePort,
+      })
+      return {
+        project: {
+          id: project.id,
+          name: project.name,
+          projectInfo: project.projectInfo,
+          projectType: project.projectType,
+          storageType: project.storageType,
+          localPath: project.localPath,
+          remoteIp: project.remoteIp,
+          remotePort: project.remotePort,
+          updatedAt: project.updatedAt,
+          configFilePath: project.configFilePath,
+        },
+        errorMessage: "",
+      }
+    } catch (error) {
+      return {
+        project: {
+          id: "",
+          name: "",
+          projectInfo: "",
+          projectType: "",
+          storageType: "",
+          localPath: "",
+          remoteIp: "",
+          remotePort: "",
+          updatedAt: "",
+          configFilePath: "",
+        },
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async ListProjects(request: ListProjectsRequest) {
+    const projects = listProjects(request.globalConfigDir).map((project) => ({
+      id: project.id,
+      name: project.name,
+      projectInfo: project.projectInfo,
+      projectType: project.projectType,
+      storageType: project.storageType,
+      localPath: project.localPath,
+      remoteIp: project.remoteIp,
+      remotePort: project.remotePort,
+      updatedAt: project.updatedAt,
+      configFilePath: project.configFilePath,
+    }))
+    return { projects }
+  },
+  async GetProject(request: GetProjectRequest): Promise<GetProjectResponse> {
+    const project = getProject(request.globalConfigDir, request.id)
+    if (!project) {
+      return {
+        found: false,
+        project: {
+          id: "",
+          name: "",
+          projectInfo: "",
+          projectType: "",
+          storageType: "",
+          localPath: "",
+          remoteIp: "",
+          remotePort: "",
+          updatedAt: "",
+          configFilePath: "",
+        },
+      }
+    }
+    return {
+      found: true,
+      project: {
+        id: project.id,
+        name: project.name,
+        projectInfo: project.projectInfo,
+        projectType: project.projectType,
+        storageType: project.storageType,
+        localPath: project.localPath,
+        remoteIp: project.remoteIp,
+        remotePort: project.remotePort,
+        updatedAt: project.updatedAt,
+        configFilePath: project.configFilePath,
+      },
+    }
+  },
+  async GetDefaultGlobalConfigDir(_request): Promise<DefaultGlobalConfigDirResponse> {
+    return { path: getDefaultGlobalConfigDir() }
+  },
+  async SaveAppConfigToDisk(request: SaveAppConfigToDiskRequest) {
+    saveAppConfigToDisk(request.globalConfigDir, request.appConfigJson)
+    return {}
+  },
+  async ListAnnotationProjects(request: ListAnnotationProjectsRequest) {
+    const projects = listAnnotationProjects(request.databaseDir).map((project) => ({
+      id: project.id,
+      name: project.name,
+      rootDir: project.root_dir,
+      createdAt: project.created_at,
+      updatedAt: project.updated_at,
+    }))
+    return { projects }
+  },
+  async UpsertAnnotationProject(request: UpsertAnnotationProjectRequest) {
+    const project = request.project
+    upsertAnnotationProject(request.databaseDir, {
+      id: project.id,
+      name: project.name,
+      rootDir: project.rootDir,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    })
+    return {}
+  },
+  async DeleteAnnotationProject(request: DeleteAnnotationProjectRequest) {
+    deleteAnnotationProject(request.databaseDir, request.id)
+    return {}
+  },
+  async ListAnnotationsByProject(request: ListAnnotationsByProjectRequest) {
+    const annotations = listAnnotationsByProject(request.databaseDir, request.projectId).map((item) => ({
+      id: item.id,
+      projectId: item.project_id,
+      imagePath: item.image_path,
+      label: item.label,
+      bboxJson: item.bbox_json,
+      metaJson: item.meta_json,
+      updatedAt: item.updated_at,
+    }))
+    return { annotations }
+  },
+  async UpsertAnnotation(request: UpsertAnnotationRequest) {
+    const annotation = request.annotation
+    upsertAnnotation(request.databaseDir, {
+      id: annotation.id,
+      projectId: annotation.projectId,
+      imagePath: annotation.imagePath,
+      label: annotation.label,
+      bboxJson: annotation.bboxJson,
+      metaJson: annotation.metaJson,
+      updatedAt: annotation.updatedAt,
+    })
+    return {}
+  },
+  async DeleteAnnotation(request: DeleteAnnotationRequest) {
+    deleteAnnotation(request.databaseDir, request.id)
+    return {}
   },
 }))

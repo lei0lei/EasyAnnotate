@@ -21,6 +21,126 @@ message SelectDirectoryResponse {
   string error_message = 3;
 }
 
+message AnnotationProject {
+  string id = 1;
+  string name = 2;
+  string root_dir = 3;
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+message AnnotationRecord {
+  string id = 1;
+  string project_id = 2;
+  string image_path = 3;
+  string label = 4;
+  string bbox_json = 5;
+  string meta_json = 6;
+  string updated_at = 7;
+}
+
+message ListAnnotationProjectsRequest {
+  string database_dir = 1;
+}
+
+message ListAnnotationProjectsResponse {
+  repeated AnnotationProject projects = 1;
+}
+
+message UpsertAnnotationProjectRequest {
+  string database_dir = 1;
+  AnnotationProject project = 2;
+}
+
+message DeleteAnnotationProjectRequest {
+  string database_dir = 1;
+  string id = 2;
+}
+
+message ListAnnotationsByProjectRequest {
+  string database_dir = 1;
+  string project_id = 2;
+}
+
+message ListAnnotationsResponse {
+  repeated AnnotationRecord annotations = 1;
+}
+
+message UpsertAnnotationRequest {
+  string database_dir = 1;
+  AnnotationRecord annotation = 2;
+}
+
+message DeleteAnnotationRequest {
+  string database_dir = 1;
+  string id = 2;
+}
+
+message DefaultGlobalConfigDirResponse {
+  string path = 1;
+}
+
+message SaveAppConfigToDiskRequest {
+  string global_config_dir = 1;
+  string app_config_json = 2;
+}
+
+message ValidateProjectDirectoryRequest {
+  string path = 1;
+}
+
+message ValidateProjectDirectoryResponse {
+  bool is_empty = 1;
+  string error_message = 2;
+}
+
+message ProjectItem {
+  string id = 1;
+  string name = 2;
+  string project_info = 3;
+  string project_type = 4;
+  string storage_type = 5;
+  string local_path = 6;
+  string remote_ip = 7;
+  string remote_port = 8;
+  string updated_at = 9;
+  string config_file_path = 10;
+}
+
+message CreateProjectRequest {
+  string global_config_dir = 1;
+  string name = 2;
+  string project_info = 3;
+  string project_type = 4;
+  string storage_type = 5;
+  string local_path = 6;
+  string remote_ip = 7;
+  string remote_port = 8;
+}
+
+message CreateProjectResponse {
+  ProjectItem project = 1;
+  string error_message = 2;
+}
+
+message ListProjectsRequest {
+  string global_config_dir = 1;
+}
+
+message ListProjectsResponse {
+  repeated ProjectItem projects = 1;
+}
+
+message GetProjectRequest {
+  string global_config_dir = 1;
+  string id = 2;
+}
+
+message GetProjectResponse {
+  ProjectItem project = 1;
+  bool found = 2;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -28,4 +148,16 @@ service AppService {
   rpc CloseWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
   rpc GetWindowState(google.protobuf.Empty) returns (WindowState);
   rpc SelectDirectory(SelectDirectoryRequest) returns (SelectDirectoryResponse);
+  rpc ValidateProjectDirectory(ValidateProjectDirectoryRequest) returns (ValidateProjectDirectoryResponse);
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+  rpc GetDefaultGlobalConfigDir(google.protobuf.Empty) returns (DefaultGlobalConfigDirResponse);
+  rpc SaveAppConfigToDisk(SaveAppConfigToDiskRequest) returns (google.protobuf.Empty);
+  rpc ListAnnotationProjects(ListAnnotationProjectsRequest) returns (ListAnnotationProjectsResponse);
+  rpc UpsertAnnotationProject(UpsertAnnotationProjectRequest) returns (google.protobuf.Empty);
+  rpc DeleteAnnotationProject(DeleteAnnotationProjectRequest) returns (google.protobuf.Empty);
+  rpc ListAnnotationsByProject(ListAnnotationsByProjectRequest) returns (ListAnnotationsResponse);
+  rpc UpsertAnnotation(UpsertAnnotationRequest) returns (google.protobuf.Empty);
+  rpc DeleteAnnotation(DeleteAnnotationRequest) returns (google.protobuf.Empty);
 }

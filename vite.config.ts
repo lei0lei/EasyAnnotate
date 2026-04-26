@@ -15,22 +15,23 @@ export default defineConfig(({ mode }) => {
 function defineMainConfig(): UserConfig {
   return {
     root: path.resolve(__dirname, "./src/main"),
+    ssr: {
+      noExternal: true,
+    },
     build: {
-      target: "esnext",
+      target: "node20",
       outDir: path.resolve(__dirname, "./out/main"),
       emptyOutDir: true,
       sourcemap: true,
-      lib: {
-        entry: path.resolve(__dirname, "./src/main/index.ts"),
-        formats: ["es"],
-        fileName: () => "index.js",
-      },
+      ssr: path.resolve(__dirname, "./src/main/index.ts"),
       rollupOptions: {
         external: [
           "mobrowser",
-          // Externalize all Node.js built-in modules
-          /^node:.*/,
         ],
+        output: {
+          format: "es",
+          entryFileNames: "index.js",
+        },
       },
     },
     resolve: {
