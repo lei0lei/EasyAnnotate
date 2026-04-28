@@ -613,20 +613,20 @@ ipc.registerService(AppService({
     try {
       const filePath = (request.path || "").trim()
       if (!filePath) {
-        return { content: new Uint8Array(), errorMessage: "图片路径为空。" }
+        return { content: Buffer.alloc(0), errorMessage: "图片路径为空。" }
       }
       if (!fs.existsSync(filePath)) {
-        return { content: new Uint8Array(), errorMessage: "图片文件不存在。" }
+        return { content: Buffer.alloc(0), errorMessage: "图片文件不存在。" }
       }
       const stat = fs.statSync(filePath)
       if (!stat.isFile()) {
-        return { content: new Uint8Array(), errorMessage: "图片路径不是文件。" }
+        return { content: Buffer.alloc(0), errorMessage: "图片路径不是文件。" }
       }
       const content = fs.readFileSync(filePath)
       return { content, errorMessage: "" }
     } catch (error) {
       return {
-        content: new Uint8Array(),
+        content: Buffer.alloc(0),
         errorMessage: error instanceof Error ? error.message : String(error),
       }
     }
