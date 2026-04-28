@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button"
 import { readTasks } from "@/lib/project-tasks-storage"
 import {
   deleteImageAnnotation,
@@ -14,305 +13,127 @@ import {
   type TaskFileItem,
 } from "@/lib/projects-api"
 import { createXAnyLabelTemplate, normalizeXAnyLabelDoc, type XAnyLabelFile } from "@/lib/xanylabeling-format"
-import { cn } from "@/lib/utils"
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
-  ArrowLeft,
-  ChevronLeft,
-  ChevronRight,
-  Circle,
-  Download,
-  Eye,
-  EyeOff,
-  FileJson,
-  MousePointer2,
-  MoreHorizontal,
-  PenLine,
-  RotateCw,
-  SlidersHorizontal,
-  Square,
-  Tag,
-  Trash2,
-  Type,
-} from "lucide-react"
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Link, useParams } from "react-router-dom"
+  RectangleOverlayItem,
+  TaskCanvasLayer,
+  TaskDetailHeader,
+  TaskDrawHint,
+  TaskLeftPanelContent,
+  TaskLeftSidebarLayer,
+  TaskRectLabelPicker,
+  TaskToolPalette,
+} from "@/pages/project-task-detail/components"
+import type {
+  LabelsTab,
+  LeftPanelMode,
+  Point,
+  RenderedRectangle,
+  RenderedRotationRect,
+  RightToolMode,
+  RotationDragAction,
+  RotationTransformAction,
+  ShapeDragAction,
+} from "@/pages/project-task-detail/types"
+import {
+  fileNameFromPath,
+  formatBytes,
+  guessMimeType,
+  normalizeDocPointsToInt,
+  normalizeTagColor,
+  resolveTaskImagePath,
+  rotatePoint,
+  roundPointToInt,
+  roundPointsToInt,
+} from "@/pages/project-task-detail/utils"
+import {
+  remapIndexAfterDelete,
+  remapIndexAfterReorder,
+  reorderItemsByIndex,
+  resolveReorderTargetIndex,
+} from "@/pages/project-task-detail/shape-ops"
+import { cn } from "@/lib/utils"
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
+import { useParams } from "react-router-dom"
 
-type LeftPanelMode = "labels" | "attributes" | "raw"
-type LabelsTab = "layers" | "classes"
-type RightToolMode = "select" | "rect" | "rotRect" | "circle" | "polygon" | "text"
-type Point = { x: number; y: number }
-type ResizeHandle = "nw" | "ne" | "se" | "sw"
-type ShapeDragAction =
-  | { kind: "move"; shapeIndex: number; start: Point; originalPoints: number[][] }
-  | { kind: "resize"; shapeIndex: number; handle: ResizeHandle; start: Point; originalPoints: number[][] }
-type RenderedRectangle = {
-  index: number
-  label: string
-  color: string
-  left: number
-  top: number
-  width: number
-  height: number
-  clippedLeft: boolean
-  clippedTop: boolean
-  clippedRight: boolean
-  clippedBottom: boolean
-}
-type RenderedRotationRect = {
-  index: number
-  label: string
-  color: string
-  imagePoints: [Point, Point, Point, Point]
-  stagePoints: [Point, Point, Point, Point]
-  centerImage: Point
-  axisUImage: Point
-  axisVImage: Point
-  center: Point
-  topMid: Point
-  rotateHandle: Point
-  boundLeft: number
-  boundTop: number
-  boundRight: number
-  boundBottom: number
-}
-type RotationDragAction = {
-  shapeIndex: number
-  center: Point
-  startAngle: number
-  originalPoints: number[][]
-}
-type RotationTransformAction =
-  | { kind: "move"; shapeIndex: number; start: Point; originalPoints: number[][] }
-  | {
-      kind: "resize"
-      shapeIndex: number
-      handle: ResizeHandle
-      center: Point
-      axisU: Point
-      axisV: Point
-    }
+type DrawShapeType = "rectangle" | "rotation"
 
-type RectangleOverlayItemProps = {
-  item: RenderedRectangle
-  drawingLayerActive: boolean
-  isSelected: boolean
-  isHovered: boolean
-  onMouseEnter: (index: number) => void
-  onMouseLeave: (index: number) => void
-  onMouseDown: (index: number, event: React.MouseEvent<HTMLDivElement>) => void
-  onClick: (index: number, event: React.MouseEvent<HTMLDivElement>) => void
+type ToolState = {
+  rightToolMode: RightToolMode
+  rectPickerOpen: boolean
+  rectDrawingEnabled: boolean
+  rectFirstPoint: Point | null
+  rectHoverPoint: Point | null
+  drawShapeType: DrawShapeType
 }
 
-const RectangleOverlayItem = memo(
-  function RectangleOverlayItem({
-    item,
-    drawingLayerActive,
-    isSelected,
-    isHovered,
-    onMouseEnter,
-    onMouseLeave,
-    onMouseDown,
-    onClick,
-  }: RectangleOverlayItemProps) {
-    return (
-      <div
-        className={cn(
-          drawingLayerActive ? "pointer-events-none" : "pointer-events-auto",
-          "absolute border-2",
-        )}
-        style={{
-          left: item.left,
-          top: item.top,
-          width: item.width,
-          height: item.height,
-          borderColor: item.color,
-          borderLeftWidth: item.clippedLeft ? 0 : 2,
-          borderTopWidth: item.clippedTop ? 0 : 2,
-          borderRightWidth: item.clippedRight ? 0 : 2,
-          borderBottomWidth: item.clippedBottom ? 0 : 2,
-          backgroundColor: isSelected || isHovered ? `${item.color}33` : "transparent",
-        }}
-        onMouseEnter={() => onMouseEnter(item.index)}
-        onMouseLeave={() => onMouseLeave(item.index)}
-        onMouseDown={(event) => onMouseDown(item.index, event)}
-        onClick={(event) => onClick(item.index, event)}
-        aria-label={`选择标注 ${item.label}`}
-        role="button"
-      >
-      {null}
-      </div>
-    )
-  },
-  (prev, next) =>
-    prev.onMouseEnter === next.onMouseEnter &&
-    prev.onMouseLeave === next.onMouseLeave &&
-    prev.onMouseDown === next.onMouseDown &&
-    prev.onClick === next.onClick &&
-    prev.drawingLayerActive === next.drawingLayerActive &&
-    prev.isSelected === next.isSelected &&
-    prev.isHovered === next.isHovered &&
-    prev.item.index === next.item.index &&
-    prev.item.label === next.item.label &&
-    prev.item.color === next.item.color &&
-    prev.item.left === next.item.left &&
-    prev.item.top === next.item.top &&
-    prev.item.width === next.item.width &&
-    prev.item.height === next.item.height &&
-    prev.item.clippedLeft === next.item.clippedLeft &&
-    prev.item.clippedTop === next.item.clippedTop &&
-    prev.item.clippedRight === next.item.clippedRight &&
-    prev.item.clippedBottom === next.item.clippedBottom,
-)
+type ToolAction =
+  | { type: "setRightToolMode"; mode: RightToolMode }
+  | { type: "setRectHoverPoint"; point: Point | null }
+  | { type: "startRectTool" }
+  | { type: "startRotRectTool" }
+  | { type: "confirmRectPicker" }
+  | { type: "cancelRectPicker" }
+  | { type: "selectTool" }
+  | { type: "resetForNewFile" }
+  | { type: "clearRectPoints" }
+  | { type: "startRectFirstPoint"; point: Point }
 
-const TaskLeftSidebarLayer = memo(function TaskLeftSidebarLayer({
-  leftPanelMode,
-  onPanelModeChange,
-  children,
-}: {
-  leftPanelMode: LeftPanelMode
-  onPanelModeChange: (mode: LeftPanelMode) => void
-  children: ReactNode
-}) {
-  return (
-    <>
-      <div className="flex w-12 flex-col items-center gap-2 border-r border-border/70 py-3">
-        <button
-          type="button"
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-            leftPanelMode === "labels" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-          aria-label="显示 labels 面板"
-          onClick={() => onPanelModeChange("labels")}
-        >
-          <Tag className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-            leftPanelMode === "attributes" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-          aria-label="显示 attributes 面板"
-          onClick={() => onPanelModeChange("attributes")}
-        >
-          <SlidersHorizontal className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-            leftPanelMode === "raw" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-          aria-label="显示 raw data 面板"
-          onClick={() => onPanelModeChange("raw")}
-        >
-          <FileJson className="h-4 w-4" />
-        </button>
-      </div>
-      <div className="flex w-72 flex-col border-r border-border/70 px-3 py-2">{children}</div>
-    </>
-  )
-})
-
-const TaskCanvasLayer = memo(function TaskCanvasLayer({ children }: { children: ReactNode }) {
-  return <div className="relative min-w-0 flex-1 bg-muted/15">{children}</div>
-})
-
-function fileNameFromPath(filePath: string): string {
-  if (!filePath) return "未选择文件"
-  const normalized = filePath.replace(/\\/g, "/")
-  const segments = normalized.split("/")
-  return segments[segments.length - 1] || "未选择文件"
+const initialToolState: ToolState = {
+  rightToolMode: "select",
+  rectPickerOpen: false,
+  rectDrawingEnabled: false,
+  rectFirstPoint: null,
+  rectHoverPoint: null,
+  drawShapeType: "rectangle",
 }
 
-function trimTrailingSlashes(input: string): string {
-  return input.replace(/[\\/]+$/, "")
-}
-
-function dirnameOfFilePath(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/")
-  const idx = normalized.lastIndexOf("/")
-  if (idx <= 0) return ""
-  return normalized.slice(0, idx).replace(/\//g, "\\")
-}
-
-function sanitizeSegment(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) return "default"
-  return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
-}
-
-function resolveTaskImagePath(project: ProjectItem | undefined, taskId: string | undefined, file: TaskFileItem | undefined): string {
-  if (!file) return ""
-  if (!project || !taskId) return file.filePath
-  const baseRoot =
-    project.storageType === "local" && project.localPath
-      ? trimTrailingSlashes(project.localPath)
-      : trimTrailingSlashes(dirnameOfFilePath(project.configFilePath))
-  const fileName = fileNameFromPath(file.filePath)
-  if (!baseRoot || !fileName) return file.filePath
-  const subset = sanitizeSegment(file.subset || "default")
-  return `${baseRoot}\\data\\tasks\\${sanitizeSegment(taskId)}\\${subset}\\${fileName}`
-}
-
-function guessMimeType(filePath: string): string {
-  const lower = filePath.toLowerCase()
-  if (lower.endsWith(".png")) return "image/png"
-  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg"
-  if (lower.endsWith(".webp")) return "image/webp"
-  if (lower.endsWith(".gif")) return "image/gif"
-  if (lower.endsWith(".bmp")) return "image/bmp"
-  if (lower.endsWith(".svg")) return "image/svg+xml"
-  return "application/octet-stream"
-}
-
-function normalizeTagColor(input: string | undefined): string {
-  if (!input) return "#f59e0b"
-  const value = input.trim()
-  if (/^#[0-9a-fA-F]{6}$/.test(value)) return value.toLowerCase()
-  return "#f59e0b"
-}
-
-function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0 B"
-  const units = ["B", "KB", "MB", "GB", "TB"]
-  let size = value
-  let unitIndex = 0
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024
-    unitIndex += 1
-  }
-  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
-}
-
-function roundPointToInt(point: Point): Point {
-  return { x: Math.round(point.x), y: Math.round(point.y) }
-}
-
-function roundPointsToInt(points: number[][]): number[][] {
-  return points.map((item) => [Math.round(Number(item[0] ?? 0)), Math.round(Number(item[1] ?? 0))])
-}
-
-function normalizeDocPointsToInt(doc: XAnyLabelFile): XAnyLabelFile {
-  return {
-    ...doc,
-    shapes: doc.shapes.map((shape) => ({
-      ...shape,
-      points: roundPointsToInt(shape.points),
-    })),
-  }
-}
-
-function rotatePoint(point: Point, center: Point, radians: number): Point {
-  const cos = Math.cos(radians)
-  const sin = Math.sin(radians)
-  const tx = point.x - center.x
-  const ty = point.y - center.y
-  return {
-    x: center.x + tx * cos - ty * sin,
-    y: center.y + tx * sin + ty * cos,
+function toolReducer(state: ToolState, action: ToolAction): ToolState {
+  switch (action.type) {
+    case "setRightToolMode":
+      return state.rightToolMode === action.mode ? state : { ...state, rightToolMode: action.mode }
+    case "setRectHoverPoint":
+      return state.rectHoverPoint === action.point ? state : { ...state, rectHoverPoint: action.point }
+    case "startRectTool":
+      return {
+        ...state,
+        rightToolMode: "rect",
+        drawShapeType: "rectangle",
+        rectPickerOpen: true,
+        rectDrawingEnabled: false,
+        rectFirstPoint: null,
+        rectHoverPoint: null,
+      }
+    case "startRotRectTool":
+      return {
+        ...state,
+        rightToolMode: "rotRect",
+        drawShapeType: "rotation",
+        rectPickerOpen: true,
+        rectDrawingEnabled: false,
+        rectFirstPoint: null,
+        rectHoverPoint: null,
+      }
+    case "confirmRectPicker":
+      return { ...state, rectPickerOpen: false, rectDrawingEnabled: true, rectFirstPoint: null, rectHoverPoint: null }
+    case "cancelRectPicker":
+      return { ...state, rectPickerOpen: false, rectDrawingEnabled: false }
+    case "selectTool":
+      return {
+        ...state,
+        rightToolMode: "select",
+        rectPickerOpen: false,
+        rectDrawingEnabled: false,
+        rectFirstPoint: null,
+        rectHoverPoint: null,
+      }
+    case "resetForNewFile":
+      return { ...state, rectPickerOpen: false, rectDrawingEnabled: false, rectFirstPoint: null, rectHoverPoint: null }
+    case "clearRectPoints":
+      return { ...state, rectFirstPoint: null, rectHoverPoint: null }
+    case "startRectFirstPoint":
+      return { ...state, rectFirstPoint: action.point, rectHoverPoint: action.point }
+    default:
+      return state
   }
 }
 
@@ -324,7 +145,7 @@ export default function ProjectTaskDetailPage() {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [leftPanelMode, setLeftPanelMode] = useState<LeftPanelMode>("labels")
   const [labelsTab, setLabelsTab] = useState<LabelsTab>("layers")
-  const [rightToolMode, setRightToolMode] = useState<RightToolMode>("select")
+  const [toolState, dispatchTool] = useReducer(toolReducer, initialToolState)
   const [imageObjectUrl, setImageObjectUrl] = useState("")
   const [activeImagePath, setActiveImagePath] = useState("")
   const [isImageLoading, setIsImageLoading] = useState(false)
@@ -336,11 +157,7 @@ export default function ProjectTaskDetailPage() {
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
   const [annotationDoc, setAnnotationDoc] = useState<XAnyLabelFile | null>(null)
   const [panelDoc, setPanelDoc] = useState<XAnyLabelFile | null>(null)
-  const [rectPickerOpen, setRectPickerOpen] = useState(false)
   const [rectPendingLabel, setRectPendingLabel] = useState("")
-  const [rectDrawingEnabled, setRectDrawingEnabled] = useState(false)
-  const [rectFirstPoint, setRectFirstPoint] = useState<Point | null>(null)
-  const [rectHoverPoint, setRectHoverPoint] = useState<Point | null>(null)
   const [selectedShapeIndex, setSelectedShapeIndex] = useState<number | null>(null)
   const [hoveredShapeIndex, setHoveredShapeIndex] = useState<number | null>(null)
   const [shapeDragAction, setShapeDragAction] = useState<ShapeDragAction | null>(null)
@@ -348,7 +165,6 @@ export default function ProjectTaskDetailPage() {
   const [rotationTransformAction, setRotationTransformAction] = useState<RotationTransformAction | null>(null)
   const [hiddenShapeIndexes, setHiddenShapeIndexes] = useState<number[]>([])
   const [hiddenClassLabels, setHiddenClassLabels] = useState<string[]>([])
-  const [drawShapeType, setDrawShapeType] = useState<"rectangle" | "rotation">("rectangle")
   const [rawHighlightCorner, setRawHighlightCorner] = useState<{ shapeIndex: number; cornerIndex: number } | null>(null)
   const [imageFileInfo, setImageFileInfo] = useState<{
     exists: boolean
@@ -368,6 +184,18 @@ export default function ProjectTaskDetailPage() {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const panStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null)
   const annotationDocRef = useRef<XAnyLabelFile | null>(null)
+  const { rightToolMode, rectPickerOpen, rectDrawingEnabled, rectFirstPoint, rectHoverPoint, drawShapeType } = toolState
+
+  const clearToolTransientInteractions = useCallback(() => {
+    setRotationDragAction(null)
+    setRotationTransformAction(null)
+    setRawHighlightCorner(null)
+  }, [])
+
+  const handleSelectToolClick = useCallback(() => {
+    dispatchTool({ type: "selectTool" })
+    clearToolTransientInteractions()
+  }, [clearToolTransientInteractions])
 
   const reloadTaskFiles = useCallback(async () => {
     if (!projectId || !taskId) return
@@ -481,19 +309,15 @@ export default function ProjectTaskDetailPage() {
     setIsPanning(false)
     panStartRef.current = null
     setImageNaturalSize({ width: 0, height: 0 })
-    setRectFirstPoint(null)
-    setRectHoverPoint(null)
+    dispatchTool({ type: "clearRectPoints" })
     setSelectedShapeIndex(null)
-    setRectDrawingEnabled(false)
-    setRectPickerOpen(false)
+    dispatchTool({ type: "resetForNewFile" })
     setAnnotationDoc(null)
-    setRotationDragAction(null)
-    setRotationTransformAction(null)
-    setRawHighlightCorner(null)
+    clearToolTransientInteractions()
     setHiddenShapeIndexes([])
     setHiddenClassLabels([])
     setLabelsTab("layers")
-  }, [currentFile?.filePath])
+  }, [clearToolTransientInteractions, currentFile?.filePath])
 
   useEffect(() => {
     const target = stageRef.current
@@ -943,7 +767,9 @@ export default function ProjectTaskDetailPage() {
     const pt = stageToImage({ x: event.clientX - rect.left, y: event.clientY - rect.top })
     if (!pt) return
     const rounded = roundPointToInt(pt)
-    setRectHoverPoint((prev) => (prev && prev.x === rounded.x && prev.y === rounded.y ? prev : rounded))
+    if (!rectHoverPoint || rectHoverPoint.x !== rounded.x || rectHoverPoint.y !== rounded.y) {
+      dispatchTool({ type: "setRectHoverPoint", point: rounded })
+    }
   }
 
   const handleImageDoubleClick: React.MouseEventHandler<HTMLDivElement> = (event) => {
@@ -961,31 +787,22 @@ export default function ProjectTaskDetailPage() {
   }
 
   const handleRectToolClick = () => {
-    setRightToolMode("rect")
-    setDrawShapeType("rectangle")
-    setRectPickerOpen(true)
-    setRectFirstPoint(null)
-    setRectHoverPoint(null)
+    dispatchTool({ type: "startRectTool" })
     setSelectedShapeIndex(null)
-    setRectDrawingEnabled(false)
   }
 
   const handleRotRectToolClick = () => {
-    setRightToolMode("rotRect")
-    setDrawShapeType("rotation")
-    setRectPickerOpen(true)
-    setRectFirstPoint(null)
-    setRectHoverPoint(null)
+    dispatchTool({ type: "startRotRectTool" })
     setSelectedShapeIndex(null)
-    setRectDrawingEnabled(false)
   }
 
   const handleRectPickerConfirm = () => {
     if (!rectPendingLabel) return
-    setRectPickerOpen(false)
-    setRectDrawingEnabled(true)
-    setRectFirstPoint(null)
-    setRectHoverPoint(null)
+    dispatchTool({ type: "confirmRectPicker" })
+  }
+
+  const handleRectPickerCancel = () => {
+    dispatchTool({ type: "cancelRectPicker" })
   }
 
   const upsertRectByPoint = (point: Point) => {
@@ -993,8 +810,7 @@ export default function ProjectTaskDetailPage() {
     if (!point) return
     if (!rectFirstPoint) {
       const roundedPoint = roundPointToInt(point)
-      setRectFirstPoint(roundedPoint)
-      setRectHoverPoint(roundedPoint)
+      dispatchTool({ type: "startRectFirstPoint", point: roundedPoint })
       return
     }
     const roundedCurrent = roundPointToInt(point)
@@ -1005,8 +821,7 @@ export default function ProjectTaskDetailPage() {
     const width = maxX - minX
     const height = maxY - minY
     if (width < 1 || height < 1) {
-      setRectFirstPoint(null)
-      setRectHoverPoint(null)
+      dispatchTool({ type: "clearRectPoints" })
       return
     }
     const workingDoc =
@@ -1042,8 +857,7 @@ export default function ProjectTaskDetailPage() {
     const normalizedDoc = normalizeDocPointsToInt(nextDoc)
     setAnnotationDoc(normalizedDoc)
     persistAnnotation(normalizedDoc)
-    setRectFirstPoint(null)
-    setRectHoverPoint(null)
+    dispatchTool({ type: "clearRectPoints" })
   }
 
   const handleDrawLayerMove: React.MouseEventHandler<HTMLDivElement> = (event) => {
@@ -1053,11 +867,13 @@ export default function ProjectTaskDetailPage() {
     if (!geometry) return
     const pt = stageToImageStrictWithGeometry({ x: event.clientX - rect.left, y: event.clientY - rect.top }, geometry)
     if (!pt) {
-      setRectHoverPoint(null)
+      dispatchTool({ type: "setRectHoverPoint", point: null })
       return
     }
     const rounded = roundPointToInt(pt)
-    setRectHoverPoint((prev) => (prev && prev.x === rounded.x && prev.y === rounded.y ? prev : rounded))
+    if (!rectHoverPoint || rectHoverPoint.x !== rounded.x || rectHoverPoint.y !== rounded.y) {
+      dispatchTool({ type: "setRectHoverPoint", point: rounded })
+    }
   }
 
   const handleDrawLayerClick: React.MouseEventHandler<HTMLDivElement> = (event) => {
@@ -1078,28 +894,24 @@ export default function ProjectTaskDetailPage() {
     setRawHighlightCorner(null)
   }
 
-  const updateShapeLabel = (shapeIndex: number, label: string) => {
-    if (!annotationDoc) return
-    const nextShapes = annotationDoc.shapes.map((shape, index) => (index === shapeIndex ? { ...shape, label } : shape))
-    const nextDoc = normalizeDocPointsToInt({ ...annotationDoc, shapes: nextShapes })
-    setAnnotationDoc(nextDoc)
-    persistAnnotation(nextDoc)
-  }
-
   const deleteShape = (shapeIndex: number) => {
     if (!annotationDoc) return
     const nextShapes = annotationDoc.shapes.filter((_, index) => index !== shapeIndex)
     const nextDoc = normalizeDocPointsToInt({ ...annotationDoc, shapes: nextShapes })
     setAnnotationDoc(nextDoc)
     persistAnnotation(nextDoc)
-    setHiddenShapeIndexes((prev) => prev.filter((idx) => idx !== shapeIndex).map((idx) => (idx > shapeIndex ? idx - 1 : idx)))
+    setHiddenShapeIndexes((prev) =>
+      prev
+        .map((idx) => remapIndexAfterDelete(idx, shapeIndex))
+        .filter((idx): idx is number => idx !== null),
+    )
     setSelectedShapeIndex(null)
-    setHoveredShapeIndex((prev) => (prev === shapeIndex ? null : prev !== null && prev > shapeIndex ? prev - 1 : prev))
+    setHoveredShapeIndex((prev) => (prev === null ? prev : remapIndexAfterDelete(prev, shapeIndex)))
     setRawHighlightCorner((prev) => {
       if (!prev) return prev
-      if (prev.shapeIndex === shapeIndex) return null
-      if (prev.shapeIndex > shapeIndex) return { ...prev, shapeIndex: prev.shapeIndex - 1 }
-      return prev
+      const nextIndex = remapIndexAfterDelete(prev.shapeIndex, shapeIndex)
+      if (nextIndex === null) return null
+      return { ...prev, shapeIndex: nextIndex }
     })
   }
 
@@ -1126,40 +938,25 @@ export default function ProjectTaskDetailPage() {
   const reorderShapeLayer = (shapeIndex: number, mode: "forward" | "backward" | "front" | "back") => {
     const total = annotationDoc?.shapes.length ?? 0
     if (total <= 1) return
-    let targetIndex = shapeIndex
-    if (mode === "forward") targetIndex = Math.min(total - 1, shapeIndex + 1)
-    if (mode === "backward") targetIndex = Math.max(0, shapeIndex - 1)
-    if (mode === "front") targetIndex = total - 1
-    if (mode === "back") targetIndex = 0
+    const targetIndex = resolveReorderTargetIndex(shapeIndex, total, mode)
     if (targetIndex === shapeIndex) return
-
-    const remapIndex = (index: number): number => {
-      if (shapeIndex < targetIndex) {
-        if (index === shapeIndex) return targetIndex
-        if (index > shapeIndex && index <= targetIndex) return index - 1
-        return index
-      }
-      if (index === shapeIndex) return targetIndex
-      if (index >= targetIndex && index < shapeIndex) return index + 1
-      return index
-    }
 
     let nextDocForPersist: XAnyLabelFile | null = null
     setAnnotationDoc((prev) => {
       if (!prev || !prev.shapes[shapeIndex]) return prev
-      const nextShapes = [...prev.shapes]
-      const [moved] = nextShapes.splice(shapeIndex, 1)
-      nextShapes.splice(targetIndex, 0, moved)
+      const nextShapes = reorderItemsByIndex(prev.shapes, shapeIndex, targetIndex)
       const nextDoc = normalizeDocPointsToInt({ ...prev, shapes: nextShapes })
       nextDocForPersist = nextDoc
       return nextDoc
     })
     if (nextDocForPersist) persistAnnotation(nextDocForPersist)
 
-    setHiddenShapeIndexes((prev) => Array.from(new Set(prev.map((idx) => remapIndex(idx)))))
-    setSelectedShapeIndex((prev) => (prev === null ? prev : remapIndex(prev)))
-    setHoveredShapeIndex((prev) => (prev === null ? prev : remapIndex(prev)))
-    setRawHighlightCorner((prev) => (prev ? { ...prev, shapeIndex: remapIndex(prev.shapeIndex) } : prev))
+    setHiddenShapeIndexes((prev) => Array.from(new Set(prev.map((idx) => remapIndexAfterReorder(idx, shapeIndex, targetIndex)))))
+    setSelectedShapeIndex((prev) => (prev === null ? prev : remapIndexAfterReorder(prev, shapeIndex, targetIndex)))
+    setHoveredShapeIndex((prev) => (prev === null ? prev : remapIndexAfterReorder(prev, shapeIndex, targetIndex)))
+    setRawHighlightCorner((prev) =>
+      prev ? { ...prev, shapeIndex: remapIndexAfterReorder(prev.shapeIndex, shapeIndex, targetIndex) } : prev,
+    )
   }
 
   const updateShapePoints = (shapeIndex: number, points: number[][], shouldPersist: boolean) => {
@@ -1254,14 +1051,7 @@ export default function ProjectTaskDetailPage() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setRightToolMode("select")
-        setRectPickerOpen(false)
-        setRectDrawingEnabled(false)
-        setRectFirstPoint(null)
-        setRectHoverPoint(null)
-        setRotationDragAction(null)
-        setRotationTransformAction(null)
-        setRawHighlightCorner(null)
+        handleSelectToolClick()
         return
       }
       if (event.key !== "Delete" && event.key !== "Backspace") return
@@ -1272,7 +1062,7 @@ export default function ProjectTaskDetailPage() {
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [hoveredShapeIndex, selectedShapeIndex, annotationDoc])
+  }, [handleSelectToolClick, hoveredShapeIndex, selectedShapeIndex])
 
   useEffect(() => {
     if (!shapeDragAction) return
@@ -1500,379 +1290,56 @@ export default function ProjectTaskDetailPage() {
 
   return (
     <div className="flex h-[calc(100vh-var(--ea-titlebar-height,36px))] min-h-0 w-full flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/80 bg-background px-3 py-2">
-        <Button asChild variant="ghost" size="icon" aria-label="返回项目">
-          <Link to={`/projects/${projectId}`}>
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-        </Button>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-foreground">任务：{taskName}</p>
-          <p className="truncate text-xs text-muted-foreground">文件：{currentFileName}</p>
-        </div>
-        <div className="flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-sm">
-          <button
-            type="button"
-            className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-            onClick={() => setCurrentIndex((v) => Math.max(0, v - 1))}
-            disabled={currentIndex <= 0}
-            aria-label="上一张"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-          <span className="min-w-[4rem] text-center text-xs tabular-nums text-muted-foreground">{progressText}</span>
-          <button
-            type="button"
-            className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-            onClick={() => setCurrentIndex((v) => Math.min(files.length - 1, v + 1))}
-            disabled={files.length === 0 || currentIndex >= files.length - 1}
-            aria-label="下一张"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button
-              type="button"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label="图片操作"
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              className="z-50 min-w-[10rem] overflow-hidden rounded-md border border-border bg-card p-1 text-sm text-card-foreground shadow-md"
-              sideOffset={6}
-              align="end"
-            >
-              <DropdownMenu.Item
-                className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-highlighted:bg-accent"
-                onSelect={() => {
-                  void handleDownloadCurrentImage()
-                }}
-              >
-                <Download className="h-3.5 w-3.5" aria-hidden />
-                下载图片
-              </DropdownMenu.Item>
-              <DropdownMenu.Item
-                className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 text-destructive outline-hidden data-highlighted:bg-destructive/10"
-                onSelect={() => {
-                  void handleDeleteCurrentAnnotation()
-                }}
-              >
-                <FileJson className="h-3.5 w-3.5" aria-hidden />
-                删除标注
-              </DropdownMenu.Item>
-              <DropdownMenu.Item
-                className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 text-destructive outline-hidden data-highlighted:bg-destructive/10"
-                onSelect={() => {
-                  void handleDeleteCurrentImage()
-                }}
-              >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                删除图片
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-      </div>
+      <TaskDetailHeader
+        projectId={projectId}
+        taskName={taskName}
+        currentFileName={currentFileName}
+        progressText={progressText}
+        canGoPrev={currentIndex > 0}
+        canGoNext={files.length > 0 && currentIndex < files.length - 1}
+        onPrev={() => setCurrentIndex((v) => Math.max(0, v - 1))}
+        onNext={() => setCurrentIndex((v) => Math.min(files.length - 1, v + 1))}
+        onDownloadCurrentImage={() => {
+          void handleDownloadCurrentImage()
+        }}
+        onDeleteCurrentAnnotation={() => {
+          void handleDeleteCurrentAnnotation()
+        }}
+        onDeleteCurrentImage={() => {
+          void handleDeleteCurrentImage()
+        }}
+      />
 
       <div className="relative min-h-0 flex-1 bg-background">
         <div className="flex h-full min-h-0">
           <TaskLeftSidebarLayer leftPanelMode={leftPanelMode} onPanelModeChange={setLeftPanelMode}>
-            {leftPanelMode === "raw" ? (
-              <>
-                <div className="mt-2 min-h-0 flex-1 overflow-hidden">
-                  <div className="h-full space-y-2 overflow-y-auto overflow-x-hidden pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                    {panelShapes.length ? (
-                      panelShapes.map((shape, index) => {
-                        return (
-                          <div
-                            key={`${shape.label}-${index}`}
-                            className={cn(
-                              "rounded border p-2 transition-colors",
-                              selectedShapeIndex === index
-                                ? "border-emerald-400 bg-emerald-500/10"
-                                : hoveredShapeIndex === index
-                                  ? "border-emerald-300/80 bg-emerald-500/5"
-                                  : "border-border/60 bg-muted/20",
-                            )}
-                            onMouseEnter={() => setHoveredShapeIndex(index)}
-                            onMouseLeave={() => setHoveredShapeIndex((prev) => (prev === index ? null : prev))}
-                            onClick={() => setSelectedShapeIndex(index)}
-                          >
-                            <div className="mb-1 flex items-center justify-between gap-2">
-                              <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-foreground">
-                                <span className="truncate">{shape.label}</span>
-                                <span className="text-muted-foreground">·</span>
-                                <span className="truncate text-muted-foreground">{shape.shape_type}</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  className="inline-flex h-6 w-6 items-center justify-center rounded text-destructive hover:bg-destructive/10"
-                                  aria-label="删除标注"
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    deleteShape(index)
-                                  }}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                            <div className="flex gap-1">
-                              {[0, 1, 2, 3].map((posIndex) =>
-                                renderPositionBox(
-                                  formatPosition(shape.points[posIndex]),
-                                  posIndex,
-                                  index,
-                                  rawHighlightCorner?.shapeIndex === index && rawHighlightCorner.cornerIndex === posIndex,
-                                  shape.shape_type === "rotation"
-                                    ? () => setRawHighlightCorner({ shapeIndex: index, cornerIndex: posIndex })
-                                    : undefined,
-                                  shape.shape_type === "rotation"
-                                    ? () =>
-                                        setRawHighlightCorner((prev) =>
-                                          prev?.shapeIndex === index && prev.cornerIndex === posIndex ? null : prev,
-                                        )
-                                    : undefined,
-                                ),
-                              )}
-                            </div>
-                          </div>
-                        )
-                      })
-                    ) : (
-                      <p className="text-xs text-muted-foreground">当前图片暂无标注。</p>
-                    )}
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                {leftPanelMode === "labels" ? (
-                  <div className="mt-2 flex min-h-0 flex-1 flex-col gap-2">
-                    <div className="grid w-full grid-cols-2 rounded-md border border-border/70 bg-muted/40 p-0.5">
-                      <button
-                        type="button"
-                        className={cn(
-                          "w-full rounded px-2 py-1 text-xs transition-colors",
-                          labelsTab === "layers"
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                        onClick={() => setLabelsTab("layers")}
-                      >
-                        layers
-                      </button>
-                      <button
-                        type="button"
-                        className={cn(
-                          "w-full rounded px-2 py-1 text-xs transition-colors",
-                          labelsTab === "classes"
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                        onClick={() => setLabelsTab("classes")}
-                      >
-                        classes
-                      </button>
-                    </div>
-                    {labelsTab === "layers" ? (
-                      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                        {panelShapes.length ? (
-                          panelShapes.map((shape, index) => {
-                            const isHidden = hiddenShapeIndexes.includes(index)
-                            const isSelected = selectedShapeIndex === index
-                            const isHovered = hoveredShapeIndex === index
-                            const color = labelColorMap.get(shape.label) ?? "#f59e0b"
-                            const canBringForward = index < panelShapes.length - 1
-                            const canSendBackward = index > 0
-                            return (
-                              <div
-                                key={`layer-${index}`}
-                                className={cn(
-                                  "flex items-center gap-2 rounded border px-2 py-1.5 transition-colors",
-                                  isSelected
-                                    ? "border-emerald-400 bg-emerald-500/10"
-                                    : isHovered
-                                      ? "border-emerald-300/80 bg-emerald-500/5"
-                                      : "border-border/60 bg-muted/20",
-                                  isHidden && "opacity-55",
-                                )}
-                                onMouseEnter={() => setHoveredShapeIndex(index)}
-                                onMouseLeave={() => setHoveredShapeIndex((prev) => (prev === index ? null : prev))}
-                                onClick={() => {
-                                  if (isHidden) return
-                                  setSelectedShapeIndex(index)
-                                }}
-                              >
-                                <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />
-                                <span className="min-w-0 flex-1 truncate text-xs text-foreground">{shape.label || "-"}</span>
-                                <button
-                                  type="button"
-                                  className="inline-flex shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
-                                  aria-label={isHidden ? "显示标注" : "隐藏标注"}
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    toggleShapeVisibility(index)
-                                  }}
-                                >
-                                  {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-destructive hover:bg-destructive/10"
-                                  aria-label="删除标注"
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    deleteShape(index)
-                                  }}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                                <DropdownMenu.Root>
-                                  <DropdownMenu.Trigger asChild>
-                                    <button
-                                      type="button"
-                                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                                      aria-label="图层顺序菜单"
-                                      onClick={(event) => event.stopPropagation()}
-                                    >
-                                      <MoreHorizontal className="h-3.5 w-3.5" />
-                                    </button>
-                                  </DropdownMenu.Trigger>
-                                  <DropdownMenu.Portal>
-                                    <DropdownMenu.Content
-                                      className="z-50 min-w-[11rem] overflow-hidden rounded-md border border-border bg-card p-1 text-sm text-card-foreground shadow-md"
-                                      sideOffset={6}
-                                      align="end"
-                                    >
-                                      <DropdownMenu.Item
-                                        disabled={!canBringForward}
-                                        className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-disabled:opacity-40 data-highlighted:bg-accent"
-                                        onSelect={() => reorderShapeLayer(index, "forward")}
-                                      >
-                                        Bring Forward
-                                      </DropdownMenu.Item>
-                                      <DropdownMenu.Item
-                                        disabled={!canSendBackward}
-                                        className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-disabled:opacity-40 data-highlighted:bg-accent"
-                                        onSelect={() => reorderShapeLayer(index, "backward")}
-                                      >
-                                        Send Backward
-                                      </DropdownMenu.Item>
-                                      <DropdownMenu.Item
-                                        disabled={!canBringForward}
-                                        className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-disabled:opacity-40 data-highlighted:bg-accent"
-                                        onSelect={() => reorderShapeLayer(index, "front")}
-                                      >
-                                        Bring to Front
-                                      </DropdownMenu.Item>
-                                      <DropdownMenu.Item
-                                        disabled={!canSendBackward}
-                                        className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-disabled:opacity-40 data-highlighted:bg-accent"
-                                        onSelect={() => reorderShapeLayer(index, "back")}
-                                      >
-                                        Send to Back
-                                      </DropdownMenu.Item>
-                                    </DropdownMenu.Content>
-                                  </DropdownMenu.Portal>
-                                </DropdownMenu.Root>
-                              </div>
-                            )
-                          })
-                        ) : (
-                          <p className="text-xs text-muted-foreground">当前图片暂无标注。</p>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                        {(project?.tags ?? []).length ? (
-                          (project?.tags ?? []).map((tag) => {
-                            const count = panelShapes.filter((shape) => shape.label === tag.name).length
-                            const classHidden = hiddenClassLabels.includes(tag.name)
-                            return (
-                              <div
-                                key={`class-${tag.name}`}
-                                className="flex items-center gap-2 rounded border border-border/60 bg-muted/20 px-2 py-1.5"
-                              >
-                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: normalizeTagColor(tag.color) }} />
-                                <span className="min-w-0 flex-1 truncate text-xs text-foreground">{tag.name}</span>
-                                <button
-                                  type="button"
-                                  className="inline-flex shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
-                                  aria-label={classHidden ? "显示该类标注" : "隐藏该类标注"}
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    toggleClassVisibility(tag.name)
-                                  }}
-                                >
-                                  {classHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                                </button>
-                                <span className="text-[11px] text-muted-foreground">{count}</span>
-                              </div>
-                            )
-                          })
-                        ) : (
-                          <p className="text-xs text-muted-foreground">当前项目暂无标签类别。</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="mt-2 flex min-h-0 flex-1 flex-col gap-2">
-                    <p className="border-b border-border/70 pb-2 text-sm font-medium text-foreground">Attributes</p>
-                    <div className="rounded border border-border/70 bg-background/70 p-2 text-xs text-muted-foreground">
-                      <p className="truncate">
-                        <span className="text-foreground">路径：</span>
-                        {activeImagePath || "-"}
-                      </p>
-                      <p className="truncate">
-                        <span className="text-foreground">项目：</span>
-                        {project?.name || "-"}
-                      </p>
-                      <p className="truncate">
-                        <span className="text-foreground">任务：</span>
-                        {taskName || "-"}
-                      </p>
-                    </div>
-                    <div className="min-h-0 flex-1 rounded border border-border/70 bg-background/70 p-2 text-xs">
-                      <div className="h-full space-y-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                        <p className="text-muted-foreground">
-                          <span className="text-foreground">尺寸：</span>
-                          {imageNaturalSize.width > 0 && imageNaturalSize.height > 0
-                            ? `${imageNaturalSize.width} x ${imageNaturalSize.height}`
-                            : "-"}
-                        </p>
-                        <p className="text-muted-foreground">
-                          <span className="text-foreground">通道：</span>
-                          {imageFileInfo.channelCount > 0 ? imageFileInfo.channelCount : "-"}
-                        </p>
-                        <p className="text-muted-foreground">
-                          <span className="text-foreground">格式：</span>
-                          {imageFileInfo.format || "-"}
-                        </p>
-                        <p className="text-muted-foreground">
-                          <span className="text-foreground">大小：</span>
-                          {formatBytes(imageFileInfo.sizeBytes)}
-                        </p>
-                        <p className="text-muted-foreground">
-                          <span className="text-foreground">存在：</span>
-                          {imageFileInfo.exists ? "是" : "否"}
-                        </p>
-                        {imageFileInfo.errorMessage ? (
-                          <p className="text-destructive">读取失败：{imageFileInfo.errorMessage}</p>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
+            <TaskLeftPanelContent
+              leftPanelMode={leftPanelMode}
+              labelsTab={labelsTab}
+              onLabelsTabChange={setLabelsTab}
+              panelShapes={panelShapes}
+              selectedShapeIndex={selectedShapeIndex}
+              hoveredShapeIndex={hoveredShapeIndex}
+              hiddenShapeIndexes={hiddenShapeIndexes}
+              hiddenClassLabels={hiddenClassLabels}
+              labelColorMap={labelColorMap}
+              project={project}
+              rawHighlightCorner={rawHighlightCorner}
+              taskName={taskName}
+              activeImagePath={activeImagePath}
+              imageNaturalSize={imageNaturalSize}
+              imageFileInfo={imageFileInfo}
+              formatBytes={formatBytes}
+              formatPosition={formatPosition}
+              renderPositionBox={renderPositionBox}
+              onSetHoveredShapeIndex={setHoveredShapeIndex}
+              onSetSelectedShapeIndex={setSelectedShapeIndex}
+              onDeleteShape={deleteShape}
+              onToggleShapeVisibility={toggleShapeVisibility}
+              onToggleClassVisibility={toggleClassVisibility}
+              onReorderShapeLayer={reorderShapeLayer}
+              onSetRawHighlightCorner={setRawHighlightCorner}
+            />
           </TaskLeftSidebarLayer>
 
           <TaskCanvasLayer>
@@ -2148,148 +1615,30 @@ export default function ProjectTaskDetailPage() {
               </div>
             )}
 
-            <div className="absolute top-1/2 right-4 z-50 flex -translate-y-1/2 flex-col gap-2 rounded-md border border-border/70 bg-background/95 p-2 shadow-sm">
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-md",
-                  rightToolMode === "select"
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                aria-label="选中工具"
-                onClick={() => {
-                  setRightToolMode("select")
-                  setRectPickerOpen(false)
-                  setRectDrawingEnabled(false)
-                  setRectFirstPoint(null)
-                  setRectHoverPoint(null)
-                  setRotationDragAction(null)
-                  setRotationTransformAction(null)
-                  setRawHighlightCorner(null)
-                }}
-                title="选中工具（缩放/移动）"
-              >
-                <MousePointer2 className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-md",
-                  rightToolMode === "rect"
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                aria-label="矩形工具"
-                onClick={handleRectToolClick}
-              >
-                <Square className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-md",
-                  rightToolMode === "rotRect"
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                aria-label="旋转矩形工具"
-                onClick={handleRotRectToolClick}
-              >
-                <RotateCw className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-md",
-                  rightToolMode === "circle"
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                aria-label="圆形工具"
-                onClick={() => setRightToolMode("circle")}
-              >
-                <Circle className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-md",
-                  rightToolMode === "polygon"
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                aria-label="多边形工具"
-                onClick={() => setRightToolMode("polygon")}
-              >
-                <PenLine className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-8 w-8 items-center justify-center rounded-md",
-                  rightToolMode === "text"
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-                aria-label="文本工具"
-                onClick={() => setRightToolMode("text")}
-              >
-                <Type className="h-4 w-4" />
-              </button>
-            </div>
-            {rectPickerOpen ? (
-              <div className="absolute top-1/2 right-20 z-[60] w-52 -translate-y-1/2 rounded-md border border-border bg-background/95 p-3 shadow-md">
-                <p className="mb-2 text-xs text-muted-foreground">
-                  {drawShapeType === "rotation" ? "旋转矩形标注标签" : "矩形标注标签"}
-                </p>
-                <select
-                  className="h-8 w-full rounded border border-border bg-background px-2 text-sm"
-                  value={rectPendingLabel}
-                  onChange={(event) => setRectPendingLabel(event.target.value)}
-                >
-                  {annotationLabelOptions.map((label) => (
-                    <option key={label} value={label}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-                <div className="mt-3 flex justify-end gap-2">
-                  <button
-                    type="button"
-                    className="inline-flex h-7 items-center rounded border border-border px-2 text-xs hover:bg-accent"
-                    onClick={() => {
-                      setRectPickerOpen(false)
-                      setRectDrawingEnabled(false)
-                    }}
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex h-7 items-center rounded border border-emerald-500/40 px-2 text-xs text-emerald-600 hover:bg-emerald-500/10"
-                    onClick={handleRectPickerConfirm}
-                  >
-                    OK
-                  </button>
-                </div>
-              </div>
-            ) : null}
-            {rightToolMode === "rect" || rightToolMode === "rotRect" ? (
-              <div className="absolute right-4 bottom-4 z-50 rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
-                {drawShapeType === "rotation"
-                  ? rectDrawingEnabled
-                    ? rectFirstPoint
-                      ? "旋转矩形：已记录第一点，点击第二点完成"
-                      : "旋转矩形：点击第一点开始绘制"
-                    : "旋转矩形：请选择标签并点击 OK"
-                  : rectDrawingEnabled
-                    ? rectFirstPoint
-                      ? "矩形：已记录第一点，点击第二点完成"
-                      : "矩形：点击第一点开始绘制"
-                    : "矩形：请选择标签并点击 OK"}
-              </div>
-            ) : null}
+            <TaskToolPalette
+              rightToolMode={rightToolMode}
+              onSelectTool={handleSelectToolClick}
+              onRectTool={handleRectToolClick}
+              onRotRectTool={handleRotRectToolClick}
+              onCircleTool={() => dispatchTool({ type: "setRightToolMode", mode: "circle" })}
+              onPolygonTool={() => dispatchTool({ type: "setRightToolMode", mode: "polygon" })}
+              onTextTool={() => dispatchTool({ type: "setRightToolMode", mode: "text" })}
+            />
+            <TaskRectLabelPicker
+              rectPickerOpen={rectPickerOpen}
+              drawShapeType={drawShapeType}
+              rectPendingLabel={rectPendingLabel}
+              annotationLabelOptions={annotationLabelOptions}
+              onRectPendingLabelChange={setRectPendingLabel}
+              onCancel={handleRectPickerCancel}
+              onConfirm={handleRectPickerConfirm}
+            />
+            <TaskDrawHint
+              rightToolMode={rightToolMode}
+              drawShapeType={drawShapeType}
+              rectDrawingEnabled={rectDrawingEnabled}
+              rectFirstPoint={rectFirstPoint}
+            />
           </TaskCanvasLayer>
         </div>
       </div>
