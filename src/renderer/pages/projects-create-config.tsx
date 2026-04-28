@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ipc } from "@/gen/ipc"
 import { Input } from "@/components/ui/input"
-import { createProject } from "@/lib/projects-api"
+import { createProject, type ProjectTag } from "@/lib/projects-api"
 import { ArrowLeft, CircleX } from "lucide-react"
 import { useMemo, useState } from "react"
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom"
@@ -12,6 +12,7 @@ type CreateProjectState = {
   projectInfo?: string
   projectType?: string
   storageType?: string
+  tags?: ProjectTag[]
 }
 
 export default function ProjectsCreateConfigPage() {
@@ -78,6 +79,7 @@ export default function ProjectsCreateConfigPage() {
         localPath: localPath.trim(),
         remoteIp: remoteIp.trim(),
         remotePort: remotePort.trim(),
+        tags: state.tags ?? [],
       })
       if (result.errorMessage) {
         if (result.errorMessage.includes("目录不为空")) {
@@ -144,6 +146,7 @@ export default function ProjectsCreateConfigPage() {
           <p>类型：{state.projectType ?? "-"}</p>
           <p>存储：{storageLabel}</p>
           <p>项目信息：{state.projectInfo || "（未填写）"}</p>
+          <p>初始标签：{state.tags && state.tags.length > 0 ? state.tags.map((t) => t.name).join("、") : "（未填写）"}</p>
         </CardContent>
       </Card>
 

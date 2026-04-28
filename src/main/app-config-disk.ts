@@ -17,6 +17,17 @@ export function getDefaultGlobalConfigDir(): string {
   return path.join(xdg, APP_NAME.toLowerCase(), "config")
 }
 
+export function getDefaultDatabaseDir(): string {
+  if (process.platform === "win32") {
+    const base = process.env.USERPROFILE ? path.join(process.env.USERPROFILE, "Documents") : path.join(os.homedir(), "Documents")
+    return path.join(base, APP_NAME, "database")
+  }
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Documents", APP_NAME, "database")
+  }
+  return path.join(os.homedir(), APP_NAME.toLowerCase(), "database")
+}
+
 function resolveConfigDir(globalConfigDir: string): string {
   const trimmed = globalConfigDir.trim()
   return trimmed ? trimmed : getDefaultGlobalConfigDir()

@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button"
+import { ProjectTagsEditor } from "@/components/project-tags-editor"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import type { ProjectTag } from "@/lib/projects-api"
 import { ArrowLeft } from "lucide-react"
 import { useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
@@ -11,6 +13,7 @@ export default function ProjectsCreatePage() {
   const [projectInfo, setProjectInfo] = useState("")
   const [projectType, setProjectType] = useState("detect")
   const [storageType, setStorageType] = useState("local")
+  const [tags, setTags] = useState<ProjectTag[]>([])
 
   const canSubmit = name.trim().length > 0
 
@@ -25,6 +28,7 @@ export default function ProjectsCreatePage() {
         projectInfo: projectInfo.trim(),
         projectType,
         storageType,
+        tags,
       },
     })
   }
@@ -74,6 +78,8 @@ export default function ProjectsCreatePage() {
               className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-hidden ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             />
           </div>
+
+          <ProjectTagsEditor title="初始标签" tags={tags} onChange={setTags} />
 
           <div className="space-y-2">
             <label htmlFor="project-create-type" className="text-sm font-medium text-foreground">

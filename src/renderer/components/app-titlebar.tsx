@@ -3,16 +3,18 @@ import { Button } from "@/components/ui/button"
 import { ipc } from "@/gen/ipc"
 import { cn } from "@/lib/utils"
 import { Copy, Minus, PanelLeftClose, PanelRightOpen, Square, X } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 type AppTitlebarProps = {
   sidebarCollapsed: boolean
   onToggleSidebar: () => void
+  onHeightChange?: (height: number) => void
 }
 
-export function AppTitlebar({ sidebarCollapsed, onToggleSidebar }: AppTitlebarProps) {
+export function AppTitlebar({ sidebarCollapsed, onToggleSidebar, onHeightChange }: AppTitlebarProps) {
   const [isMaximized, setIsMaximized] = useState(false)
   const isMac = window.navigator.userAgent.indexOf("Mac") !== -1
+  const headerRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     void ipc.app
@@ -21,11 +23,21 @@ export function AppTitlebar({ sidebarCollapsed, onToggleSidebar }: AppTitlebarPr
       .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    const el = headerRef.current
+    if (!el || !onHeightChange) return
+    const syncHeight = () => onHeightChange(el.getBoundingClientRect().height)
+    syncHeight()
+    const observer = new ResizeObserver(() => syncHeight())
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [onHeightChange])
+
   // Align toggle icon center with sidebar nav icons: collapsed rail 52px (nav px-1 + centered 18px icon), expanded (nav px-2 + link pl-3 + half icon).
   const sidebarToggleOffset = sidebarCollapsed ? "ml-3" : "ml-[15px]"
 
   return (
-    <header className="titlebar-drag flex h-9 shrink-0 items-center border-b border-border bg-muted/30 pr-2 pl-0">
+    <header ref={headerRef} className="titlebar-drag flex h-9 shrink-0 items-center border-b border-border bg-muted/30 pr-2 pl-0">
       <span
         role="button"
         tabIndex={0}

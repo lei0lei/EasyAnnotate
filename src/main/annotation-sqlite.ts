@@ -1,7 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import { createRequire } from "node:module"
-import type BetterSqlite3 from "better-sqlite3"
+import { randomUUID } from "node:crypto"
 
 type ProjectRow = {
   id: string
@@ -21,129 +20,107 @@ type AnnotationRow = {
   updated_at: string
 }
 
-const dbCache = new Map<string, BetterSqlite3.Database>()
-const requireFromMain = createRequire(import.meta.url)
-
-type DatabaseCtor = typeof BetterSqlite3
-
-let databaseCtor: DatabaseCtor | null = null
-
-function resolveBetterSqlite3ModulePath(): string {
-  const candidates = [
-    path.resolve(process.cwd(), "node_modules", "better-sqlite3"),
-    path.resolve(path.dirname(process.execPath), "..", "..", "node_modules", "better-sqlite3"),
-    "better-sqlite3",
-  ]
-  for (const candidate of candidates) {
-    try {
-      requireFromMain.resolve(candidate)
-      return candidate
-    } catch {
-      // continue to next candidate
-    }
-  }
-  throw new Error(
-    "Cannot resolve better-sqlite3. Make sure dependency is installed in project node_modules.",
-  )
+type TaskFileRow = {
+  id: string
+  project_id: string
+  task_id: string
+  subset: string
+  file_path: string
+  created_at: string
 }
 
-function getDatabaseCtor(): DatabaseCtor {
-  if (databaseCtor) return databaseCtor
-  const resolved = resolveBetterSqlite3ModulePath()
-  const loaded = requireFromMain(resolved) as DatabaseCtor
-  databaseCtor = loaded
-  return loaded
+type AnnotationStore = {
+  projects: ProjectRow[]
+  annotations: AnnotationRow[]
+  taskFiles: TaskFileRow[]
 }
 
-function resolveDbFile(databaseDir: string): string {
+const storeCache = new Map<string, AnnotationStore>()
+
+function resolveStoreFile(databaseDir: string): string {
   const baseDir = databaseDir.trim() ? databaseDir.trim() : path.resolve(process.cwd(), "data")
   fs.mkdirSync(baseDir, { recursive: true })
-  return path.join(baseDir, "easyannotate-annotations.sqlite")
+  return path.join(baseDir, "easyannotate-annotations.json")
 }
 
-function getDb(databaseDir: string): BetterSqlite3.Database {
-  const dbFile = resolveDbFile(databaseDir)
-  const cached = dbCache.get(dbFile)
-  if (cached) return cached
-
-  const Database = getDatabaseCtor()
-  const db = new Database(dbFile)
-  db.pragma("journal_mode = WAL")
-  db.pragma("foreign_keys = ON")
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS annotation_projects (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      root_dir TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS annotations (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      image_path TEXT NOT NULL,
-      label TEXT NOT NULL,
-      bbox_json TEXT NOT NULL DEFAULT '',
-      meta_json TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY(project_id) REFERENCES annotation_projects(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_annotations_project_id ON annotations(project_id);
-  `)
-
-  dbCache.set(dbFile, db)
-  return db
+function readStore(filePath: string): AnnotationStore {
+  if (storeCache.has(filePath)) return storeCache.get(filePath)!
+  if (!fs.existsSync(filePath)) {
+    const empty: AnnotationStore = { projects: [], annotations: [], taskFiles: [] }
+    storeCache.set(filePath, empty)
+    return empty
+  }
+  try {
+    const raw = fs.readFileSync(filePath, "utf8")
+    const parsed = JSON.parse(raw) as Partial<AnnotationStore>
+    const store: AnnotationStore = {
+      projects: Array.isArray(parsed.projects) ? (parsed.projects as ProjectRow[]) : [],
+      annotations: Array.isArray(parsed.annotations) ? (parsed.annotations as AnnotationRow[]) : [],
+      taskFiles: Array.isArray(parsed.taskFiles) ? (parsed.taskFiles as TaskFileRow[]) : [],
+    }
+    storeCache.set(filePath, store)
+    return store
+  } catch {
+    const empty: AnnotationStore = { projects: [], annotations: [], taskFiles: [] }
+    storeCache.set(filePath, empty)
+    return empty
+  }
 }
 
-export function listAnnotationProjects(databaseDir: string): ProjectRow[] {
-  const db = getDb(databaseDir)
-  return db
-    .prepare<[], ProjectRow>(
-      `SELECT id, name, root_dir, created_at, updated_at
-       FROM annotation_projects
-       ORDER BY updated_at DESC`,
-    )
-    .all()
+function writeStore(filePath: string, store: AnnotationStore): void {
+  fs.writeFileSync(filePath, JSON.stringify(store, null, 2), "utf8")
+  storeCache.set(filePath, store)
 }
 
-export function upsertAnnotationProject(
+export async function listAnnotationProjects(databaseDir: string): Promise<ProjectRow[]> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  return [...store.projects].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+}
+
+export async function upsertAnnotationProject(
   databaseDir: string,
   project: { id: string; name: string; rootDir: string; createdAt: string; updatedAt: string },
-): void {
-  const db = getDb(databaseDir)
-  db.prepare(
-    `INSERT INTO annotation_projects (id, name, root_dir, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET
-       name = excluded.name,
-       root_dir = excluded.root_dir,
-       updated_at = excluded.updated_at`,
-  ).run(project.id, project.name, project.rootDir, project.createdAt, project.updatedAt)
+): Promise<void> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  const index = store.projects.findIndex((item) => item.id === project.id)
+  const next: ProjectRow = {
+    id: project.id,
+    name: project.name,
+    root_dir: project.rootDir,
+    created_at: index >= 0 ? store.projects[index].created_at : project.createdAt,
+    updated_at: project.updatedAt,
+  }
+  if (index >= 0) {
+    store.projects[index] = next
+  } else {
+    store.projects.push(next)
+  }
+  writeStore(filePath, store)
 }
 
-export function deleteAnnotationProject(databaseDir: string, id: string): void {
-  const db = getDb(databaseDir)
-  db.prepare("DELETE FROM annotation_projects WHERE id = ?").run(id)
+export async function deleteAnnotationProject(databaseDir: string, id: string): Promise<void> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  store.projects = store.projects.filter((item) => item.id !== id)
+  store.annotations = store.annotations.filter((item) => item.project_id !== id)
+  store.taskFiles = store.taskFiles.filter((item) => item.project_id !== id)
+  writeStore(filePath, store)
 }
 
-export function listAnnotationsByProject(
+export async function listAnnotationsByProject(
   databaseDir: string,
   projectId: string,
-): AnnotationRow[] {
-  const db = getDb(databaseDir)
-  return db
-    .prepare<[string], AnnotationRow>(
-      `SELECT id, project_id, image_path, label, bbox_json, meta_json, updated_at
-       FROM annotations
-       WHERE project_id = ?
-       ORDER BY updated_at DESC`,
-    )
-    .all(projectId)
+): Promise<AnnotationRow[]> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  return store.annotations
+    .filter((item) => item.project_id === projectId)
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
 }
 
-export function upsertAnnotation(
+export async function upsertAnnotation(
   databaseDir: string,
   annotation: {
     id: string
@@ -154,30 +131,83 @@ export function upsertAnnotation(
     metaJson: string
     updatedAt: string
   },
-): void {
-  const db = getDb(databaseDir)
-  db.prepare(
-    `INSERT INTO annotations (id, project_id, image_path, label, bbox_json, meta_json, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET
-       project_id = excluded.project_id,
-       image_path = excluded.image_path,
-       label = excluded.label,
-       bbox_json = excluded.bbox_json,
-       meta_json = excluded.meta_json,
-       updated_at = excluded.updated_at`,
-  ).run(
-    annotation.id,
-    annotation.projectId,
-    annotation.imagePath,
-    annotation.label,
-    annotation.bboxJson,
-    annotation.metaJson,
-    annotation.updatedAt,
-  )
+): Promise<void> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  const index = store.annotations.findIndex((item) => item.id === annotation.id)
+  const next: AnnotationRow = {
+    id: annotation.id,
+    project_id: annotation.projectId,
+    image_path: annotation.imagePath,
+    label: annotation.label,
+    bbox_json: annotation.bboxJson,
+    meta_json: annotation.metaJson,
+    updated_at: annotation.updatedAt,
+  }
+  if (index >= 0) {
+    store.annotations[index] = next
+  } else {
+    store.annotations.push(next)
+  }
+  writeStore(filePath, store)
 }
 
-export function deleteAnnotation(databaseDir: string, id: string): void {
-  const db = getDb(databaseDir)
-  db.prepare("DELETE FROM annotations WHERE id = ?").run(id)
+export async function deleteAnnotation(databaseDir: string, id: string): Promise<void> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  store.annotations = store.annotations.filter((item) => item.id !== id)
+  writeStore(filePath, store)
+}
+
+export async function replaceTaskFilesForTask(
+  databaseDir: string,
+  input: {
+    projectId: string
+    taskId: string
+    subset: string
+    filePaths: string[]
+    createdAt: string
+  },
+): Promise<void> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  store.taskFiles = store.taskFiles.filter(
+    (item) => !(item.project_id === input.projectId && item.task_id === input.taskId),
+  )
+  for (const taskFilePath of input.filePaths) {
+    store.taskFiles.push({
+      id: randomUUID(),
+      project_id: input.projectId,
+      task_id: input.taskId,
+      subset: input.subset,
+      file_path: taskFilePath,
+      created_at: input.createdAt,
+    })
+  }
+  writeStore(filePath, store)
+}
+
+export async function listTaskFilesByTask(
+  databaseDir: string,
+  projectId: string,
+  taskId: string,
+): Promise<TaskFileRow[]> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  return store.taskFiles
+    .filter((item) => item.project_id === projectId && item.task_id === taskId)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.file_path.localeCompare(b.file_path))
+}
+
+export async function deleteTaskArtifacts(databaseDir: string, projectId: string, taskId: string): Promise<void> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  const taskMarker = `/data/tasks/${taskId}/`
+  store.taskFiles = store.taskFiles.filter((item) => !(item.project_id === projectId && item.task_id === taskId))
+  store.annotations = store.annotations.filter((item) => {
+    if (item.project_id !== projectId) return true
+    const normalizedPath = item.image_path.replace(/\\/g, "/")
+    return !normalizedPath.includes(taskMarker)
+  })
+  writeStore(filePath, store)
 }

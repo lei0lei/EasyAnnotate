@@ -1,5 +1,4 @@
 import { ipc } from "@/gen/ipc"
-import { loadAppConfig } from "@/lib/app-config-storage"
 
 export type AnnotationProject = {
   id: string
@@ -24,8 +23,8 @@ export type AnnotationRecord = {
   updatedAt: string
 }
 
-function getDatabaseDir(): string {
-  return loadAppConfig().storagePaths.databaseDir
+function getStorageScope(): string {
+  return ""
 }
 
 function parseJsonObject(json: string): Record<string, string | number | boolean | null> | undefined {
@@ -60,7 +59,7 @@ function parseBbox(json: string): AnnotationRecord["bbox"] {
 }
 
 export async function listAnnotationProjects(): Promise<AnnotationProject[]> {
-  const response = await ipc.app.ListAnnotationProjects({ databaseDir: getDatabaseDir() })
+  const response = await ipc.app.ListAnnotationProjects({ databaseDir: getStorageScope() })
   return response.projects.map((item) => ({
     id: item.id,
     name: item.name,
@@ -80,7 +79,7 @@ export async function upsertAnnotationProject(
     updatedAt: now,
   }
   await ipc.app.UpsertAnnotationProject({
-    databaseDir: getDatabaseDir(),
+    databaseDir: getStorageScope(),
     project: payload,
   })
   return payload
@@ -88,14 +87,14 @@ export async function upsertAnnotationProject(
 
 export async function deleteAnnotationProject(id: string): Promise<void> {
   await ipc.app.DeleteAnnotationProject({
-    databaseDir: getDatabaseDir(),
+    databaseDir: getStorageScope(),
     id,
   })
 }
 
 export async function listAnnotationsByProject(projectId: string): Promise<AnnotationRecord[]> {
   const response = await ipc.app.ListAnnotationsByProject({
-    databaseDir: getDatabaseDir(),
+    databaseDir: getStorageScope(),
     projectId,
   })
   return response.annotations.map((item) => ({
@@ -117,14 +116,14 @@ export async function upsertAnnotation(record: AnnotationRecord): Promise<void> 
     metaJson: record.meta ? JSON.stringify(record.meta) : "",
   }
   await ipc.app.UpsertAnnotation({
-    databaseDir: getDatabaseDir(),
+    databaseDir: getStorageScope(),
     annotation: payload,
   })
 }
 
 export async function deleteAnnotation(id: string): Promise<void> {
   await ipc.app.DeleteAnnotation({
-    databaseDir: getDatabaseDir(),
+    databaseDir: getStorageScope(),
     id,
   })
 }

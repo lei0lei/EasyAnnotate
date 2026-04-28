@@ -9,6 +9,9 @@ import ModelsHubPage from "@/pages/models-hub"
 import { ModelsOutlet } from "@/pages/models-outlet"
 import ModelsTrainingPage from "@/pages/models-training"
 import ProjectDetailPage from "@/pages/project-detail"
+import ProjectTaskAppendImagesPage from "@/pages/project-task-append-images"
+import ProjectTaskCreatePage from "@/pages/project-task-create"
+import ProjectTaskDetailPage from "@/pages/project-task-detail"
 import ProjectsCreatePage from "@/pages/projects-create"
 import ProjectsCreateConfigPage from "@/pages/projects-create-config"
 import ProjectsHubPage from "@/pages/projects-hub"
@@ -38,6 +41,9 @@ export default function App() {
             <Route path="new/config" element={<ProjectsCreateConfigPage />} />
             <Route path="import" element={<ProjectsImportPage />} />
             <Route path="mine" element={<ProjectsMinePage />} />
+            <Route path=":projectId/tasks/new" element={<ProjectTaskCreatePage />} />
+            <Route path=":projectId/tasks/:taskId/append-images" element={<ProjectTaskAppendImagesPage />} />
+            <Route path=":projectId/tasks/:taskId" element={<ProjectTaskDetailPage />} />
             <Route path=":projectId" element={<ProjectDetailPage />} />
           </Route>
           <Route path="workflows" element={<WorkflowsOutlet />}>

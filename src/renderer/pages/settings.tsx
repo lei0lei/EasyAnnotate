@@ -5,7 +5,7 @@ import { Separator } from "@/components/ui/separator"
 import { ipc } from "@/gen/ipc"
 import { loadAppConfig, updateAppConfig } from "@/lib/app-config-storage"
 import { cn } from "@/lib/utils"
-import { CheckCircle2, Database, FolderOpen, Images, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
+import { CheckCircle2, FolderOpen, Images, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react"
 
 const SHORTCUT_ROWS: { id: string; label: string; defaultBinding: string }[] = [
@@ -145,7 +145,6 @@ export default function SettingsPage() {
   const [defaultGlobalConfigDir, setDefaultGlobalConfigDir] = useState(initial.storagePaths.globalConfigDir)
   const [host, setHost] = useState(initial.backend.host)
   const [port, setPort] = useState(initial.backend.port)
-  const [databaseDir, setDatabaseDir] = useState(initial.storagePaths.databaseDir)
   const [assetsDir, setAssetsDir] = useState(initial.storagePaths.assetsDir)
   const [globalConfigDir, setGlobalConfigDir] = useState(initial.storagePaths.globalConfigDir)
   const [backendStatus, setBackendStatus] = useState<CompletionStatus>(null)
@@ -199,7 +198,7 @@ export default function SettingsPage() {
     const resolvedGlobalConfigDir = globalConfigDir.trim() || defaultGlobalConfigDir
     updateAppConfig({
       storagePaths: {
-        databaseDir: databaseDir.trim(),
+        databaseDir: "",
         assetsDir: assetsDir.trim(),
         globalConfigDir: resolvedGlobalConfigDir,
       },
@@ -207,11 +206,10 @@ export default function SettingsPage() {
     setGlobalConfigDir(resolvedGlobalConfigDir)
     setStorageStatus("applied")
     persistConfigToDisk(resolvedGlobalConfigDir)
-  }, [assetsDir, databaseDir, defaultGlobalConfigDir, globalConfigDir, persistConfigToDisk])
+  }, [assetsDir, defaultGlobalConfigDir, globalConfigDir, persistConfigToDisk])
 
   const handleStorageDefaults = useCallback(() => {
     const resolvedGlobalConfigDir = defaultGlobalConfigDir
-    setDatabaseDir("")
     setAssetsDir("")
     setGlobalConfigDir(resolvedGlobalConfigDir)
     updateAppConfig({
@@ -346,26 +344,17 @@ export default function SettingsPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                  <Database className="h-4 w-4" aria-hidden />
+                  <FolderOpen className="h-4 w-4" aria-hidden />
                 </div>
                 <div>
-                  <CardTitle className="text-base">数据库、图片与标注目录</CardTitle>
+                  <CardTitle className="text-base">图片与配置目录</CardTitle>
                   <CardDescription className="text-xs">
-                    保存本机路径，后续用于 SQLite 数据库文件，以及图片/标注统一存储目录
+                    保存本机路径，用于图片、标注导出与全局配置文件存储
                   </CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <DirectoryPathField
-                id={`${baseId}-database-dir`}
-                icon={<Database className="h-4 w-4" aria-hidden />}
-                label="数据库文件存储目录"
-                description="用于放置项目索引数据库，例如 easyannotate.db"
-                placeholder="/home/user/EasyAnnotate/databases"
-                value={databaseDir}
-                onChange={setDatabaseDir}
-              />
               <DirectoryPathField
                 id={`${baseId}-assets-dir`}
                 icon={<Images className="h-4 w-4" aria-hidden />}

@@ -21,6 +21,17 @@ message SelectDirectoryResponse {
   string error_message = 3;
 }
 
+message SelectFilesRequest {
+  string title = 1;
+  string default_path = 2;
+}
+
+message SelectFilesResponse {
+  bool canceled = 1;
+  repeated string paths = 2;
+  string error_message = 3;
+}
+
 message AnnotationProject {
   string id = 1;
   string name = 2;
@@ -105,6 +116,12 @@ message ProjectItem {
   string remote_port = 8;
   string updated_at = 9;
   string config_file_path = 10;
+  repeated ProjectTag tags = 11;
+}
+
+message ProjectTag {
+  string name = 1;
+  string color = 2;
 }
 
 message CreateProjectRequest {
@@ -116,6 +133,7 @@ message CreateProjectRequest {
   string local_path = 6;
   string remote_ip = 7;
   string remote_port = 8;
+  repeated ProjectTag tags = 9;
 }
 
 message CreateProjectResponse {
@@ -141,6 +159,145 @@ message GetProjectResponse {
   bool found = 2;
 }
 
+message UpdateProjectRequest {
+  string global_config_dir = 1;
+  string id = 2;
+  string name = 3;
+  string project_info = 4;
+  repeated ProjectTag tags = 5;
+}
+
+message UpdateProjectResponse {
+  ProjectItem project = 1;
+  bool found = 2;
+  string error_message = 3;
+}
+
+message DeleteProjectRequest {
+  string global_config_dir = 1;
+  string id = 2;
+}
+
+message DeleteProjectResponse {
+  bool found = 1;
+  string error_message = 2;
+}
+
+message TaskUploadSourceEntry {
+  string source_path = 1;
+  string file_name = 2;
+  bytes content = 3;
+}
+
+message SaveTaskFilesRequest {
+  string global_config_dir = 1;
+  string database_dir = 2;
+  string project_id = 3;
+  string task_id = 4;
+  string subset = 5;
+  repeated TaskUploadSourceEntry files = 6;
+}
+
+message SaveTaskFilesResponse {
+  string error_message = 1;
+  repeated string saved_paths = 2;
+}
+
+message DefaultDatabaseDirResponse {
+  string path = 1;
+}
+
+message ListTaskFilesRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string database_dir = 4;
+}
+
+message TaskFileItem {
+  string id = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string subset = 4;
+  string file_path = 5;
+  string created_at = 6;
+}
+
+message ListTaskFilesResponse {
+  repeated TaskFileItem files = 1;
+  string error_message = 2;
+}
+
+message ReadImageFileRequest {
+  string path = 1;
+}
+
+message ReadImageFileResponse {
+  bytes content = 1;
+  string error_message = 2;
+}
+
+message ReadImageAnnotationRequest {
+  string image_path = 1;
+}
+
+message ReadImageAnnotationResponse {
+  string json_text = 1;
+  bool exists = 2;
+  string error_message = 3;
+}
+
+message WriteImageAnnotationRequest {
+  string image_path = 1;
+  string json_text = 2;
+}
+
+message WriteImageAnnotationResponse {
+  string json_path = 1;
+  string error_message = 2;
+}
+
+message DeleteImageAnnotationRequest {
+  string image_path = 1;
+}
+
+message DeleteImageAnnotationResponse {
+  string error_message = 1;
+}
+
+message GetImageFileInfoRequest {
+  string path = 1;
+}
+
+message GetImageFileInfoResponse {
+  bool exists = 1;
+  int64 size_bytes = 2;
+  string format = 3;
+  int32 channel_count = 4;
+  string extension = 5;
+  string error_message = 6;
+}
+
+message DeleteTaskImageRequest {
+  string image_path = 1;
+}
+
+message DeleteTaskImageResponse {
+  bool deleted = 1;
+  bool annotation_deleted = 2;
+  string error_message = 3;
+}
+
+message DownloadTaskImageRequest {
+  string image_path = 1;
+}
+
+message DownloadTaskImageResponse {
+  bool canceled = 1;
+  string saved_path = 2;
+  string error_message = 3;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -148,10 +305,23 @@ service AppService {
   rpc CloseWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
   rpc GetWindowState(google.protobuf.Empty) returns (WindowState);
   rpc SelectDirectory(SelectDirectoryRequest) returns (SelectDirectoryResponse);
+  rpc SelectFiles(SelectFilesRequest) returns (SelectFilesResponse);
   rpc ValidateProjectDirectory(ValidateProjectDirectoryRequest) returns (ValidateProjectDirectoryResponse);
   rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
   rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+  rpc UpdateProject(UpdateProjectRequest) returns (UpdateProjectResponse);
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+  rpc SaveTaskFiles(SaveTaskFilesRequest) returns (SaveTaskFilesResponse);
+  rpc ListTaskFiles(ListTaskFilesRequest) returns (ListTaskFilesResponse);
+  rpc ReadImageFile(ReadImageFileRequest) returns (ReadImageFileResponse);
+  rpc ReadImageAnnotation(ReadImageAnnotationRequest) returns (ReadImageAnnotationResponse);
+  rpc WriteImageAnnotation(WriteImageAnnotationRequest) returns (WriteImageAnnotationResponse);
+  rpc DeleteImageAnnotation(DeleteImageAnnotationRequest) returns (DeleteImageAnnotationResponse);
+  rpc GetImageFileInfo(GetImageFileInfoRequest) returns (GetImageFileInfoResponse);
+  rpc DeleteTaskImage(DeleteTaskImageRequest) returns (DeleteTaskImageResponse);
+  rpc DownloadTaskImage(DownloadTaskImageRequest) returns (DownloadTaskImageResponse);
+  rpc GetDefaultDatabaseDir(google.protobuf.Empty) returns (DefaultDatabaseDirResponse);
   rpc GetDefaultGlobalConfigDir(google.protobuf.Empty) returns (DefaultGlobalConfigDirResponse);
   rpc SaveAppConfigToDisk(SaveAppConfigToDiskRequest) returns (google.protobuf.Empty);
   rpc ListAnnotationProjects(ListAnnotationProjectsRequest) returns (ListAnnotationProjectsResponse);

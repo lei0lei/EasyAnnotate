@@ -14,6 +14,12 @@ export type ProjectRecord = {
   remotePort: string
   updatedAt: string
   configFilePath: string
+  tags: ProjectTagRecord[]
+}
+
+export type ProjectTagRecord = {
+  name: string
+  color: string
 }
 
 type ProjectIndexFile = {
@@ -44,12 +50,82 @@ function readProjectIndex(globalConfigDir: string): ProjectIndexFile {
       (data as { version?: unknown }).version === 1 &&
       Array.isArray((data as { projects?: unknown }).projects)
     ) {
-      return data as ProjectIndexFile
+      const parsed = data as ProjectIndexFile
+      return {
+        version: 1,
+        projects: parsed.projects
+          .map(normalizeProjectRecord)
+          .filter((item): item is ProjectRecord => item !== undefined),
+      }
     }
     return { version: 1, projects: [] }
   } catch {
     return { version: 1, projects: [] }
   }
+}
+
+function normalizeProjectRecord(raw: unknown): ProjectRecord | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined
+  const item = raw as Partial<ProjectRecord> & { tags?: unknown }
+  if (
+    typeof item.id !== "string" ||
+    typeof item.name !== "string" ||
+    typeof item.projectInfo !== "string" ||
+    typeof item.projectType !== "string" ||
+    (item.storageType !== "local" && item.storageType !== "remote") ||
+    typeof item.localPath !== "string" ||
+    typeof item.remoteIp !== "string" ||
+    typeof item.remotePort !== "string" ||
+    typeof item.updatedAt !== "string" ||
+    typeof item.configFilePath !== "string"
+  ) {
+    return undefined
+  }
+  return {
+    id: item.id,
+    name: item.name,
+    projectInfo: item.projectInfo,
+    projectType: item.projectType,
+    storageType: item.storageType,
+    localPath: item.localPath,
+    remoteIp: item.remoteIp,
+    remotePort: item.remotePort,
+    updatedAt: item.updatedAt,
+    configFilePath: item.configFilePath,
+    tags: normalizeTags(item.tags),
+  }
+}
+
+function normalizeColor(raw: unknown): string {
+  if (typeof raw !== "string") return "#22c55e"
+  const value = raw.trim().toLowerCase()
+  if (/^#[0-9a-f]{6}$/.test(value)) return value
+  return "#22c55e"
+}
+
+function normalizeTags(raw: unknown): ProjectTagRecord[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const tags: ProjectTagRecord[] = []
+  for (const item of raw) {
+    if (typeof item === "string") {
+      const value = item.trim()
+      if (!value || seen.has(value)) continue
+      seen.add(value)
+      tags.push({ name: value, color: "#22c55e" })
+      continue
+    }
+    if (typeof item !== "object" || item === null) continue
+    const tag = item as { name?: unknown; color?: unknown }
+    const name = typeof tag.name === "string" ? tag.name.trim() : ""
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    tags.push({
+      name,
+      color: normalizeColor(tag.color),
+    })
+  }
+  return tags
 }
 
 function writeProjectIndex(globalConfigDir: string, next: ProjectIndexFile): void {
@@ -76,6 +152,7 @@ export function createProject(input: {
   localPath: string
   remoteIp: string
   remotePort: string
+  tags: ProjectTagRecord[]
 }): ProjectRecord {
   const id = randomUUID()
   const updatedAt = new Date().toISOString()
@@ -105,6 +182,7 @@ export function createProject(input: {
     remotePort: input.storageType === "remote" ? input.remotePort.trim() : "",
     updatedAt,
     configFilePath,
+    tags: normalizeTags(input.tags),
   }
 
   const projectConfig = {
@@ -130,4 +208,60 @@ export function listProjects(globalConfigDir: string): ProjectRecord[] {
 
 export function getProject(globalConfigDir: string, id: string): ProjectRecord | undefined {
   return listProjects(globalConfigDir).find((p) => p.id === id)
+}
+
+export function updateProject(input: {
+  globalConfigDir: string
+  id: string
+  name: string
+  projectInfo: string
+  tags: ProjectTagRecord[]
+}): ProjectRecord | undefined {
+  const index = readProjectIndex(input.globalConfigDir)
+  const target = index.projects.find((item) => item.id === input.id)
+  if (!target) return undefined
+
+  const nextRecord: ProjectRecord = {
+    ...target,
+    name: input.name.trim(),
+    projectInfo: input.projectInfo.trim(),
+    tags: normalizeTags(input.tags),
+    updatedAt: new Date().toISOString(),
+  }
+
+  const nextProjects = index.projects.map((item) => (item.id === input.id ? nextRecord : item))
+  writeProjectIndex(input.globalConfigDir, {
+    version: 1,
+    projects: nextProjects,
+  })
+
+  const projectConfig = {
+    version: 1,
+    ...nextRecord,
+    extraConfig: {},
+  }
+  fs.writeFileSync(nextRecord.configFilePath, JSON.stringify(projectConfig, null, 2), "utf8")
+  return nextRecord
+}
+
+export function deleteProject(globalConfigDir: string, id: string): boolean {
+  const index = readProjectIndex(globalConfigDir)
+  const target = index.projects.find((item) => item.id === id)
+  if (!target) return false
+
+  const nextProjects = index.projects.filter((item) => item.id !== id)
+  writeProjectIndex(globalConfigDir, {
+    version: 1,
+    projects: nextProjects,
+  })
+
+  try {
+    if (target.configFilePath && fs.existsSync(target.configFilePath)) {
+      fs.unlinkSync(target.configFilePath)
+    }
+  } catch {
+    // Ignore config cleanup failures to avoid blocking deletion from index.
+  }
+
+  return true
 }

@@ -94,7 +94,6 @@ export default function ProjectsMinePage() {
                         <FolderKanban className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                         <span className="truncate text-sm font-medium text-foreground">{p.name}</span>
                       </div>
-                      <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100" />
                     </div>
                     <div className="mt-3 flex-1 overflow-hidden">
                       <p className="line-clamp-5 text-xs leading-5 text-muted-foreground">
