@@ -20,6 +20,13 @@ export type ProjectRecord = {
 export type ProjectTagRecord = {
   name: string
   color: string
+  kind?: "plain" | "skeleton"
+  /** 骨架模板：点（归一化坐标）与边；仅 kind 为 skeleton 时有效 */
+  skeletonTemplate?: {
+    version: 1
+    points: { id: string; label: string; x: number; y: number }[]
+    edges: { from: string; to: string }[]
+  }
 }
 
 type ProjectIndexFile = {
@@ -116,14 +123,70 @@ function normalizeTags(raw: unknown): ProjectTagRecord[] {
       continue
     }
     if (typeof item !== "object" || item === null) continue
-    const tag = item as { name?: unknown; color?: unknown }
+    const tag = item as {
+      name?: unknown
+      color?: unknown
+      kind?: unknown
+      skeletonTemplate?: unknown
+    }
     const name = typeof tag.name === "string" ? tag.name.trim() : ""
     if (!name || seen.has(name)) continue
     seen.add(name)
-    tags.push({
-      name,
-      color: normalizeColor(tag.color),
-    })
+    const color = normalizeColor(tag.color)
+    if (tag.kind === "skeleton") {
+      if (!tag.skeletonTemplate || typeof tag.skeletonTemplate !== "object") {
+        tags.push({
+          name,
+          color,
+          kind: "skeleton",
+          skeletonTemplate: { version: 1, points: [], edges: [] },
+        })
+        continue
+      }
+      const st = tag.skeletonTemplate as ProjectTagRecord["skeletonTemplate"]
+      const points = Array.isArray(st?.points)
+        ? st.points
+            .map((p, i) => {
+              if (typeof p !== "object" || p === null) return null
+              const o = p as { id?: unknown; label?: unknown; x?: unknown; y?: unknown }
+              const id = typeof o.id === "string" && o.id.trim() ? o.id.trim() : `p${i + 1}`
+              const label = typeof o.label === "string" && o.label.trim() ? o.label.trim().slice(0, 32) : `p${i + 1}`
+              const x = Math.max(0, Math.min(1, Number(o.x) || 0))
+              const y = Math.max(0, Math.min(1, Number(o.y) || 0))
+              return { id, label, x, y }
+            })
+            .filter((p): p is { id: string; label: string; x: number; y: number } => p !== null)
+        : []
+      const idSet = new Set(points.map((p) => p.id))
+      const edges = Array.isArray(st?.edges)
+        ? st.edges
+            .map((e) => {
+              if (typeof e !== "object" || e === null) return null
+              const o = e as { from?: unknown; to?: unknown }
+              const from = typeof o.from === "string" ? o.from.trim() : ""
+              const to = typeof o.to === "string" ? o.to.trim() : ""
+              if (!from || !to || from === to || !idSet.has(from) || !idSet.has(to)) return null
+              return { from, to }
+            })
+            .filter((e): e is { from: string; to: string } => e !== null)
+        : []
+      const seenEdge = new Set<string>()
+      const deduped: { from: string; to: string }[] = []
+      for (const e of edges) {
+        const k = e.from < e.to ? `${e.from}\0${e.to}` : `${e.to}\0${e.from}`
+        if (seenEdge.has(k)) continue
+        seenEdge.add(k)
+        deduped.push(e)
+      }
+      tags.push({
+        name,
+        color,
+        kind: "skeleton",
+        skeletonTemplate: { version: 1, points, edges: deduped },
+      })
+      continue
+    }
+    tags.push({ name, color, kind: "plain" })
   }
   return tags
 }

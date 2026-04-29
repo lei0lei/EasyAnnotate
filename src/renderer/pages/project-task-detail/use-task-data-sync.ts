@@ -1,17 +1,20 @@
+/**
+ * 模块：project-task-detail/use-task-data-sync
+ * 职责：负责标注文档读取/写入与图片元信息同步。
+ * 边界：处理数据层同步，不负责 UI 展示。
+ */
 import { useCallback, useEffect } from "react"
-import { getImageFileInfo, readImageAnnotation, writeImageAnnotation } from "@/lib/projects-api"
-import { type XAnyLabelFile, normalizeXAnyLabelDoc } from "@/lib/xanylabeling-format"
+import { getImageFileInfo, writeImageAnnotation } from "@/lib/projects-api"
+import { type XAnyLabelFile } from "@/lib/xanylabeling-format"
 import type { ShapeDragAction } from "@/pages/project-task-detail/types"
-import type { AnnotationDocRef, ImageFileInfo, ImageSize } from "@/pages/project-task-detail/hook-shared"
+import type { AnnotationDocRef, ImageFileInfo } from "@/pages/project-task-detail/hook-shared"
 import { normalizeDocPointsToInt } from "@/pages/project-task-detail/utils"
 
 type UseTaskDataSyncParams = {
   activeImagePath: string
-  imageNaturalSize: ImageSize
   annotationDoc: XAnyLabelFile | null
   shapeDragAction: ShapeDragAction | null
   annotationDocRef: AnnotationDocRef
-  setAnnotationDoc: (value: XAnyLabelFile | null | ((prev: XAnyLabelFile | null) => XAnyLabelFile | null)) => void
   setPanelDoc: (value: XAnyLabelFile | null) => void
   setImageFileInfo: (value: ImageFileInfo) => void
 }
@@ -19,33 +22,12 @@ type UseTaskDataSyncParams = {
 export function useTaskDataSync(params: UseTaskDataSyncParams) {
   const {
     activeImagePath,
-    imageNaturalSize,
     annotationDoc,
     shapeDragAction,
     annotationDocRef,
-    setAnnotationDoc,
     setPanelDoc,
     setImageFileInfo,
   } = params
-
-  useEffect(() => {
-    let alive = true
-    if (!activeImagePath || imageNaturalSize.width <= 0 || imageNaturalSize.height <= 0) return
-    void readImageAnnotation(activeImagePath).then((result) => {
-      if (!alive) return
-      if (result.errorMessage) return
-      const doc = normalizeXAnyLabelDoc({
-        imagePath: activeImagePath,
-        imageWidth: imageNaturalSize.width,
-        imageHeight: imageNaturalSize.height,
-        rawJsonText: result.exists ? result.jsonText : "",
-      })
-      setAnnotationDoc(normalizeDocPointsToInt(doc))
-    })
-    return () => {
-      alive = false
-    }
-  }, [activeImagePath, imageNaturalSize.height, imageNaturalSize.width, setAnnotationDoc])
 
   useEffect(() => {
     annotationDocRef.current = annotationDoc

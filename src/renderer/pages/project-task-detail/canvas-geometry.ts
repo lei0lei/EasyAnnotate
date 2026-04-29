@@ -1,3 +1,8 @@
+/**
+ * 模块：project-task-detail/canvas-geometry
+ * 职责：计算画布几何参数并完成 image 与 stage 坐标互转。
+ * 边界：仅做几何计算，不参与事件处理与持久化。
+ */
 import type { Point } from "@/pages/project-task-detail/types"
 
 export type Size = { width: number; height: number }

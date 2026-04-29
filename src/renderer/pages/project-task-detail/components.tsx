@@ -1,12 +1,48 @@
+/**
+ * 模块：project-task-detail/components
+ * 职责：提供任务详情页基础展示组件（Header、左栏内容、提示、选择器、Overlay）。
+ * 边界：仅关注 UI 表达与交互透传，不做数据持久化。
+ */
 import { cn } from "@/lib/utils"
 import type { Point, RightToolMode } from "@/pages/project-task-detail/types"
 import type { ProjectItem } from "@/lib/projects-api"
 import type { XAnyLabelShape } from "@/lib/xanylabeling-format"
 import { normalizeTagColor } from "@/pages/project-task-detail/utils"
+import { getShapeStableId } from "@/pages/project-task-detail/shape-identity"
 import { Button } from "@/components/ui/button"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
-import { ArrowLeft, ChevronLeft, ChevronRight, Circle, Download, Eye, EyeOff, FileJson, MousePointer2, MoreHorizontal, PenLine, RotateCw, SlidersHorizontal, Square, Tag, Trash2, Type } from "lucide-react"
-import { memo, type MouseEvent, type ReactNode } from "react"
+import {
+  ArrowLeft,
+  Box,
+  Brush,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Dot,
+  Eye,
+  EyeOff,
+  FileJson,
+  MoreHorizontal,
+  Pentagon,
+  RectangleHorizontal,
+  SlidersHorizontal,
+  Square,
+  Tag,
+  Trash2,
+} from "lucide-react"
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from "react"
+import { createPortal } from "react-dom"
 import { Link } from "react-router-dom"
 import type { LeftPanelMode, RenderedRectangle } from "@/pages/project-task-detail/types"
 
@@ -15,10 +51,10 @@ type RectangleOverlayItemProps = {
   drawingLayerActive: boolean
   isSelected: boolean
   isHovered: boolean
-  onMouseEnter: (index: number) => void
-  onMouseLeave: (index: number) => void
-  onMouseDown: (index: number, event: MouseEvent<HTMLDivElement>) => void
-  onClick: (index: number, event: MouseEvent<HTMLDivElement>) => void
+  onMouseEnter: (shapeId: string) => void
+  onMouseLeave: (shapeId: string) => void
+  onMouseDown: (shapeId: string, event: MouseEvent<HTMLDivElement>) => void
+  onClick: (shapeId: string, event: MouseEvent<HTMLDivElement>) => void
 }
 
 export const RectangleOverlayItem = memo(
@@ -50,10 +86,10 @@ export const RectangleOverlayItem = memo(
           borderBottomWidth: item.clippedBottom ? 0 : 2,
           backgroundColor: isSelected || isHovered ? `${item.color}33` : "transparent",
         }}
-        onMouseEnter={() => onMouseEnter(item.index)}
-        onMouseLeave={() => onMouseLeave(item.index)}
-        onMouseDown={(event) => onMouseDown(item.index, event)}
-        onClick={(event) => onClick(item.index, event)}
+        onMouseEnter={() => onMouseEnter(item.shapeId)}
+        onMouseLeave={() => onMouseLeave(item.shapeId)}
+        onMouseDown={(event) => onMouseDown(item.shapeId, event)}
+        onClick={(event) => onClick(item.shapeId, event)}
         aria-label={`选择标注 ${item.label}`}
         role="button"
       >
@@ -70,6 +106,7 @@ export const RectangleOverlayItem = memo(
     prev.isSelected === next.isSelected &&
     prev.isHovered === next.isHovered &&
     prev.item.index === next.item.index &&
+    prev.item.shapeId === next.item.shapeId &&
     prev.item.label === next.item.label &&
     prev.item.color === next.item.color &&
     prev.item.left === next.item.left &&
@@ -116,17 +153,6 @@ export const TaskLeftSidebarLayer = memo(function TaskLeftSidebarLayer({
         >
           <SlidersHorizontal className="h-4 w-4" />
         </button>
-        <button
-          type="button"
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-            leftPanelMode === "raw" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-          aria-label="显示 raw data 面板"
-          onClick={() => onPanelModeChange("raw")}
-        >
-          <FileJson className="h-4 w-4" />
-        </button>
       </div>
       <div className="flex w-72 flex-col border-r border-border/70 px-3 py-2">{children}</div>
     </>
@@ -137,18 +163,17 @@ export const TaskCanvasLayer = memo(function TaskCanvasLayer({ children }: { chi
   return <div className="relative min-w-0 flex-1 bg-muted/15">{children}</div>
 })
 
-type TaskLeftPanelContentProps = {
+export type TaskLeftPanelContentProps = {
   leftPanelMode: LeftPanelMode
   labelsTab: "layers" | "classes"
   onLabelsTabChange: (tab: "layers" | "classes") => void
   panelShapes: XAnyLabelShape[]
-  selectedShapeIndex: number | null
-  hoveredShapeIndex: number | null
+  selectedShapeId: string | null
+  hoveredShapeId: string | null
   hiddenShapeIndexes: number[]
   hiddenClassLabels: string[]
   labelColorMap: Map<string, string>
   project: ProjectItem | undefined
-  rawHighlightCorner: { shapeIndex: number; cornerIndex: number } | null
   taskName: string
   activeImagePath: string
   imageNaturalSize: { width: number; height: number }
@@ -161,27 +186,12 @@ type TaskLeftPanelContentProps = {
     errorMessage: string
   }
   formatBytes: (value: number) => string
-  formatPosition: (point: number[] | undefined) => string
-  renderPositionBox: (
-    value: string,
-    idx: number,
-    shapeIndex: number,
-    highlighted: boolean,
-    onEnter?: () => void,
-    onLeave?: () => void,
-  ) => ReactNode
-  onSetHoveredShapeIndex: (index: number | null | ((prev: number | null) => number | null)) => void
-  onSetSelectedShapeIndex: (index: number | null) => void
+  onSetHoveredShapeId: (shapeId: string | null | ((prev: string | null) => string | null)) => void
+  onSetSelectedShapeId: (shapeId: string | null) => void
   onDeleteShape: (shapeIndex: number) => void
   onToggleShapeVisibility: (shapeIndex: number) => void
   onToggleClassVisibility: (label: string) => void
   onReorderShapeLayer: (shapeIndex: number, mode: "forward" | "backward" | "front" | "back") => void
-  onSetRawHighlightCorner: (
-    value:
-      | { shapeIndex: number; cornerIndex: number }
-      | null
-      | ((prev: { shapeIndex: number; cornerIndex: number } | null) => { shapeIndex: number; cornerIndex: number } | null),
-  ) => void
 }
 
 export function TaskLeftPanelContent({
@@ -189,94 +199,80 @@ export function TaskLeftPanelContent({
   labelsTab,
   onLabelsTabChange,
   panelShapes,
-  selectedShapeIndex,
-  hoveredShapeIndex,
+  selectedShapeId,
+  hoveredShapeId,
   hiddenShapeIndexes,
   hiddenClassLabels,
   labelColorMap,
   project,
-  rawHighlightCorner,
   taskName,
   activeImagePath,
   imageNaturalSize,
   imageFileInfo,
   formatBytes,
-  formatPosition,
-  renderPositionBox,
-  onSetHoveredShapeIndex,
-  onSetSelectedShapeIndex,
+  onSetHoveredShapeId,
+  onSetSelectedShapeId,
   onDeleteShape,
   onToggleShapeVisibility,
   onToggleClassVisibility,
   onReorderShapeLayer,
-  onSetRawHighlightCorner,
 }: TaskLeftPanelContentProps) {
-  if (leftPanelMode === "raw") {
-    return (
-      <div className="mt-2 min-h-0 flex-1 overflow-hidden">
-        <div className="h-full space-y-2 overflow-y-auto overflow-x-hidden pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {panelShapes.length ? (
-            panelShapes.map((shape, index) => (
-              <div
-                key={`${shape.label}-${index}`}
-                className={cn(
-                  "rounded border p-2 transition-colors",
-                  selectedShapeIndex === index
-                    ? "border-emerald-400 bg-emerald-500/10"
-                    : hoveredShapeIndex === index
-                      ? "border-emerald-300/80 bg-emerald-500/5"
-                      : "border-border/60 bg-muted/20",
-                )}
-                onMouseEnter={() => onSetHoveredShapeIndex(index)}
-                onMouseLeave={() => onSetHoveredShapeIndex((prev) => (prev === index ? null : prev))}
-                onClick={() => onSetSelectedShapeIndex(index)}
-              >
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-foreground">
-                    <span className="truncate">{shape.label}</span>
-                    <span className="text-muted-foreground">·</span>
-                    <span className="truncate text-muted-foreground">{shape.shape_type}</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded text-destructive hover:bg-destructive/10"
-                      aria-label="删除标注"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onDeleteShape(index)
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-                <div className="flex gap-1">
-                  {[0, 1, 2, 3].map((posIndex) =>
-                    renderPositionBox(
-                      formatPosition(shape.points[posIndex]),
-                      posIndex,
-                      index,
-                      rawHighlightCorner?.shapeIndex === index && rawHighlightCorner.cornerIndex === posIndex,
-                      shape.shape_type === "rotation" ? () => onSetRawHighlightCorner({ shapeIndex: index, cornerIndex: posIndex }) : undefined,
-                      shape.shape_type === "rotation"
-                        ? () =>
-                            onSetRawHighlightCorner((prev) =>
-                              prev?.shapeIndex === index && prev.cornerIndex === posIndex ? null : prev,
-                            )
-                        : undefined,
-                    ),
-                  )}
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="text-xs text-muted-foreground">当前图片暂无标注。</p>
-          )}
-        </div>
-      </div>
-    )
-  }
+  const layersViewportRef = useRef<HTMLDivElement | null>(null)
+  const [layersScrollTop, setLayersScrollTop] = useState(0)
+  const [layersViewportHeight, setLayersViewportHeight] = useState(0)
+  const layerRowHeight = 36
+  const layerOverscan = 8
+  const shouldVirtualizeLayers = panelShapes.length > 120
+  const hiddenShapeSet = useMemo(() => new Set(hiddenShapeIndexes), [hiddenShapeIndexes])
+  const hiddenClassSet = useMemo(() => new Set(hiddenClassLabels), [hiddenClassLabels])
+  const classShapeCountMap = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const shape of panelShapes) {
+      map.set(shape.label, (map.get(shape.label) ?? 0) + 1)
+    }
+    return map
+  }, [panelShapes])
+
+  const handleLayersScroll = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    setLayersScrollTop(event.currentTarget.scrollTop)
+  }, [])
+
+  useEffect(() => {
+    if (!shouldVirtualizeLayers) return
+    const target = layersViewportRef.current
+    if (!target) return
+    const updateHeight = () => setLayersViewportHeight(target.clientHeight)
+    updateHeight()
+    const observer = new ResizeObserver(updateHeight)
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [shouldVirtualizeLayers])
+
+  const virtualLayerRange = useMemo(() => {
+    if (!shouldVirtualizeLayers) {
+      return {
+        startIndex: 0,
+        endIndex: panelShapes.length,
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+      }
+    }
+    const viewportHeight = layersViewportHeight || 0
+    const visibleCount = Math.max(1, Math.ceil(viewportHeight / layerRowHeight))
+    const startIndex = Math.max(0, Math.floor(layersScrollTop / layerRowHeight) - layerOverscan)
+    const endIndex = Math.min(panelShapes.length, startIndex + visibleCount + layerOverscan * 2)
+    const topSpacerHeight = startIndex * layerRowHeight
+    const bottomSpacerHeight = Math.max(0, (panelShapes.length - endIndex) * layerRowHeight)
+    return { startIndex, endIndex, topSpacerHeight, bottomSpacerHeight }
+  }, [layerOverscan, layerRowHeight, layersScrollTop, layersViewportHeight, panelShapes.length, shouldVirtualizeLayers])
+
+  const visibleLayerEntries = useMemo(
+    () =>
+      panelShapes
+        .slice(virtualLayerRange.startIndex, virtualLayerRange.endIndex)
+        .map((shape, offset) => ({ shape, index: virtualLayerRange.startIndex + offset })),
+    [panelShapes, virtualLayerRange.endIndex, virtualLayerRange.startIndex],
+  )
 
   if (leftPanelMode === "labels") {
     return (
@@ -304,18 +300,41 @@ export function TaskLeftPanelContent({
           </button>
         </div>
         {labelsTab === "layers" ? (
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div
+            ref={layersViewportRef}
+            className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            onScroll={shouldVirtualizeLayers ? handleLayersScroll : undefined}
+          >
             {panelShapes.length ? (
-              panelShapes.map((shape, index) => {
-                const isHidden = hiddenShapeIndexes.includes(index)
-                const isSelected = selectedShapeIndex === index
-                const isHovered = hoveredShapeIndex === index
+              <>
+                {virtualLayerRange.topSpacerHeight > 0 ? (
+                  <div style={{ height: virtualLayerRange.topSpacerHeight }} aria-hidden />
+                ) : null}
+                {visibleLayerEntries.map(({ shape, index }) => {
+                const shapeId = getShapeStableId(shape, index)
+                const isHidden = hiddenShapeSet.has(index)
+                const isSelected = selectedShapeId === shapeId
+                const isHovered = hoveredShapeId === shapeId
                 const color = labelColorMap.get(shape.label) ?? "#f59e0b"
+                const shapeTypeIcon =
+                  shape.shape_type === "rotation" ? (
+                    <RectangleHorizontal className="h-3.5 w-3.5 rotate-[20deg]" />
+                  ) : shape.shape_type === "polygon" ? (
+                    <Pentagon className="h-3.5 w-3.5" />
+                  ) : shape.shape_type === "mask" ? (
+                    <Brush className="h-3.5 w-3.5" />
+                  ) : shape.shape_type === "point" ? (
+                    <Dot className="h-3.5 w-3.5" />
+                  ) : shape.shape_type === "cuboid2d" ? (
+                    <Box className="h-3.5 w-3.5" />
+                  ) : (
+                    <Square className="h-3.5 w-3.5" />
+                  )
                 const canBringForward = index < panelShapes.length - 1
                 const canSendBackward = index > 0
                 return (
                   <div
-                    key={`layer-${index}`}
+                    key={`layer-${getShapeStableId(shape, index)}`}
                     className={cn(
                       "flex items-center gap-2 rounded border px-2 py-1.5 transition-colors",
                       isSelected
@@ -325,15 +344,18 @@ export function TaskLeftPanelContent({
                           : "border-border/60 bg-muted/20",
                       isHidden && "opacity-55",
                     )}
-                    onMouseEnter={() => onSetHoveredShapeIndex(index)}
-                    onMouseLeave={() => onSetHoveredShapeIndex((prev) => (prev === index ? null : prev))}
+                    onMouseEnter={() => onSetHoveredShapeId(shapeId)}
+                    onMouseLeave={() => onSetHoveredShapeId((prev) => (prev === shapeId ? null : prev))}
                     onClick={() => {
                       if (isHidden) return
-                      onSetSelectedShapeIndex(index)
+                      onSetSelectedShapeId(shapeId)
                     }}
                   >
                     <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />
                     <span className="min-w-0 flex-1 truncate text-xs text-foreground">{shape.label || "-"}</span>
+                    <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border/70 text-muted-foreground">
+                      {shapeTypeIcon}
+                    </span>
                     <button
                       type="button"
                       className="inline-flex shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
@@ -406,7 +428,11 @@ export function TaskLeftPanelContent({
                     </DropdownMenu.Root>
                   </div>
                 )
-              })
+                })}
+                {virtualLayerRange.bottomSpacerHeight > 0 ? (
+                  <div style={{ height: virtualLayerRange.bottomSpacerHeight }} aria-hidden />
+                ) : null}
+              </>
             ) : (
               <p className="text-xs text-muted-foreground">当前图片暂无标注。</p>
             )}
@@ -415,8 +441,8 @@ export function TaskLeftPanelContent({
           <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {(project?.tags ?? []).length ? (
               (project?.tags ?? []).map((tag) => {
-                const count = panelShapes.filter((shape) => shape.label === tag.name).length
-                const classHidden = hiddenClassLabels.includes(tag.name)
+                const count = classShapeCountMap.get(tag.name) ?? 0
+                const classHidden = hiddenClassSet.has(tag.name)
                 return (
                   <div
                     key={`class-${tag.name}`}
@@ -597,118 +623,45 @@ export function TaskDetailHeader({
   )
 }
 
-type TaskToolPaletteProps = {
-  rightToolMode: RightToolMode
-  onSelectTool: () => void
-  onRectTool: () => void
-  onRotRectTool: () => void
-  onCircleTool: () => void
-  onPolygonTool: () => void
-  onTextTool: () => void
+const RECT_PICKER_PANEL_WIDTH_PX = 208
+
+function getFallbackLabelPickerFixedPos(): { top: number; left: number } {
+  if (typeof window === "undefined") return { top: 0, left: 0 }
+  return {
+    top: window.innerHeight / 2,
+    left: window.innerWidth - 8 - RECT_PICKER_PANEL_WIDTH_PX,
+  }
 }
 
-export function TaskToolPalette({
-  rightToolMode,
-  onSelectTool,
-  onRectTool,
-  onRotRectTool,
-  onCircleTool,
-  onPolygonTool,
-  onTextTool,
-}: TaskToolPaletteProps) {
-  return (
-    <div className="absolute top-1/2 right-4 z-50 flex -translate-y-1/2 flex-col gap-2 rounded-md border border-border/70 bg-background/95 p-2 shadow-sm">
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-md",
-          rightToolMode === "select"
-            ? "bg-accent text-foreground"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        aria-label="选中工具"
-        onClick={onSelectTool}
-        title="选中工具（缩放/移动）"
-      >
-        <MousePointer2 className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-md",
-          rightToolMode === "rect"
-            ? "bg-accent text-foreground"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        aria-label="矩形工具"
-        onClick={onRectTool}
-      >
-        <Square className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-md",
-          rightToolMode === "rotRect"
-            ? "bg-accent text-foreground"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        aria-label="旋转矩形工具"
-        onClick={onRotRectTool}
-      >
-        <RotateCw className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-md",
-          rightToolMode === "circle"
-            ? "bg-accent text-foreground"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        aria-label="圆形工具"
-        onClick={onCircleTool}
-      >
-        <Circle className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-md",
-          rightToolMode === "polygon"
-            ? "bg-accent text-foreground"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        aria-label="多边形工具"
-        onClick={onPolygonTool}
-      >
-        <PenLine className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-8 w-8 items-center justify-center rounded-md",
-          rightToolMode === "text"
-            ? "bg-accent text-foreground"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        aria-label="文本工具"
-        onClick={onTextTool}
-      >
-        <Type className="h-4 w-4" />
-      </button>
-    </div>
-  )
+function computeLabelPickerPosFromAnchorEl(el: HTMLElement): { top: number; left: number } {
+  const w = RECT_PICKER_PANEL_WIDTH_PX
+  const gap = 8
+  const anchor = el.getBoundingClientRect()
+  let left = anchor.left - gap - w
+  if (left < 8) {
+    left = anchor.right + gap
+  }
+  if (left + w > window.innerWidth - 8) {
+    left = Math.max(8, window.innerWidth - w - 8)
+  }
+  const top = anchor.top + anchor.height / 2
+  return { top, left }
 }
 
-type TaskRectLabelPickerProps = {
+export type TaskRectLabelPickerProps = {
   rectPickerOpen: boolean
-  drawShapeType: "rectangle" | "rotation"
+  drawShapeType: "rectangle" | "rotation" | "polygon" | "mask" | "keypoint" | "box3d" | "skeleton"
   rectPendingLabel: string
   annotationLabelOptions: string[]
+  maskDrawMode: "brush" | "eraser"
+  maskBrushSize: number
   onRectPendingLabelChange: (nextLabel: string) => void
+  onMaskDrawModeChange: (nextMode: "brush" | "eraser") => void
+  onMaskBrushSizeChange: (nextSize: number) => void
   onCancel: () => void
   onConfirm: () => void
+  /** 提供当前工具按钮 DOM，用于在按钮旁定位弹出框；不传则回退为右侧栏固定位置 */
+  getAnchor?: () => HTMLElement | null
 }
 
 export function TaskRectLabelPicker({
@@ -716,14 +669,75 @@ export function TaskRectLabelPicker({
   drawShapeType,
   rectPendingLabel,
   annotationLabelOptions,
+  maskDrawMode,
+  maskBrushSize,
   onRectPendingLabelChange,
+  onMaskDrawModeChange,
+  onMaskBrushSizeChange,
   onCancel,
   onConfirm,
+  getAnchor,
 }: TaskRectLabelPickerProps) {
+  const [anchoredPos, setAnchoredPos] = useState<{ top: number; left: number } | null>(null)
+
+  useLayoutEffect(() => {
+    if (!rectPickerOpen || !getAnchor) {
+      setAnchoredPos(null)
+      return
+    }
+    const run = () => {
+      const el = getAnchor()
+      if (el) {
+        setAnchoredPos(computeLabelPickerPosFromAnchorEl(el))
+      } else {
+        setAnchoredPos(getFallbackLabelPickerFixedPos())
+      }
+    }
+    run()
+    const t0 = window.setTimeout(run, 0)
+    let raf1 = 0
+    let raf2 = 0
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => run())
+    })
+    window.addEventListener("resize", run)
+    return () => {
+      window.removeEventListener("resize", run)
+      window.clearTimeout(t0)
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+    }
+  }, [rectPickerOpen, getAnchor, drawShapeType])
+
   if (!rectPickerOpen) return null
-  return (
-    <div className="absolute top-1/2 right-20 z-[60] w-52 -translate-y-1/2 rounded-md border border-border bg-background/95 p-3 shadow-md">
-      <p className="mb-2 text-xs text-muted-foreground">{drawShapeType === "rotation" ? "旋转矩形标注标签" : "矩形标注标签"}</p>
+  const pickerTitle =
+    drawShapeType === "rotation"
+      ? "旋转矩形标注标签"
+      : drawShapeType === "polygon"
+        ? "多边形标注标签"
+        : drawShapeType === "mask"
+          ? "Mask 标注标签"
+          : drawShapeType === "keypoint"
+            ? "关键点标注标签"
+            : drawShapeType === "box3d"
+              ? "3D 框标注标签"
+              : drawShapeType === "skeleton"
+                ? "骨架标注标签"
+                : "矩形标注标签"
+  const usePortal = Boolean(getAnchor)
+  /** 有祖先 transform 时 fixed 会错参考系，挂到 body 上才能与 getBoundingClientRect 一致；首帧用回退位避免空白 */
+  const fixedPos = usePortal ? (anchoredPos ?? getFallbackLabelPickerFixedPos()) : null
+  const positionClass = usePortal
+    ? "fixed z-[200] w-52 rounded-md border border-border bg-background/95 p-3 shadow-md"
+    : "absolute top-1/2 right-20 z-[60] w-52 -translate-y-1/2 rounded-md border border-border bg-background/95 p-3 shadow-md"
+  const positionStyle: CSSProperties | undefined =
+    usePortal && fixedPos
+      ? { top: fixedPos.top, left: fixedPos.left, transform: "translateY(-50%)" }
+      : undefined
+
+  const panel = (
+    <div className={positionClass} style={positionStyle}>
+      <p className="mb-2 text-xs text-muted-foreground">{pickerTitle}</p>
       <select
         className="h-8 w-full rounded border border-border bg-background px-2 text-sm"
         value={rectPendingLabel}
@@ -735,6 +749,51 @@ export function TaskRectLabelPicker({
           </option>
         ))}
       </select>
+      {drawShapeType === "mask" ? (
+        <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
+          <div className="grid grid-cols-2 gap-1">
+            <button
+              type="button"
+              className={cn(
+                "inline-flex h-7 items-center justify-center rounded border text-xs",
+                maskDrawMode === "brush"
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                  : "border-border text-muted-foreground hover:bg-accent",
+              )}
+              onClick={() => onMaskDrawModeChange("brush")}
+            >
+              笔刷
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex h-7 items-center justify-center rounded border text-xs",
+                maskDrawMode === "eraser"
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                  : "border-border text-muted-foreground hover:bg-accent",
+              )}
+              onClick={() => onMaskDrawModeChange("eraser")}
+            >
+              橡皮擦
+            </button>
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>笔刷大小</span>
+              <span>{maskBrushSize}px</span>
+            </div>
+            <input
+              type="range"
+              min={4}
+              max={96}
+              step={1}
+              value={maskBrushSize}
+              className="w-full accent-emerald-500"
+              onChange={(event) => onMaskBrushSizeChange(Number(event.target.value))}
+            />
+          </div>
+        </div>
+      ) : null}
       <div className="mt-3 flex justify-end gap-2">
         <button
           type="button"
@@ -753,17 +812,91 @@ export function TaskRectLabelPicker({
       </div>
     </div>
   )
+
+  if (usePortal) {
+    return createPortal(panel, document.body)
+  }
+  return panel
 }
 
-type TaskDrawHintProps = {
+export type TaskDrawHintProps = {
   rightToolMode: RightToolMode
-  drawShapeType: "rectangle" | "rotation"
+  drawShapeType: "rectangle" | "rotation" | "polygon" | "mask" | "keypoint" | "box3d" | "skeleton"
   rectDrawingEnabled: boolean
   rectFirstPoint: Point | null
+  polygonDraftPointCount: number
+  maskDrawMode: "brush" | "eraser"
+  /** 3D 框：已点下前矩形第一角，等待第二角 */
+  box3dAwaitingSecondClick?: boolean
 }
 
-export function TaskDrawHint({ rightToolMode, drawShapeType, rectDrawingEnabled, rectFirstPoint }: TaskDrawHintProps) {
-  if (rightToolMode !== "rect" && rightToolMode !== "rotRect") return null
+export function TaskDrawHint({
+  rightToolMode,
+  drawShapeType,
+  rectDrawingEnabled,
+  rectFirstPoint,
+  polygonDraftPointCount,
+  maskDrawMode,
+  box3dAwaitingSecondClick = false,
+}: TaskDrawHintProps) {
+  if (
+    rightToolMode !== "rect" &&
+    rightToolMode !== "rotRect" &&
+    rightToolMode !== "polygon" &&
+    rightToolMode !== "mask" &&
+    rightToolMode !== "keypoint" &&
+    rightToolMode !== "box3d" &&
+    rightToolMode !== "skeleton"
+  )
+    return null
+  if (drawShapeType === "skeleton" || rightToolMode === "skeleton") {
+    return (
+      <div className="absolute right-4 bottom-4 z-50 rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+        {!rectDrawingEnabled ? "骨架：请选择标签并点击 OK" : "骨架：在图像上单击一次按模板落点，再拖关节微调"}
+      </div>
+    )
+  }
+  if (drawShapeType === "keypoint" || rightToolMode === "keypoint") {
+    return (
+      <div className="absolute right-4 bottom-4 z-50 rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+        {!rectDrawingEnabled ? "关键点：请选择标签并点击 OK" : "关键点：在图像上单击一次即完成该点标注"}
+      </div>
+    )
+  }
+  if (drawShapeType === "box3d" || rightToolMode === "box3d") {
+    const body = !rectDrawingEnabled
+      ? "3D 框：请选择标签并点击 OK"
+      : box3dAwaitingSecondClick
+        ? "3D 框：移动预览，再点击确定前面矩形的另一对角"
+        : "3D 框：第一次点击矩形一角，第二次点击另一对角完成前面并生成后面"
+    return (
+      <div className="absolute right-4 bottom-4 z-50 max-w-sm rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+        {body}
+      </div>
+    )
+  }
+  if (drawShapeType === "mask") {
+    return (
+      <div className="absolute right-4 bottom-4 z-50 rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+        {!rectDrawingEnabled
+          ? "Mask：请选择标签并点击 OK"
+          : maskDrawMode === "brush"
+            ? "Mask：按住左键涂抹绘制"
+            : "Mask：按住左键擦除已有 Mask"}
+      </div>
+    )
+  }
+  if (drawShapeType === "polygon") {
+    return (
+      <div className="absolute right-4 bottom-4 z-50 rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+        {!rectDrawingEnabled
+          ? "多边形：请选择标签并点击 OK"
+          : polygonDraftPointCount < 3
+            ? `多边形：已添加 ${polygonDraftPointCount} 个点，继续点击添加顶点`
+            : "多边形：双击完成，或点击起点闭合"}
+      </div>
+    )
+  }
   return (
     <div className="absolute right-4 bottom-4 z-50 rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
       {drawShapeType === "rotation"

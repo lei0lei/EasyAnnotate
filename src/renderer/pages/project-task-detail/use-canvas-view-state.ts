@@ -1,15 +1,19 @@
+/**
+ * 模块：project-task-detail/use-canvas-view-state
+ * 职责：管理画布视图状态（缩放、平移、点击/滚轮手势）。
+ * 边界：仅处理视图层行为，不负责标注数据写入。
+ */
 import { useMemo } from "react"
-import type { MouseEventHandler, MutableRefObject, WheelEventHandler } from "react"
-import { createXAnyLabelTemplate, type XAnyLabelFile } from "@/lib/xanylabeling-format"
-import { normalizeDocPointsToInt, roundPointToInt } from "@/pages/project-task-detail/utils"
-import type { Point, RightToolMode, RotationDragAction, RotationTransformAction, ShapeDragAction } from "@/pages/project-task-detail/types"
-import type { ImageGeometry } from "@/pages/project-task-detail/canvas-geometry"
-import type { ImageSize, RawHighlightCorner, StageElementRef } from "@/pages/project-task-detail/hook-shared"
-
-type ToolDispatch =
-  | { type: "setRectHoverPoint"; point: Point | null }
-  | { type: "startRectFirstPoint"; point: Point }
-  | { type: "clearRectPoints" }
+import type { MouseEventHandler, WheelEventHandler, MutableRefObject } from "react"
+import type {
+  PolygonDragAction,
+  PolygonVertexDragAction,
+  RightToolMode,
+  RotationDragAction,
+  RotationTransformAction,
+  ShapeDragAction,
+} from "@/pages/project-task-detail/types"
+import type { RawHighlightCorner } from "@/pages/project-task-detail/hook-shared"
 
 type UseCanvasViewStateParams = {
   rightToolMode: RightToolMode
@@ -17,30 +21,17 @@ type UseCanvasViewStateParams = {
   isImageLoading: boolean
   imageLoadError: boolean
   shapeDragAction: ShapeDragAction | null
+  polygonDragAction: PolygonDragAction | null
+  polygonVertexDragAction: PolygonVertexDragAction | null
   rotationDragAction: RotationDragAction | null
   rotationTransformAction: RotationTransformAction | null
   drawingLayerActive: boolean
-  canDrawRectangle: boolean
   isPanning: boolean
   setIsPanning: (value: boolean) => void
   panStartRef: MutableRefObject<{ x: number; y: number; originX: number; originY: number } | null>
   imageOffset: { x: number; y: number }
   setImageOffset: (value: { x: number; y: number }) => void
   setImageScale: (updater: (prev: number) => number) => void
-  stageRef: StageElementRef
-  stageToImage: (stagePoint: Point) => Point | null
-  getCurrentImageGeometry: () => ImageGeometry | null
-  stageToImageStrictWithGeometry: (stagePoint: Point, geometry: ImageGeometry) => Point | null
-  rectHoverPoint: Point | null
-  dispatchTool: (action: ToolDispatch) => void
-  rectFirstPoint: Point | null
-  annotationDoc: XAnyLabelFile | null
-  activeImagePath: string
-  imageNaturalSize: ImageSize
-  rectPendingLabel: string
-  drawShapeType: "rectangle" | "rotation"
-  setAnnotationDoc: (value: XAnyLabelFile | null) => void
-  persistAnnotation: (nextDoc: XAnyLabelFile) => void
   setSelectedShapeIndex: (value: number | null) => void
   setHoveredShapeIndex: (value: number | null) => void
   setRawHighlightCorner: (value: RawHighlightCorner) => void
@@ -52,6 +43,8 @@ export function canPanAndZoomFromState(args: {
   isImageLoading: boolean
   imageLoadError: boolean
   shapeDragAction: ShapeDragAction | null
+  polygonDragAction: PolygonDragAction | null
+  polygonVertexDragAction: PolygonVertexDragAction | null
   rotationDragAction: RotationDragAction | null
   rotationTransformAction: RotationTransformAction | null
 }): boolean {
@@ -61,6 +54,8 @@ export function canPanAndZoomFromState(args: {
     !args.isImageLoading &&
     !args.imageLoadError &&
     !args.shapeDragAction &&
+    !args.polygonDragAction &&
+    !args.polygonVertexDragAction &&
     !args.rotationDragAction &&
     !args.rotationTransformAction
   )
@@ -75,6 +70,8 @@ export function useCanvasViewState(params: UseCanvasViewStateParams) {
         isImageLoading: params.isImageLoading,
         imageLoadError: params.imageLoadError,
         shapeDragAction: params.shapeDragAction,
+        polygonDragAction: params.polygonDragAction,
+        polygonVertexDragAction: params.polygonVertexDragAction,
         rotationDragAction: params.rotationDragAction,
         rotationTransformAction: params.rotationTransformAction,
       }),
@@ -82,6 +79,8 @@ export function useCanvasViewState(params: UseCanvasViewStateParams) {
       params.imageLoadError,
       params.imageObjectUrl,
       params.isImageLoading,
+      params.polygonDragAction,
+      params.polygonVertexDragAction,
       params.rightToolMode,
       params.rotationDragAction,
       params.rotationTransformAction,
@@ -109,70 +108,10 @@ export function useCanvasViewState(params: UseCanvasViewStateParams) {
     }
   }
 
-  const upsertRectByPoint = (point: Point) => {
-    if (!params.canDrawRectangle) return
-    if (!params.rectFirstPoint) {
-      params.dispatchTool({ type: "startRectFirstPoint", point: roundPointToInt(point) })
-      return
-    }
-    const roundedCurrent = roundPointToInt(point)
-    const minX = Math.min(params.rectFirstPoint.x, roundedCurrent.x)
-    const maxX = Math.max(params.rectFirstPoint.x, roundedCurrent.x)
-    const minY = Math.min(params.rectFirstPoint.y, roundedCurrent.y)
-    const maxY = Math.max(params.rectFirstPoint.y, roundedCurrent.y)
-    if (maxX - minX < 1 || maxY - minY < 1) {
-      params.dispatchTool({ type: "clearRectPoints" })
-      return
-    }
-    const workingDoc =
-      params.annotationDoc ??
-      createXAnyLabelTemplate({
-        imagePath: params.activeImagePath,
-        imageWidth: params.imageNaturalSize.width,
-        imageHeight: params.imageNaturalSize.height,
-      })
-    const nextDoc: XAnyLabelFile = {
-      ...workingDoc,
-      shapes: [
-        ...workingDoc.shapes,
-        {
-          label: params.rectPendingLabel,
-          score: null,
-          points: [
-            [minX, minY],
-            [maxX, minY],
-            [maxX, maxY],
-            [minX, maxY],
-          ],
-          group_id: null,
-          description: null,
-          difficult: false,
-          shape_type: params.drawShapeType === "rotation" ? "rotation" : "rectangle",
-          flags: null,
-          attributes: {},
-          kie_linking: [],
-        },
-      ],
-    }
-    const normalizedDoc = normalizeDocPointsToInt(nextDoc)
-    params.setAnnotationDoc(normalizedDoc)
-    params.persistAnnotation(normalizedDoc)
-    params.dispatchTool({ type: "clearRectPoints" })
-  }
-
   const handleImageMouseMove: MouseEventHandler<HTMLDivElement> = (event) => {
     if (params.isPanning && params.panStartRef.current && canPanAndZoom) {
       const { x, y, originX, originY } = params.panStartRef.current
       params.setImageOffset({ x: originX + (event.clientX - x), y: originY + (event.clientY - y) })
-      return
-    }
-    if (!params.canDrawRectangle || !params.stageRef.current) return
-    const rect = params.stageRef.current.getBoundingClientRect()
-    const pt = params.stageToImage({ x: event.clientX - rect.left, y: event.clientY - rect.top })
-    if (!pt) return
-    const rounded = roundPointToInt(pt)
-    if (!params.rectHoverPoint || params.rectHoverPoint.x !== rounded.x || params.rectHoverPoint.y !== rounded.y) {
-      params.dispatchTool({ type: "setRectHoverPoint", point: rounded })
     }
   }
 
@@ -190,33 +129,6 @@ export function useCanvasViewState(params: UseCanvasViewStateParams) {
     params.panStartRef.current = null
   }
 
-  const handleDrawLayerMove: MouseEventHandler<HTMLDivElement> = (event) => {
-    if (!params.drawingLayerActive || !params.stageRef.current) return
-    const rect = params.stageRef.current.getBoundingClientRect()
-    const geometry = params.getCurrentImageGeometry()
-    if (!geometry) return
-    const pt = params.stageToImageStrictWithGeometry({ x: event.clientX - rect.left, y: event.clientY - rect.top }, geometry)
-    if (!pt) {
-      params.dispatchTool({ type: "setRectHoverPoint", point: null })
-      return
-    }
-    const rounded = roundPointToInt(pt)
-    if (!params.rectHoverPoint || params.rectHoverPoint.x !== rounded.x || params.rectHoverPoint.y !== rounded.y) {
-      params.dispatchTool({ type: "setRectHoverPoint", point: rounded })
-    }
-  }
-
-  const handleDrawLayerClick: MouseEventHandler<HTMLDivElement> = (event) => {
-    if (!params.drawingLayerActive || !params.stageRef.current) return
-    event.stopPropagation()
-    const rect = params.stageRef.current.getBoundingClientRect()
-    const geometry = params.getCurrentImageGeometry()
-    if (!geometry) return
-    const pt = params.stageToImageStrictWithGeometry({ x: event.clientX - rect.left, y: event.clientY - rect.top }, geometry)
-    if (!pt) return
-    upsertRectByPoint(pt)
-  }
-
   const handleStageClick: MouseEventHandler<HTMLDivElement> = () => {
     if (params.drawingLayerActive) return
     params.setSelectedShapeIndex(null)
@@ -231,8 +143,6 @@ export function useCanvasViewState(params: UseCanvasViewStateParams) {
     handleImageMouseMove,
     handleImageDoubleClick,
     endImagePan,
-    handleDrawLayerMove,
-    handleDrawLayerClick,
     handleStageClick,
   }
 }

@@ -59,6 +59,7 @@ import {
 } from "./annotation-sqlite";
 import { getDefaultDatabaseDir, getDefaultGlobalConfigDir, saveAppConfigToDisk } from "./app-config-disk";
 import { validateProjectDirectory } from "./project-directory";
+import { protoProjectTagsToRecords, projectTagRecordsToProto } from "./project-tag-ipc";
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
 
 function sanitizeSegment(value: string): string {
@@ -348,7 +349,7 @@ ipc.registerService(AppService({
         localPath: request.localPath,
         remoteIp: request.remoteIp,
         remotePort: request.remotePort,
-        tags: request.tags,
+        tags: protoProjectTagsToRecords(request.tags),
       })
       return {
         project: {
@@ -362,7 +363,7 @@ ipc.registerService(AppService({
           remotePort: project.remotePort,
           updatedAt: project.updatedAt,
           configFilePath: project.configFilePath,
-          tags: project.tags,
+          tags: projectTagRecordsToProto(project.tags),
         },
         errorMessage: "",
       }
@@ -397,7 +398,7 @@ ipc.registerService(AppService({
       remotePort: project.remotePort,
       updatedAt: project.updatedAt,
       configFilePath: project.configFilePath,
-      tags: project.tags,
+      tags: projectTagRecordsToProto(project.tags),
     }))
     return { projects }
   },
@@ -434,7 +435,7 @@ ipc.registerService(AppService({
         remotePort: project.remotePort,
         updatedAt: project.updatedAt,
         configFilePath: project.configFilePath,
-        tags: project.tags,
+        tags: projectTagRecordsToProto(project.tags),
       },
     }
   },
@@ -445,7 +446,7 @@ ipc.registerService(AppService({
         id: request.id,
         name: request.name,
         projectInfo: request.projectInfo,
-        tags: request.tags,
+        tags: protoProjectTagsToRecords(request.tags),
       })
       if (!project) {
         return {
@@ -479,7 +480,7 @@ ipc.registerService(AppService({
           remotePort: project.remotePort,
           updatedAt: project.updatedAt,
           configFilePath: project.configFilePath,
-          tags: project.tags,
+          tags: projectTagRecordsToProto(project.tags),
         },
         errorMessage: "",
       }

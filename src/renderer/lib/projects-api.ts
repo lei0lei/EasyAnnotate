@@ -1,5 +1,11 @@
+import type { ProjectItem as ProtoProjectItem, ProjectTag as ProtoProjectTag, SkeletonTemplatePb } from "@/gen/app"
 import { ipc } from "@/gen/ipc"
 import { loadAppConfig } from "@/lib/app-config-storage"
+import {
+  createEmptySkeletonTemplate,
+  normalizeSkeletonTemplateSpec,
+  type SkeletonTemplateSpec,
+} from "@/lib/skeleton-template"
 
 export type ProjectItem = {
   id: string
@@ -18,6 +24,10 @@ export type ProjectItem = {
 export type ProjectTag = {
   name: string
   color: string
+  /** 未设置或 `plain` 为普通类标签；`skeleton` 为骨架模板类标签 */
+  kind?: "plain" | "skeleton"
+  /** 当 `kind === "skeleton"` 时携带关节图模板 */
+  skeletonTemplate?: SkeletonTemplateSpec
 }
 
 export type TaskFileItem = {
@@ -33,8 +43,61 @@ function globalConfigDir(): string {
   return loadAppConfig().storagePaths.globalConfigDir
 }
 
-function mapProject(project: Partial<ProjectItem> | undefined): ProjectItem {
-  const rawTags = Array.isArray(project?.tags) ? project.tags : []
+function skeletonSpecToProto(spec: SkeletonTemplateSpec): SkeletonTemplatePb {
+  const n = normalizeSkeletonTemplateSpec(spec)
+  return {
+    version: n.version,
+    points: n.points.map((p) => ({ id: p.id, label: p.label, x: p.x, y: p.y })),
+    edges: n.edges.map((e) => ({ from: e.from, to: e.to })),
+  }
+}
+
+function protoTemplateToSpec(pb: SkeletonTemplatePb | undefined): SkeletonTemplateSpec {
+  if (!pb) return createEmptySkeletonTemplate()
+  return normalizeSkeletonTemplateSpec({
+    version: 1,
+    points: pb.points.map((p) => ({ id: p.id, label: p.label, x: p.x, y: p.y })),
+    edges: pb.edges.map((e) => ({ from: e.from, to: e.to })),
+  })
+}
+
+/** IPC / protobuf 仅序列化 ProtoProjectTag 上的字段，须与 mapProject 对称 */
+function projectTagsToProto(tags: ProjectTag[]): ProtoProjectTag[] {
+  return tags.map((t) => {
+    if (t.kind === "skeleton") {
+      return {
+        name: t.name,
+        color: t.color,
+        kind: "skeleton",
+        skeletonTemplate: skeletonSpecToProto(t.skeletonTemplate ?? createEmptySkeletonTemplate()),
+      }
+    }
+    return {
+      name: t.name,
+      color: t.color,
+      kind: "",
+      skeletonTemplate: undefined,
+    }
+  })
+}
+
+function mapProject(project: ProtoProjectItem | undefined): ProjectItem {
+  if (!project) {
+    return {
+      id: "",
+      name: "",
+      projectInfo: "",
+      projectType: "",
+      storageType: "",
+      localPath: "",
+      remoteIp: "",
+      remotePort: "",
+      updatedAt: "",
+      configFilePath: "",
+      tags: [],
+    }
+  }
+  const rawTags = Array.isArray(project.tags) ? project.tags : []
   const seen = new Set<string>()
   const tags: ProjectTag[] = []
   for (const item of rawTags) {
@@ -46,7 +109,13 @@ function mapProject(project: Partial<ProjectItem> | undefined): ProjectItem {
       typeof item.color === "string" && /^#[0-9a-fA-F]{6}$/.test(item.color.trim())
         ? item.color.trim().toLowerCase()
         : "#22c55e"
-    tags.push({ name, color })
+    const kindRaw = typeof item.kind === "string" ? item.kind.trim() : ""
+    if (kindRaw === "skeleton") {
+      const template = protoTemplateToSpec(item.skeletonTemplate)
+      tags.push({ name, color, kind: "skeleton", skeletonTemplate: template })
+    } else {
+      tags.push({ name, color, kind: "plain" })
+    }
   }
 
   return {
@@ -77,7 +146,7 @@ export async function createProject(payload: {
   const response = await ipc.app.CreateProject({
     globalConfigDir: globalConfigDir(),
     ...payload,
-    tags: payload.tags ?? [],
+    tags: projectTagsToProto(payload.tags ?? []),
   })
   if (response.errorMessage) {
     return { errorMessage: response.errorMessage }
@@ -112,7 +181,7 @@ export async function updateProject(payload: {
     id: payload.id,
     name: payload.name,
     projectInfo: payload.projectInfo,
-    tags: payload.tags,
+    tags: projectTagsToProto(payload.tags),
   })
   if (!response.found) {
     return { found: false, errorMessage: response.errorMessage || "" }

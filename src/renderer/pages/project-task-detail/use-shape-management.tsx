@@ -1,5 +1,11 @@
+/**
+ * 模块：project-task-detail/use-shape-management
+ * 职责：提供 shape 管理能力（删除、显隐、排序、侧栏展示辅助）。
+ * 边界：负责 shape 级状态修改，不处理画布手势。
+ */
 import { normalizeDocPointsToInt } from "@/pages/project-task-detail/utils"
 import { cn } from "@/lib/utils"
+import { findShapeIndexByStableId, getShapeStableIdAtIndex } from "@/pages/project-task-detail/shape-identity"
 import {
   remapIndexAfterDelete,
   remapIndexAfterReorder,
@@ -17,7 +23,6 @@ type UseShapeManagementParams = {
   selectedShapeIndex: number | null
   hoveredShapeIndex: number | null
   setAnnotationDoc: Dispatch<SetStateAction<XAnyLabelFile | null>>
-  persistAnnotation: (nextDoc: XAnyLabelFile) => void
   setHiddenShapeIndexes: Dispatch<SetStateAction<number[]>>
   setSelectedShapeIndex: Dispatch<SetStateAction<number | null>>
   setHoveredShapeIndex: Dispatch<SetStateAction<number | null>>
@@ -31,25 +36,33 @@ export function formatPositionText(point: number[] | undefined): string {
 }
 
 export function useShapeManagement(params: UseShapeManagementParams) {
-  const deleteShape = (shapeIndex: number) => {
-    if (!params.annotationDoc) return
+  const deleteShape = (shapeIndex: number): XAnyLabelFile | null => {
+    if (!params.annotationDoc) return null
+    const selectedShapeId = getShapeStableIdAtIndex(params.annotationDoc, params.selectedShapeIndex)
+    const hoveredShapeId = getShapeStableIdAtIndex(params.annotationDoc, params.hoveredShapeIndex)
+    const deletedShapeId = getShapeStableIdAtIndex(params.annotationDoc, shapeIndex)
     const nextShapes = params.annotationDoc.shapes.filter((_, index) => index !== shapeIndex)
     const nextDoc = normalizeDocPointsToInt({ ...params.annotationDoc, shapes: nextShapes })
     params.setAnnotationDoc(nextDoc)
-    params.persistAnnotation(nextDoc)
     params.setHiddenShapeIndexes((prev) =>
       prev
         .map((idx) => remapIndexAfterDelete(idx, shapeIndex))
         .filter((idx): idx is number => idx !== null),
     )
-    params.setSelectedShapeIndex(null)
-    params.setHoveredShapeIndex((prev) => (prev === null ? prev : remapIndexAfterDelete(prev, shapeIndex)))
+    params.setSelectedShapeIndex(() => {
+      if (!selectedShapeId || selectedShapeId === deletedShapeId) return null
+      return findShapeIndexByStableId(nextDoc, selectedShapeId)
+    })
+    params.setHoveredShapeIndex(() => {
+      if (!hoveredShapeId || hoveredShapeId === deletedShapeId) return null
+      return findShapeIndexByStableId(nextDoc, hoveredShapeId)
+    })
     params.setRawHighlightCorner((prev) => {
       if (!prev) return prev
-      const nextIndex = remapIndexAfterDelete(prev.shapeIndex, shapeIndex)
-      if (nextIndex === null) return null
-      return { ...prev, shapeIndex: nextIndex }
+      if (prev.shapeId === deletedShapeId) return null
+      return prev
     })
+    return nextDoc
   }
 
   const toggleShapeVisibility = (shapeIndex: number) => {
@@ -73,11 +86,13 @@ export function useShapeManagement(params: UseShapeManagementParams) {
     if (hoveredShape?.label === label) params.setHoveredShapeIndex(null)
   }
 
-  const reorderShapeLayer = (shapeIndex: number, mode: LayerReorderMode) => {
+  const reorderShapeLayer = (shapeIndex: number, mode: LayerReorderMode): XAnyLabelFile | null => {
     const total = params.annotationDoc?.shapes.length ?? 0
-    if (total <= 1) return
+    if (total <= 1) return null
+    const selectedShapeId = getShapeStableIdAtIndex(params.annotationDoc, params.selectedShapeIndex)
+    const hoveredShapeId = getShapeStableIdAtIndex(params.annotationDoc, params.hoveredShapeIndex)
     const targetIndex = resolveReorderTargetIndex(shapeIndex, total, mode)
-    if (targetIndex === shapeIndex) return
+    if (targetIndex === shapeIndex) return null
 
     let nextDocForPersist: XAnyLabelFile | null = null
     params.setAnnotationDoc((prev) => {
@@ -87,27 +102,25 @@ export function useShapeManagement(params: UseShapeManagementParams) {
       nextDocForPersist = nextDoc
       return nextDoc
     })
-    if (nextDocForPersist) params.persistAnnotation(nextDocForPersist)
 
     params.setHiddenShapeIndexes((prev) => Array.from(new Set(prev.map((idx) => remapIndexAfterReorder(idx, shapeIndex, targetIndex)))))
-    params.setSelectedShapeIndex((prev) => (prev === null ? prev : remapIndexAfterReorder(prev, shapeIndex, targetIndex)))
-    params.setHoveredShapeIndex((prev) => (prev === null ? prev : remapIndexAfterReorder(prev, shapeIndex, targetIndex)))
-    params.setRawHighlightCorner((prev) =>
-      prev ? { ...prev, shapeIndex: remapIndexAfterReorder(prev.shapeIndex, shapeIndex, targetIndex) } : prev,
-    )
+    params.setSelectedShapeIndex(() => findShapeIndexByStableId(nextDocForPersist, selectedShapeId))
+    params.setHoveredShapeIndex(() => findShapeIndexByStableId(nextDocForPersist, hoveredShapeId))
+    params.setRawHighlightCorner((prev) => prev)
+    return nextDocForPersist
   }
 
-  const updateShapePoints = (shapeIndex: number, points: number[][], shouldPersist: boolean) => {
+  const updateShapePoints = (shapeIndex: number, points: number[][]): XAnyLabelFile | null => {
     const roundedPoints = roundPointsToInt(points)
     let nextDocForPersist: XAnyLabelFile | null = null
     params.setAnnotationDoc((prev) => {
       if (!prev) return prev
       const nextShapes = prev.shapes.map((shape, index) => (index === shapeIndex ? { ...shape, points: roundedPoints } : shape))
       const nextDoc = normalizeDocPointsToInt({ ...prev, shapes: nextShapes })
-      if (shouldPersist) nextDocForPersist = nextDoc
+      nextDocForPersist = nextDoc
       return nextDoc
     })
-    if (shouldPersist && nextDocForPersist) params.persistAnnotation(nextDocForPersist)
+    return nextDocForPersist
   }
 
   const formatPosition = (point: number[] | undefined): string => formatPositionText(point)

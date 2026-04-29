@@ -1,3 +1,8 @@
+/**
+ * 模块：project-task-detail/shape-ops
+ * 职责：提供 shape 层级重排与索引重映射的纯函数工具。
+ * 边界：只处理集合顺序计算，不管理 UI 选中态。
+ */
 export type LayerReorderMode = "forward" | "backward" | "front" | "back"
 
 export function resolveReorderTargetIndex(shapeIndex: number, total: number, mode: LayerReorderMode): number {

@@ -119,9 +119,31 @@ message ProjectItem {
   repeated ProjectTag tags = 11;
 }
 
+/** 骨架模板点（归一化 0~1），与项目 JSON / renderer 中 SkeletonTemplateSpec 对应 */
+message SkeletonTemplatePointPb {
+  string id = 1;
+  string label = 2;
+  double x = 3;
+  double y = 4;
+}
+
+message SkeletonTemplateEdgePb {
+  string from = 1;
+  string to = 2;
+}
+
+message SkeletonTemplatePb {
+  int32 version = 1;
+  repeated SkeletonTemplatePointPb points = 2;
+  repeated SkeletonTemplateEdgePb edges = 3;
+}
+
 message ProjectTag {
   string name = 1;
   string color = 2;
+  /** "plain" | "skeleton"；空或未设置视为 plain */
+  string kind = 3;
+  SkeletonTemplatePb skeleton_template = 4;
 }
 
 message CreateProjectRequest {

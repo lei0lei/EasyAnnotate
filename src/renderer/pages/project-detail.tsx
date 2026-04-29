@@ -3,6 +3,7 @@ import { ProjectTagsEditor } from "@/components/project-tags-editor"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { listAnnotationsByProject } from "@/lib/annotation-db-storage"
+import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
 import { clearTasks, deleteTask, formatTaskTime, readTasks, type TaskItem, writeTasks } from "@/lib/project-tasks-storage"
 import { deleteProject, deleteTaskData, getProject, listTaskFiles, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
@@ -16,6 +17,10 @@ function normalizeColor(raw: string): string {
   return /^#[0-9a-f]{6}$/.test(value) ? value : "#22c55e"
 }
 
+function tagKind(t: ProjectTag): "plain" | "skeleton" {
+  return t.kind === "skeleton" ? "skeleton" : "plain"
+}
+
 function normalizeTags(input: ProjectTag[]): ProjectTag[] {
   const seen = new Set<string>()
   const result: ProjectTag[] = []
@@ -23,10 +28,17 @@ function normalizeTags(input: ProjectTag[]): ProjectTag[] {
     const name = item.name.trim()
     if (!name || seen.has(name)) continue
     seen.add(name)
-    result.push({
-      name,
-      color: normalizeColor(item.color),
-    })
+    const color = normalizeColor(item.color)
+    if (tagKind(item) === "skeleton") {
+      result.push({
+        name,
+        color,
+        kind: "skeleton",
+        skeletonTemplate: normalizeSkeletonTemplateSpec(item.skeletonTemplate),
+      })
+    } else {
+      result.push({ name, color, kind: "plain" })
+    }
   }
   return result
 }
@@ -34,7 +46,22 @@ function normalizeTags(input: ProjectTag[]): ProjectTag[] {
 function isSameTags(a: ProjectTag[], b: ProjectTag[]): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i += 1) {
-    if (a[i].name !== b[i].name || a[i].color !== b[i].color) return false
+    const u = a[i]
+    const v = b[i]
+    if (u.name !== v.name || u.color !== v.color) return false
+    const ku = tagKind(u)
+    const kv = tagKind(v)
+    if (ku !== kv) return false
+    if (ku === "skeleton" && kv === "skeleton") {
+      if (
+        !skeletonTemplateSpecEqual(
+          normalizeSkeletonTemplateSpec(u.skeletonTemplate),
+          normalizeSkeletonTemplateSpec(v.skeletonTemplate),
+        )
+      ) {
+        return false
+      }
+    }
   }
   return true
 }

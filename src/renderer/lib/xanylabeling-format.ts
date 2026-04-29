@@ -7,6 +7,10 @@ type XAnyLabelShapeType =
   | "line"
   | "linestrip"
   | "circle"
+  /** 单图伪 3D：8 点为前后面各四顶点；或旧格式底面四点 + attributes.height_px 沿 -Y 挤出顶面 */
+  | "cuboid2d"
+  /** 骨架：points 与项目标签中 skeleton 模板关节顺序一致；attributes.skeleton 存边索引对 */
+  | "skeleton"
 
 export type XAnyLabelShape = {
   label: string

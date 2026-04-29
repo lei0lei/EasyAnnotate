@@ -1,3 +1,8 @@
+/**
+ * 模块：project-task-detail/utils
+ * 职责：提供页面通用工具函数（路径、格式化、标签颜色、图片路径解析）。
+ * 边界：仅包含可复用纯函数，不依赖页面组件状态。
+ */
 import type { ProjectItem, TaskFileItem } from "@/lib/projects-api"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import type { Point } from "@/pages/project-task-detail/types"
