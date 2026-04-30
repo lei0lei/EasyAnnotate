@@ -65,6 +65,25 @@ export function isCuboidFrontFaceWireframeIndex(edgeIndex: number): boolean {
   return edgeIndex % 3 === 0 && edgeIndex < 12
 }
 
+/**
+ * 与 `cuboidWireframeEdgeSegments` 同序，但拆成「后层 / 前层」：
+ * 先画背面四边 + 竖边，再画前面四边（白边），避免背面线压在正面白线之上。
+ */
+export function cuboidWireframeEdgeSegmentsLayered(
+  base: Point[],
+  top: Point[],
+): { behind: [Point, Point][]; front: [Point, Point][] } {
+  const segs = cuboidWireframeEdgeSegments(base, top)
+  const behind: [Point, Point][] = []
+  const front: [Point, Point][] = []
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]!
+    if (isCuboidFrontFaceWireframeIndex(i)) front.push(seg)
+    else behind.push(seg)
+  }
+  return { behind, front }
+}
+
 export type Cuboid2dHandleMarker = { cx: number; cy: number; handleIndex: number }
 
 /** 前面四条边中点，handleIndex 4–7 */

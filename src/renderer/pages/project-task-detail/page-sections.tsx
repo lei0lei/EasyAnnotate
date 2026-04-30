@@ -19,8 +19,7 @@ import type { TaskToolPaletteProps } from "@/pages/project-task-detail/annotateT
 import {
   cuboidBackVerticalEdgeHandleMarkers,
   cuboidFrontEdgeMidMarkers,
-  cuboidWireframeEdgeSegments,
-  isCuboidFrontFaceWireframeIndex,
+  cuboidWireframeEdgeSegmentsLayered,
 } from "@/pages/project-task-detail/cuboid2d-geometry"
 import type { TaskDrawHintProps, TaskLeftPanelContentProps } from "@/pages/project-task-detail/components"
 import type { MouseEvent as ReactMouseEvent, MutableRefObject, SyntheticEvent, WheelEventHandler, MouseEventHandler } from "react"
@@ -279,30 +278,16 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                     const isSelected = props.selectedShapeIndex === item.index
                     const isHovered = props.hoveredShapeIndex === item.index
                     const faceFill = isSelected || isHovered ? `${item.color}28` : `${item.color}12`
-                    const edgePairs = cuboidWireframeEdgeSegments(b, t)
+                    const { behind: behindEdges, front: frontEdges } = cuboidWireframeEdgeSegmentsLayered(b, t)
                     const facePolyClass = props.drawingLayerActive
                       ? "pointer-events-none"
                       : "pointer-events-auto cursor-move"
                     const uses8 = item.usesExplicitQuadPair
+                    // 3D 框 8 点：points[0..3] 为绘制的正面、points[4..7] 为背面。
+                    // SVG 后绘制的面在上层参与命中。须先画背面、再画正面，重叠区域由正面承接「整体平移 8 点」，
+                    // 未与正面重叠的背面区域才命中「只平移后四点」。
                     return (
                       <g key={`cuboid2d-${item.shapeId}`}>
-                        <polygon
-                          points={basePointsStr}
-                          fill={faceFill}
-                          stroke="none"
-                          className={facePolyClass}
-                          onMouseEnter={() => props.onHandleRectangleMouseEnter(item.shapeId)}
-                          onMouseLeave={() => props.onHandleRectangleMouseLeave(item.shapeId)}
-                          onMouseDown={(event) =>
-                            uses8
-                              ? props.onHandleCuboidFaceMouseDown(item.shapeId, "front", event)
-                              : props.onHandlePolygonMouseDown(item.shapeId, event)
-                          }
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            props.onSetSelectedShapeId(item.shapeId)
-                          }}
-                        />
                         <polygon
                           points={topPointsStr}
                           fill={faceFill}
@@ -320,21 +305,47 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             props.onSetSelectedShapeId(item.shapeId)
                           }}
                         />
-                        {edgePairs.map(([p1, p2], edgeIndex) => {
-                          const isFront = isCuboidFrontFaceWireframeIndex(edgeIndex)
-                          return (
-                            <line
-                              key={`cuboid2d-edge-${item.shapeId}-${edgeIndex}`}
-                              x1={p1.x}
-                              y1={p1.y}
-                              x2={p2.x}
-                              y2={p2.y}
-                              stroke={isFront ? "#ffffff" : item.color}
-                              strokeWidth={isFront ? (isSelected ? 3.75 : isHovered ? 3.25 : 3) : isSelected ? 2.25 : isHovered ? 2 : 1.5}
-                              className="pointer-events-none"
-                            />
-                          )
-                        })}
+                        <polygon
+                          points={basePointsStr}
+                          fill={faceFill}
+                          stroke="none"
+                          className={facePolyClass}
+                          onMouseEnter={() => props.onHandleRectangleMouseEnter(item.shapeId)}
+                          onMouseLeave={() => props.onHandleRectangleMouseLeave(item.shapeId)}
+                          onMouseDown={(event) =>
+                            uses8
+                              ? props.onHandleCuboidFaceMouseDown(item.shapeId, "front", event)
+                              : props.onHandlePolygonMouseDown(item.shapeId, event)
+                          }
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            props.onSetSelectedShapeId(item.shapeId)
+                          }}
+                        />
+                        {behindEdges.map(([p1, p2], j) => (
+                          <line
+                            key={`cuboid2d-edge-behind-${item.shapeId}-${j}`}
+                            x1={p1.x}
+                            y1={p1.y}
+                            x2={p2.x}
+                            y2={p2.y}
+                            stroke={item.color}
+                            strokeWidth={isSelected ? 2.25 : isHovered ? 2 : 1.5}
+                            className="pointer-events-none"
+                          />
+                        ))}
+                        {frontEdges.map(([p1, p2], j) => (
+                          <line
+                            key={`cuboid2d-edge-front-${item.shapeId}-${j}`}
+                            x1={p1.x}
+                            y1={p1.y}
+                            x2={p2.x}
+                            y2={p2.y}
+                            stroke="#ffffff"
+                            strokeWidth={isSelected ? 3.75 : isHovered ? 3.25 : 3}
+                            className="pointer-events-none"
+                          />
+                        ))}
                       </g>
                     )
                   })}
@@ -767,25 +778,33 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                       const f = props.box3dDraftBaseStagePoints
                       const k = props.box3dPreviewTopStagePoints
                       const kStr = k.map((pt) => `${pt.x},${pt.y}`).join(" ")
-                      const segs = cuboidWireframeEdgeSegments(f, k)
+                      const { behind: draftBehind, front: draftFront } = cuboidWireframeEdgeSegmentsLayered(f, k)
                       return (
                         <g>
                           <polygon points={kStr} fill={`${props.pendingRectColor}18`} stroke={props.pendingRectColor} strokeWidth={1.5} strokeDasharray="4 3" />
-                          {segs.map(([p1, p2], i) => {
-                            const isFront = isCuboidFrontFaceWireframeIndex(i)
-                            return (
-                              <line
-                                key={`box3d-draft-e-${i}`}
-                                x1={p1.x}
-                                y1={p1.y}
-                                x2={p2.x}
-                                y2={p2.y}
-                                stroke={isFront ? "#ffffff" : props.pendingRectColor}
-                                strokeWidth={isFront ? 2.5 : 1.5}
-                                strokeDasharray={isFront ? undefined : "4 3"}
-                              />
-                            )
-                          })}
+                          {draftBehind.map(([p1, p2], j) => (
+                            <line
+                              key={`box3d-draft-b-${j}`}
+                              x1={p1.x}
+                              y1={p1.y}
+                              x2={p2.x}
+                              y2={p2.y}
+                              stroke={props.pendingRectColor}
+                              strokeWidth={1.5}
+                              strokeDasharray="4 3"
+                            />
+                          ))}
+                          {draftFront.map(([p1, p2], j) => (
+                            <line
+                              key={`box3d-draft-f-${j}`}
+                              x1={p1.x}
+                              y1={p1.y}
+                              x2={p2.x}
+                              y2={p2.y}
+                              stroke="#ffffff"
+                              strokeWidth={2.5}
+                            />
+                          ))}
                         </g>
                       )
                     })()}
