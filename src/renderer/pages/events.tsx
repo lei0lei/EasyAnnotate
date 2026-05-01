@@ -1,8 +1,9 @@
 import { Button } from "@/components/ui/button"
+import { listExportJobs } from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import { Activity, ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 const PAGE_SIZE = 5
 
@@ -15,22 +16,6 @@ type EventTask = {
   progress: number
   kind: "训练" | "导出" | "推理" | "工作流" | "同步"
 }
-
-const MOCK_TASKS: EventTask[] = [
-  { id: "1", name: "COCO 子集训练 — yolo11n", timeLabel: "2026-04-24 14:32:01", progress: 72, kind: "训练" },
-  { id: "2", name: "导出 Pascal VOC 标注包", timeLabel: "2026-04-24 14:28:44", progress: 100, kind: "导出" },
-  { id: "3", name: "产线 A 工作流批处理", timeLabel: "2026-04-24 14:15:09", progress: 35, kind: "工作流" },
-  { id: "4", name: "自动标注 — 全量图像", timeLabel: "2026-04-24 14:10:00", progress: 8, kind: "推理" },
-  { id: "5", name: "与云端项目同步", timeLabel: "2026-04-24 14:02:18", progress: 0, kind: "同步" },
-  { id: "6", name: "半监督训练阶段二", timeLabel: "2026-04-24 13:55:40", progress: 45, kind: "训练" },
-  { id: "7", name: "ONNX 导出", timeLabel: "2026-04-24 13:50:12", progress: 100, kind: "导出" },
-  { id: "8", name: "夜间数据增强管线", timeLabel: "2026-04-24 13:40:00", progress: 88, kind: "工作流" },
-  { id: "9", name: "测试集预标注", timeLabel: "2026-04-24 12:20:30", progress: 52, kind: "推理" },
-  { id: "10", name: "S3 备份拉取", timeLabel: "2026-04-24 12:00:00", progress: 100, kind: "同步" },
-  { id: "11", name: "小样本微调 yolo8s", timeLabel: "2026-04-24 11:45:00", progress: 19, kind: "训练" },
-  { id: "12", name: "生成混淆矩阵报表", timeLabel: "2026-04-24 11:30:22", progress: 66, kind: "工作流" },
-  { id: "13", name: "冷启动服务预热", timeLabel: "2026-04-24 10:00:00", progress: 100, kind: "同步" },
-]
 
 function TaskRow({ task }: { task: EventTask }) {
   return (
@@ -118,9 +103,33 @@ function TaskRow({ task }: { task: EventTask }) {
 
 export default function EventsPage() {
   const [page, setPage] = useState(0)
-  const totalPages = Math.max(1, Math.ceil(MOCK_TASKS.length / PAGE_SIZE))
+  const [tasks, setTasks] = useState<EventTask[]>([])
+
+  useEffect(() => {
+    let alive = true
+    const tick = () => {
+      void listExportJobs().then((jobs) => {
+        if (!alive) return
+        const next = jobs.map((job) => ({
+          id: job.id,
+          name: `${job.versionName || "Untitled Version"} · ${job.exportFormat}`,
+          timeLabel: job.updatedAt || job.createdAt || "",
+          progress: Number(job.progress || 0),
+          kind: "导出" as const,
+        }))
+        setTasks(next)
+        window.setTimeout(tick, 800)
+      })
+    }
+    tick()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const totalPages = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE))
   const p = Math.min(page, totalPages - 1)
-  const slice = MOCK_TASKS.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE)
+  const slice = useMemo(() => tasks.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE), [p, tasks])
 
   return (
     <div className="min-h-full bg-background">
@@ -133,23 +142,29 @@ export default function EventsPage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight text-foreground">Events</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                任务与运行事件条（时间、进度、更多操作）。数据为本地示例，分页为界面示意，不连接后端。
+                任务与运行事件条（时间、进度、更多操作）。当前显示导出任务实时进度。
               </p>
             </div>
           </div>
         </header>
 
-        <ul className="space-y-3" aria-label="任务列表">
-          {slice.map((task) => (
-            <li key={task.id}>
-              <TaskRow task={task} />
-            </li>
-          ))}
-        </ul>
+        {slice.length > 0 ? (
+          <ul className="space-y-3" aria-label="任务列表">
+            {slice.map((task) => (
+              <li key={task.id}>
+                <TaskRow task={task} />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="rounded-lg border border-dashed border-border/80 bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
+            暂无导出事件。
+          </p>
+        )}
 
         <div className="flex flex-col items-stretch justify-between gap-3 border-t border-border/60 pt-4 sm:flex-row sm:items-center">
           <p className="text-center text-xs text-muted-foreground sm:text-left">
-            共 {MOCK_TASKS.length} 条 · 每页 {PAGE_SIZE} 条
+            共 {tasks.length} 条 · 每页 {PAGE_SIZE} 条
           </p>
           <div className="flex items-center justify-center gap-1">
             <Button

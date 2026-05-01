@@ -137,7 +137,7 @@ export default function ProjectTaskAppendImagesPage() {
         </div>
       </div>
 
-      <Card className="border-border/80 shadow-sm">
+      <Card className="border-border">
         <CardHeader>
           <CardTitle className="text-base font-medium">任务信息</CardTitle>
           <CardDescription>

@@ -1,7 +1,7 @@
 /**
  * 模块：project-task-detail/annotateTools/use-box3d-tool
  * 职责：3D 框（cuboid2d）：确认 OK 后十字光标，两点击画前面轴对齐矩形，自动生成斜后方后面，提交为 quad_pair_8pt。
- * 边界：仅管理绘制态与预览；几何见 cuboid2d-geometry，编辑交互见 interaction-ops / 画布引擎。
+ * 边界：仅管理绘制态与预览；几何见同目录 cuboid2d-geometry，编辑交互见 interaction-ops / 画布引擎。
  */
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import type { ImageGeometry } from "@/pages/project-task-detail/canvas-geometry"
@@ -10,7 +10,7 @@ import {
   backFacePointsFromFront,
   CUBOID2D_MIN_FRONT_PX,
   parallelepiped8ImagePointsFromFront,
-} from "@/pages/project-task-detail/cuboid2d-geometry"
+} from "@/pages/project-task-detail/annotateTools/cuboid2d-geometry"
 import type { CanvasShapeCreatedEvent } from "@/pages/project-task-detail/use-task-canvas-engine"
 import type { Point, RightToolMode } from "@/pages/project-task-detail/types"
 import { roundPointToInt } from "@/pages/project-task-detail/utils"

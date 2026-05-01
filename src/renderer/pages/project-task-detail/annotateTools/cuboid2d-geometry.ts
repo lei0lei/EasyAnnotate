@@ -1,6 +1,6 @@
 /**
- * 模块：project-task-detail/cuboid2d-geometry
- * 职责：cuboid2d（前四后四）在图像/舞台坐标下的共用几何：深度偏移、八点序列、线框边、后竖边三控制点。
+ * 模块：project-task-detail/annotateTools/cuboid2d-geometry
+ * 职责：3D 框（cuboid2d）在图像/舞台坐标下的几何：深度偏移、八点序列、线框边、后竖边三控制点；供 use-box3d-tool、page-sections、interaction-ops 等引用。
  * 边界：纯函数与常量，无 React、无标注文档类型。
  */
 import type { Point } from "@/pages/project-task-detail/types"

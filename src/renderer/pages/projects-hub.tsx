@@ -12,7 +12,7 @@ export default function ProjectsHubPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Card className="border-border/80 shadow-sm">
+        <Card>
           <CardHeader>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Plus className="h-5 w-5" aria-hidden />
@@ -27,7 +27,7 @@ export default function ProjectsHubPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/80 shadow-sm">
+        <Card>
           <CardHeader>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <FolderKanban className="h-5 w-5" aria-hidden />
@@ -42,7 +42,7 @@ export default function ProjectsHubPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/80 shadow-sm">
+        <Card>
           <CardHeader>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Import className="h-5 w-5" aria-hidden />

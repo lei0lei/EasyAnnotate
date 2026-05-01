@@ -3,12 +3,16 @@ import { ProjectTagsEditor } from "@/components/project-tags-editor"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { listAnnotationsByProject } from "@/lib/annotation-db-storage"
+import {
+  removeShapesWithDeletedLabelsFromProject,
+  removedTagNamesSince,
+} from "@/lib/project-tag-annotation-cleanup"
 import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
 import { clearTasks, deleteTask, formatTaskTime, readTasks, type TaskItem, writeTasks } from "@/lib/project-tasks-storage"
-import { deleteProject, deleteTaskData, getProject, listTaskFiles, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
+import { deleteProject, deleteTaskData, getProject, listTaskFiles, readImageFile, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
-import { ArrowLeft, ArrowRight, ArrowUpDown, Check, Clock3, Download, FolderOpen, MoreHorizontal, Pencil, Plus, Trash2, Upload, X } from "lucide-react"
+import { ArrowLeft, ArrowRight, ArrowUpDown, Check, Clock3, Download, FolderOpen, MoreHorizontal, Pencil, Plus, Save, Trash2, Upload, X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 
@@ -102,7 +106,9 @@ export default function ProjectDetailPage() {
   const [editingTaskNameValue, setEditingTaskNameValue] = useState("")
   const [editingTaskSubsetId, setEditingTaskSubsetId] = useState<string | null>(null)
   const [editingTaskSubsetValue, setEditingTaskSubsetValue] = useState("")
+  const [taskCoverById, setTaskCoverById] = useState<Record<string, string>>({})
   const saveFlashTimerRef = useRef<number | undefined>(undefined)
+  const taskCoverByIdRef = useRef<Record<string, string>>({})
 
   function flashSaveStatus(status: "success" | "error") {
     if (saveFlashTimerRef.current) {
@@ -206,9 +212,68 @@ export default function ProjectDetailPage() {
   }, [projectId])
 
   useEffect(() => {
+    taskCoverByIdRef.current = taskCoverById
+  }, [taskCoverById])
+
+  useEffect(() => {
+    let alive = true
+    if (!projectId || tasks.length === 0) {
+      setTaskCoverById((prev) => {
+        for (const url of Object.values(prev)) URL.revokeObjectURL(url)
+        return {}
+      })
+      return () => {
+        alive = false
+      }
+    }
+    const targetTasks = tasks
+    void Promise.all(
+      targetTasks.map(async (task) => {
+        const fileResult = await listTaskFiles({ projectId, taskId: task.id })
+        const firstFilePath = fileResult.files[0]?.filePath?.trim()
+        if (fileResult.errorMessage || !firstFilePath) return { taskId: task.id, coverUrl: "" }
+        const imageResult = await readImageFile(firstFilePath)
+        if (imageResult.errorMessage || !imageResult.content?.length) return { taskId: task.id, coverUrl: "" }
+        const bytes = new Uint8Array(imageResult.content)
+        const objectUrl = URL.createObjectURL(new Blob([bytes]))
+        return { taskId: task.id, coverUrl: objectUrl }
+      }),
+    ).then((items) => {
+      if (!alive) {
+        for (const item of items) {
+          if (item.coverUrl) URL.revokeObjectURL(item.coverUrl)
+        }
+        return
+      }
+      const next: Record<string, string> = {}
+      for (const item of items) {
+        if (item.coverUrl) {
+          next[item.taskId] = item.coverUrl
+        }
+      }
+      setTaskCoverById((prev) => {
+        for (const [taskId, prevUrl] of Object.entries(prev)) {
+          const nextUrl = next[taskId]
+          if (!nextUrl || nextUrl !== prevUrl) {
+            URL.revokeObjectURL(prevUrl)
+          }
+        }
+        return next
+      })
+    })
+    return () => {
+      alive = false
+    }
+  }, [projectId, tasks])
+
+  useEffect(() => {
     return () => {
       if (saveFlashTimerRef.current) {
         window.clearTimeout(saveFlashTimerRef.current)
+      }
+      const current = taskCoverByIdRef.current
+      for (const url of Object.values(current)) {
+        URL.revokeObjectURL(url)
       }
     }
   }, [])
@@ -249,6 +314,19 @@ export default function ProjectDetailPage() {
     if (!projectId) return
     setSaving(true)
     try {
+      const removedNames = removedTagNamesSince(initialTags, currentTags)
+      if (removedNames.length > 0) {
+        const cleanup = await removeShapesWithDeletedLabelsFromProject({
+          projectId,
+          tasks,
+          deletedLabels: new Set(removedNames),
+        })
+        if (cleanup.errorMessage) {
+          flashSaveStatus("error")
+          return
+        }
+      }
+
       const result = await updateProject({
         id: projectId,
         name: name.trim(),
@@ -390,7 +468,7 @@ export default function ProjectDetailPage() {
         </div>
       </div>
 
-      <Card className="sticky top-0 z-10 border-border/80 bg-background/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <Card className="sticky top-0 z-10 border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <CardContent className="space-y-4 pt-6">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
@@ -434,41 +512,54 @@ export default function ProjectDetailPage() {
             </div>
             <DropdownMenu.Root>
               <div className="flex items-center gap-2">
-                <Button
+                <button
                   type="button"
-                  size="sm"
                   onClick={() => void handleSaveProject()}
                   disabled={loadingProject || saving || deleting || !hasUnsavedChanges || !projectId}
                   className={cn(
-                    saveFlashStatus === "success" && "bg-emerald-600 text-white hover:bg-emerald-600",
-                    saveFlashStatus === "error" && "bg-destructive text-destructive-foreground hover:bg-destructive",
+                    "inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors",
+                    "hover:bg-accent hover:text-foreground",
+                    "disabled:pointer-events-none disabled:opacity-50",
+                    saveFlashStatus === "success" && "bg-emerald-600 text-white hover:bg-emerald-600 hover:text-white",
+                    saveFlashStatus === "error" && "bg-destructive text-destructive-foreground hover:bg-destructive hover:text-destructive-foreground",
                   )}
+                  aria-label="保存项目"
+                  title={saving ? "保存中..." : "保存"}
                 >
                   {saving ? (
-                    "保存中..."
+                    <Save className="h-4 w-4 animate-pulse" aria-hidden />
                   ) : saveFlashStatus === "success" ? (
                     <Check className="h-4 w-4" aria-label="保存成功" />
                   ) : saveFlashStatus === "error" ? (
                     <X className="h-4 w-4" aria-label="保存失败" />
                   ) : (
-                    "保存"
+                    <Save className="h-4 w-4" aria-hidden />
                   )}
-                </Button>
+                </button>
                 <DropdownMenu.Trigger asChild>
-                  <Button type="button" variant="outline" size="sm" disabled={deleting}>
-                    {deleting ? "删除中..." : "Action"}
-                  </Button>
+                  <button
+                    type="button"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                    disabled={deleting}
+                    aria-label="项目操作"
+                    title="项目操作"
+                  >
+                    <MoreHorizontal className="h-4 w-4" aria-hidden />
+                  </button>
                 </DropdownMenu.Trigger>
               </div>
               <DropdownMenu.Portal>
                 <DropdownMenu.Content
-                  className="z-50 min-w-[10rem] overflow-hidden rounded-md border border-border bg-card p-1 text-sm text-card-foreground shadow-md"
+                  className="z-50 min-w-[10rem] overflow-hidden rounded-md border-2 border-border bg-card p-1 text-sm text-card-foreground shadow-none"
                   sideOffset={6}
                   align="end"
                 >
                   <DropdownMenu.Item
                     className="cursor-default select-none rounded-sm px-2 py-1.5 outline-hidden data-highlighted:bg-accent"
-                    onSelect={() => {}}
+                    onSelect={() => {
+                      if (!projectId) return
+                      navigate(`/projects/${projectId}/export`)
+                    }}
                   >
                     导出项目
                   </DropdownMenu.Item>
@@ -510,7 +601,7 @@ export default function ProjectDetailPage() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/80 bg-card shadow-sm">
+      <Card className="border-border bg-card">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -530,7 +621,7 @@ export default function ProjectDetailPage() {
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Portal>
                   <DropdownMenu.Content
-                    className="z-50 min-w-[11rem] overflow-hidden rounded-md border border-border bg-card p-1 text-sm text-card-foreground shadow-md"
+                    className="z-50 min-w-[11rem] overflow-hidden rounded-md border-2 border-border bg-card p-1 text-sm text-card-foreground shadow-none"
                     sideOffset={6}
                     align="end"
                   >
@@ -562,22 +653,29 @@ export default function ProjectDetailPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           {tasks.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border/70 bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
+            <p className="rounded-lg border-2 border-dashed border-border/70 bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
               还没有任务，点击右上角“创建任务”开始。
             </p>
           ) : (
             <ul className="space-y-3">
               {pagedTasks.map((task) => (
                 <li key={task.id}>
-                  <div className="flex flex-col gap-3 rounded-lg border border-border/70 bg-background p-3 sm:flex-row sm:items-center">
-                    <div className="w-full shrink-0 sm:w-32">
-                      <div
-                        className="h-20 w-full rounded-md border border-border/60"
-                        style={{ backgroundColor: task.coverColor }}
-                        role="img"
-                        aria-label={`任务 ${task.name} 预览图`}
-                      />
-                    </div>
+                  <div className="flex flex-col gap-3 rounded-xl border-2 border-border bg-card p-3 sm:flex-row sm:items-center">
+                    {taskCoverById[task.id] ? (
+                      <div className="w-full shrink-0 sm:w-32">
+                        <div className="rounded-md border-2 border-border bg-muted/20">
+                          <div className="h-20 w-full overflow-hidden rounded-md">
+                            <img
+                              src={taskCoverById[task.id]}
+                              alt={`任务 ${task.name} 预览图`}
+                              className="h-full w-full object-cover"
+                              draggable={false}
+                              loading="lazy"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex min-w-0 items-center gap-1">
@@ -685,7 +783,7 @@ export default function ProjectDetailPage() {
                           </DropdownMenu.Trigger>
                           <DropdownMenu.Portal>
                             <DropdownMenu.Content
-                              className="z-50 min-w-[12rem] overflow-hidden rounded-md border border-border bg-card p-1 text-sm text-card-foreground shadow-md"
+                              className="z-50 min-w-[12rem] overflow-hidden rounded-md border-2 border-border bg-card p-1 text-sm text-card-foreground shadow-none"
                               sideOffset={6}
                               align="end"
                             >
@@ -711,7 +809,12 @@ export default function ProjectDetailPage() {
                                 删除标注
                               </DropdownMenu.Item>
                               <DropdownMenu.Separator className="my-1 h-px bg-border" />
-                              <DropdownMenu.Item className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-highlighted:bg-accent">
+                              <DropdownMenu.Item
+                                className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-highlighted:bg-accent"
+                                onSelect={() => {
+                                  navigate(`/projects/${projectId}/tasks/${task.id}/export`)
+                                }}
+                              >
                                 <Download className="h-3.5 w-3.5" aria-hidden />
                                 导出任务
                               </DropdownMenu.Item>
@@ -733,7 +836,7 @@ export default function ProjectDetailPage() {
             </ul>
           )}
           {tasks.length > 0 ? (
-            <div className="flex flex-col items-stretch justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 sm:flex-row sm:items-center">
+            <div className="flex flex-col items-stretch justify-between gap-3 rounded-lg border-2 border-border/60 bg-muted/20 px-3 py-2 sm:flex-row sm:items-center">
               <p className="text-center text-xs text-muted-foreground sm:text-left">
                 共 {tasks.length} 个任务 · 每页 {TASK_PAGE_SIZE} 个
               </p>
@@ -771,7 +874,7 @@ export default function ProjectDetailPage() {
 
       {confirmDeleteOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <Card className="w-full max-w-md border-border/80 shadow-xl">
+          <Card className="w-full max-w-md border-border">
             <CardHeader>
               <CardTitle className="text-base">删除项目</CardTitle>
               <CardDescription>确认删除当前项目？该操作不可撤销。</CardDescription>
@@ -795,7 +898,7 @@ export default function ProjectDetailPage() {
 
       {taskDeleteTarget ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <Card className="w-full max-w-md border-border/80 shadow-xl">
+          <Card className="w-full max-w-md border-border">
             <CardHeader>
               <CardTitle className="text-base">删除任务</CardTitle>
               <CardDescription>

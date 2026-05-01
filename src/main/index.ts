@@ -31,9 +31,12 @@ import {
   DeleteAnnotationRequest,
   GetProjectRequest,
   GetProjectResponse,
+  ListExportJobsResponse,
   ListAnnotationProjectsRequest,
   ListAnnotationsByProjectRequest,
   ListProjectsRequest,
+  StartDatasetExportRequest,
+  StartDatasetExportResponse,
   ValidateProjectDirectoryRequest,
   ValidateProjectDirectoryResponse,
   SelectDirectoryRequest,
@@ -61,6 +64,7 @@ import { getDefaultDatabaseDir, getDefaultGlobalConfigDir, saveAppConfigToDisk }
 import { validateProjectDirectory } from "./project-directory";
 import { protoProjectTagsToRecords, projectTagRecordsToProto } from "./project-tag-ipc";
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
+import { listDatasetExportJobs, startDatasetExportJob } from "./dataset-export";
 
 function sanitizeSegment(value: string): string {
   const trimmed = value.trim()
@@ -789,6 +793,78 @@ ipc.registerService(AppService({
         errorMessage: error instanceof Error ? error.message : String(error),
       }
     }
+  },
+  async StartDatasetExport(request: StartDatasetExportRequest): Promise<StartDatasetExportResponse> {
+    try {
+      const projectId = (request.projectId || "").trim()
+      if (!projectId) {
+        return { canceled: true, jobId: "", errorMessage: "项目 ID 为空。" }
+      }
+      const project = getProject(request.globalConfigDir, projectId)
+      if (!project) {
+        return { canceled: true, jobId: "", errorMessage: "项目不存在。" }
+      }
+      const exportFormat = (request.exportFormat || "coco").trim()
+      const allowFormats = new Set(["coco", "voc", "yolo-detect", "yolo-obb", "yolo-segment", "yolo-pose"])
+      if (!allowFormats.has(exportFormat)) {
+        return { canceled: true, jobId: "", errorMessage: `不支持的导出格式：${exportFormat}` }
+      }
+      const taskId = (request.taskId || "").trim()
+      const keepProjectStructure = request.keepProjectStructure === true
+      const dialogResult = await app.showOpenDialog({
+        parentWindow: win,
+        title: "选择导出目录",
+        defaultPath: project.localPath || path.dirname(project.configFilePath),
+        selectionPolicy: "directories",
+        features: {
+          allowMultiple: false,
+          canCreateDirectories: true,
+        },
+      })
+      if (dialogResult.canceled || !dialogResult.paths[0]) {
+        return { canceled: true, jobId: "", errorMessage: "" }
+      }
+      const outputDir = dialogResult.paths[0]
+      fs.mkdirSync(outputDir, { recursive: true })
+      const trainBoundary = Math.max(0, Math.min(100, Math.floor(request.trainBoundary)))
+      const valBoundary = Math.max(trainBoundary, Math.min(100, Math.floor(request.valBoundary)))
+      const started = startDatasetExportJob({
+        project,
+        projectId,
+        taskId: taskId || undefined,
+        exportFormat: exportFormat as "coco" | "voc" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose",
+        keepProjectStructure,
+        trainBoundary,
+        valBoundary,
+        versionName: request.versionName || "Untitled Version",
+        outputDir,
+        taskNameById: Object.fromEntries((request.taskNames ?? []).map((item) => [item.taskId, item.taskName])),
+      })
+      return { canceled: false, jobId: started.jobId, errorMessage: "" }
+    } catch (error) {
+      return {
+        canceled: true,
+        jobId: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async ListExportJobs(_request): Promise<ListExportJobsResponse> {
+    const jobs = listDatasetExportJobs().map((job) => ({
+      id: job.id,
+      projectId: job.projectId,
+      taskId: job.taskId,
+      versionName: job.versionName,
+      exportFormat: job.exportFormat,
+      keepProjectStructure: job.keepProjectStructure,
+      outputDir: job.outputDir,
+      status: job.status,
+      progress: job.progress,
+      message: job.message,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+    }))
+    return { jobs }
   },
   async GetDefaultDatabaseDir(_request): Promise<DefaultDatabaseDirResponse> {
     return { path: getDefaultDatabaseDir() }

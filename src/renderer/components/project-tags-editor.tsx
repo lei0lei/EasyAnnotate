@@ -1,7 +1,8 @@
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { SkeletonTemplateEditorDialog } from "@/components/skeleton-template-editor-dialog"
 import type { ProjectTag } from "@/lib/projects-api"
+import { validateProjectTagName } from "@/lib/project-tag-name"
+import { cn } from "@/lib/utils"
 import { createEmptySkeletonTemplate, normalizeSkeletonTemplateSpec, type SkeletonTemplateSpec } from "@/lib/skeleton-template"
 import { ArrowDown, ArrowUp, Check, Pencil, Plus, Tag, X, Workflow } from "lucide-react"
 import { FormEvent, useMemo, useState } from "react"
@@ -15,6 +16,20 @@ type ProjectTagsEditorProps = {
 }
 
 const TAG_COLORS = ["#ef4444", "#f59e0b", "#10b981", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"]
+
+/** 原生 text + 等宽字体：`_` 不与底边框糊在一起；高度与常规 Input 一致 (h-10)。 */
+const tagNameInputNewClass = cn(
+  "box-border h-10 w-full rounded-md border border-input bg-background px-3 py-2 sm:w-72",
+  "font-mono text-sm leading-normal text-foreground placeholder:text-muted-foreground",
+  "shadow-none outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+)
+
+/** 行内改名：与胶囊内文字接近的高度，等宽保证 `_` 可读。 */
+const tagNameInputInlineClass = cn(
+  "box-border h-8 w-28 min-w-[7rem] max-w-[14rem] flex-1 shrink-0",
+  "border-0 bg-transparent px-1 py-0.5 font-mono text-xs leading-5 text-foreground",
+  "shadow-none outline-none ring-offset-background focus-visible:ring-1 focus-visible:ring-ring",
+)
 
 function normalizeColor(raw: string): string {
   const value = raw.trim().toLowerCase()
@@ -41,7 +56,7 @@ export function ProjectTagsEditor({
   title = "标签编辑",
   tags,
   onChange,
-  inputPlaceholder = "输入名称后回车或点添加",
+  inputPlaceholder = "小写字母、数字、下划线；回车或点「添加」",
   emptyText = "暂无标签",
 }: ProjectTagsEditorProps) {
   const [newTag, setNewTag] = useState("")
@@ -60,8 +75,9 @@ export function ProjectTagsEditor({
   function tryAddWithKind(addKind: "plain" | "skeleton", e?: FormEvent) {
     e?.preventDefault()
     const value = newTag.trim()
-    if (!value) {
-      setFeedback("名称不能为空")
+    const nameError = validateProjectTagName(value)
+    if (nameError) {
+      setFeedback(nameError)
       return
     }
     if (tags.some((item) => item.name === value)) {
@@ -110,8 +126,9 @@ export function ProjectTagsEditor({
 
   function saveEditTag(tagName: string) {
     const nextName = editingTagValue.trim()
-    if (!nextName) {
-      setFeedback("名称不能为空")
+    const nameError = validateProjectTagName(nextName)
+    if (nameError) {
+      setFeedback(nameError)
       return
     }
     if (nextName !== tagName && tags.some((item) => item.name === nextName)) {
@@ -157,8 +174,9 @@ export function ProjectTagsEditor({
 
   function tryRenameFromSkeletonDialog(currentName: string, next: string): boolean {
     const t = next.trim()
-    if (!t) {
-      setFeedback("名称不能为空")
+    const nameError = validateProjectTagName(t)
+    if (nameError) {
+      setFeedback(nameError)
       return false
     }
     if (t !== currentName && tags.some((x) => x.name === t)) {
@@ -184,15 +202,17 @@ export function ProjectTagsEditor({
         {title}
       </div>
       <form className="flex flex-wrap items-center gap-2" onSubmit={handleAddTag}>
-        <Input
+        <input
+          type="text"
           value={newTag}
           onChange={(e) => {
             setNewTag(e.target.value)
             if (feedback) setFeedback(null)
           }}
           placeholder={inputPlaceholder}
-          className="w-full sm:w-72"
+          className={tagNameInputNewClass}
           spellCheck={false}
+          autoComplete="off"
         />
         <Button type="submit" variant="outline" className="gap-1.5">
           <Plus className="h-3.5 w-3.5" aria-hidden />
@@ -212,7 +232,7 @@ export function ProjectTagsEditor({
             return (
               <div
                 key={tag.name}
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                className="inline-flex items-center gap-1 overflow-visible rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
               >
                 <label
                   className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border border-border bg-background"
@@ -236,10 +256,11 @@ export function ProjectTagsEditor({
                     <Workflow className="h-3 w-3 shrink-0" aria-hidden />
                   </span>
                 ) : null}
-                <div className="inline-flex items-center gap-1">
+                <div className="inline-flex items-baseline gap-1 overflow-visible">
                   {editingTagName === tag.name && !isSkel ? (
                     <>
-                      <Input
+                      <input
+                        type="text"
                         value={editingTagValue}
                         onChange={(e) => setEditingTagValue(e.target.value)}
                         onKeyDown={(e) => {
@@ -251,13 +272,14 @@ export function ProjectTagsEditor({
                             cancelEditTag()
                           }
                         }}
-                        className="h-6 w-28 border-0 bg-transparent px-1 text-xs shadow-none focus-visible:ring-1"
+                        className={tagNameInputInlineClass}
                         spellCheck={false}
                         autoFocus
+                        autoComplete="off"
                       />
                       <button
                         type="button"
-                        className="inline-flex items-center justify-center rounded-sm p-0.5 hover:bg-accent"
+                        className="inline-flex shrink-0 items-center justify-center self-center rounded-sm p-0.5 hover:bg-accent"
                         aria-label={`保存名称 ${tag.name}`}
                         onClick={(e) => {
                           e.stopPropagation()
@@ -268,7 +290,7 @@ export function ProjectTagsEditor({
                       </button>
                       <button
                         type="button"
-                        className="inline-flex items-center justify-center rounded-sm p-0.5 hover:bg-accent"
+                        className="inline-flex shrink-0 items-center justify-center self-center rounded-sm p-0.5 hover:bg-accent"
                         aria-label="取消"
                         onClick={(e) => {
                           e.stopPropagation()

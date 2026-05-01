@@ -11,7 +11,7 @@ import type {
   RotationTransformAction,
   ShapeDragAction,
 } from "@/pages/project-task-detail/types"
-import { CUBOID2D_MIN_FRONT_PX } from "@/pages/project-task-detail/cuboid2d-geometry"
+import { CUBOID2D_MIN_FRONT_PX } from "@/pages/project-task-detail/annotateTools/cuboid2d-geometry"
 import { rotatePoint } from "@/pages/project-task-detail/utils"
 
 type ImageSize = { width: number; height: number }

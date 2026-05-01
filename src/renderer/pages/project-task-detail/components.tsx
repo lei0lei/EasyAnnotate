@@ -738,17 +738,23 @@ export function TaskRectLabelPicker({
   const panel = (
     <div className={positionClass} style={positionStyle}>
       <p className="mb-2 text-xs text-muted-foreground">{pickerTitle}</p>
-      <select
-        className="h-8 w-full rounded border border-border bg-background px-2 text-sm"
-        value={rectPendingLabel}
-        onChange={(event) => onRectPendingLabelChange(event.target.value)}
-      >
-        {annotationLabelOptions.map((label) => (
-          <option key={label} value={label}>
-            {label}
-          </option>
-        ))}
-      </select>
+      {annotationLabelOptions.length > 0 ? (
+        <select
+          className="h-8 w-full rounded border border-border bg-background px-2 text-sm"
+          value={rectPendingLabel}
+          onChange={(event) => onRectPendingLabelChange(event.target.value)}
+        >
+          {annotationLabelOptions.map((label) => (
+            <option key={label} value={label}>
+              {label}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <p className="rounded border border-dashed border-border/80 bg-muted/30 px-2 py-2 text-xs text-muted-foreground">
+          请先在项目详情中添加标签，再返回任务进行标注。
+        </p>
+      )}
       {drawShapeType === "mask" ? (
         <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
           <div className="grid grid-cols-2 gap-1">
@@ -804,7 +810,8 @@ export function TaskRectLabelPicker({
         </button>
         <button
           type="button"
-          className="inline-flex h-7 items-center rounded border border-emerald-500/40 px-2 text-xs text-emerald-600 hover:bg-emerald-500/10"
+          disabled={!rectPendingLabel.trim() || annotationLabelOptions.length === 0}
+          className="inline-flex h-7 items-center rounded border border-emerald-500/40 px-2 text-xs text-emerald-600 hover:bg-emerald-500/10 disabled:pointer-events-none disabled:opacity-40"
           onClick={onConfirm}
         >
           OK

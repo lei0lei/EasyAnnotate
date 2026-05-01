@@ -320,6 +320,48 @@ message DownloadTaskImageResponse {
   string error_message = 3;
 }
 
+message StartDatasetExportRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string export_format = 4;
+  bool keep_project_structure = 5;
+  int32 train_boundary = 6;
+  int32 val_boundary = 7;
+  string version_name = 8;
+  repeated TaskNameItem task_names = 9;
+}
+
+message TaskNameItem {
+  string task_id = 1;
+  string task_name = 2;
+}
+
+message StartDatasetExportResponse {
+  bool canceled = 1;
+  string job_id = 2;
+  string error_message = 3;
+}
+
+message ListExportJobsResponse {
+  repeated ExportJobItem jobs = 1;
+}
+
+message ExportJobItem {
+  string id = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string version_name = 4;
+  string export_format = 5;
+  bool keep_project_structure = 6;
+  string output_dir = 7;
+  string status = 8;
+  int32 progress = 9;
+  string message = 10;
+  string created_at = 11;
+  string updated_at = 12;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -343,6 +385,8 @@ service AppService {
   rpc GetImageFileInfo(GetImageFileInfoRequest) returns (GetImageFileInfoResponse);
   rpc DeleteTaskImage(DeleteTaskImageRequest) returns (DeleteTaskImageResponse);
   rpc DownloadTaskImage(DownloadTaskImageRequest) returns (DownloadTaskImageResponse);
+  rpc StartDatasetExport(StartDatasetExportRequest) returns (StartDatasetExportResponse);
+  rpc ListExportJobs(google.protobuf.Empty) returns (ListExportJobsResponse);
   rpc GetDefaultDatabaseDir(google.protobuf.Empty) returns (DefaultDatabaseDirResponse);
   rpc GetDefaultGlobalConfigDir(google.protobuf.Empty) returns (DefaultGlobalConfigDirResponse);
   rpc SaveAppConfigToDisk(SaveAppConfigToDiskRequest) returns (google.protobuf.Empty);

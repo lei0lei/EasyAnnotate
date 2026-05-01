@@ -35,8 +35,7 @@ export function useTaskDerivedState({ projectId, taskId, project, files, current
   )
 
   const annotationLabelOptions = useMemo(() => {
-    const fromTags = (project?.tags ?? []).map((item) => item.name.trim()).filter(Boolean)
-    return fromTags.length > 0 ? fromTags : ["default"]
+    return (project?.tags ?? []).map((item) => item.name.trim()).filter(Boolean)
   }, [project?.tags])
 
   const labelColorMap = useMemo(() => {

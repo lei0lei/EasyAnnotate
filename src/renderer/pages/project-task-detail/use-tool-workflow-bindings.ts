@@ -59,7 +59,7 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
 
   useEffect(() => {
     if (!rectPendingLabel || !annotationLabelOptions.includes(rectPendingLabel)) {
-      setRectPendingLabel(annotationLabelOptions[0] ?? "default")
+      setRectPendingLabel(annotationLabelOptions[0] ?? "")
     }
   }, [annotationLabelOptions, rectPendingLabel])
 

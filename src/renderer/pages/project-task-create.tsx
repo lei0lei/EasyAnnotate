@@ -146,7 +146,7 @@ export default function ProjectTaskCreatePage() {
         </div>
       </div>
 
-      <Card className="border-border/80 shadow-sm">
+      <Card className="border-border">
         <CardHeader>
           <CardTitle className="text-base font-medium">任务信息</CardTitle>
           <CardDescription>类似 CVAT 的任务创建流程。</CardDescription>

@@ -20,7 +20,7 @@ import {
   cuboidBackVerticalEdgeHandleMarkers,
   cuboidFrontEdgeMidMarkers,
   cuboidWireframeEdgeSegmentsLayered,
-} from "@/pages/project-task-detail/cuboid2d-geometry"
+} from "@/pages/project-task-detail/annotateTools/cuboid2d-geometry"
 import type { TaskDrawHintProps, TaskLeftPanelContentProps } from "@/pages/project-task-detail/components"
 import type { MouseEvent as ReactMouseEvent, MutableRefObject, SyntheticEvent, WheelEventHandler, MouseEventHandler } from "react"
 

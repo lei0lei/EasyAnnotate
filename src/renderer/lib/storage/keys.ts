@@ -10,6 +10,7 @@ export const STORAGE_KEYS = {
   appConfig: "ea-app-config",
   workflowBoards: "ea-workflow-boards",
   monitors: "ea-monitors",
+  exportVersionPrefix: "ea-export-versions",
   sidebarCollapsed: "ea-sidebar-collapsed",
   /** 与 `ThemeProvider` 默认的 storageKey 对齐，便于在代码里搜到 */
   theme: "vite-ui-theme",

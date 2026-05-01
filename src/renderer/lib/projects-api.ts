@@ -39,6 +39,21 @@ export type TaskFileItem = {
   createdAt: string
 }
 
+export type ExportJobItem = {
+  id: string
+  projectId: string
+  taskId: string
+  versionName: string
+  exportFormat: string
+  keepProjectStructure: boolean
+  outputDir: string
+  status: string
+  progress: number
+  message: string
+  createdAt: string
+  updatedAt: string
+}
+
 function globalConfigDir(): string {
   return loadAppConfig().storagePaths.globalConfigDir
 }
@@ -346,4 +361,50 @@ export async function downloadTaskImage(imagePath: string): Promise<{
     savedPath: response.savedPath || "",
     errorMessage: response.errorMessage || "",
   }
+}
+
+export async function startDatasetExport(payload: {
+  projectId: string
+  taskId?: string
+  exportFormat: string
+  keepProjectStructure: boolean
+  trainBoundary: number
+  valBoundary: number
+  versionName: string
+  taskNames?: Array<{ taskId: string; taskName: string }>
+}): Promise<{ canceled: boolean; jobId: string; errorMessage: string }> {
+  const response = await ipc.app.StartDatasetExport({
+    globalConfigDir: globalConfigDir(),
+    projectId: payload.projectId,
+    taskId: payload.taskId || "",
+    exportFormat: payload.exportFormat,
+    keepProjectStructure: payload.keepProjectStructure,
+    trainBoundary: Math.floor(payload.trainBoundary),
+    valBoundary: Math.floor(payload.valBoundary),
+    versionName: payload.versionName,
+    taskNames: payload.taskNames ?? [],
+  })
+  return {
+    canceled: response.canceled,
+    jobId: response.jobId || "",
+    errorMessage: response.errorMessage || "",
+  }
+}
+
+export async function listExportJobs(): Promise<ExportJobItem[]> {
+  const response = await ipc.app.ListExportJobs({})
+  return (response.jobs ?? []).map((job) => ({
+    id: job.id || "",
+    projectId: job.projectId || "",
+    taskId: job.taskId || "",
+    versionName: job.versionName || "",
+    exportFormat: job.exportFormat || "",
+    keepProjectStructure: job.keepProjectStructure,
+    outputDir: job.outputDir || "",
+    status: job.status || "",
+    progress: Number(job.progress || 0),
+    message: job.message || "",
+    createdAt: job.createdAt || "",
+    updatedAt: job.updatedAt || "",
+  }))
 }

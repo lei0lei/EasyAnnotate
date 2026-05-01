@@ -47,7 +47,7 @@ export default function ProjectsCreatePage() {
         </div>
       </div>
 
-      <Card className="border-border/80 shadow-sm">
+      <Card className="border-border">
         <CardHeader>
           <CardTitle className="text-base font-medium">项目信息</CardTitle>
           <CardDescription>名称、说明、类型与存储方式</CardDescription>

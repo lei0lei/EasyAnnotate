@@ -136,7 +136,7 @@ export default function ProjectsCreateConfigPage() {
         </div>
       </div>
 
-      <Card className="border-border/80 shadow-sm">
+      <Card className="border-border">
         <CardHeader>
           <CardTitle className="text-base font-medium">创建信息确认</CardTitle>
           <CardDescription>下面是第一步填写的信息。</CardDescription>
@@ -150,7 +150,7 @@ export default function ProjectsCreateConfigPage() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/80 shadow-sm">
+      <Card className="border-border">
         <CardHeader>
           <CardTitle className="text-base font-medium">{storageLabel}配置</CardTitle>
           <CardDescription>
