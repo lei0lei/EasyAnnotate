@@ -13,11 +13,16 @@ import {
 } from "@/pages/project-task-detail/tool-state"
 
 type UseToolWorkflowBindingsParams = {
-  annotationLabelOptions: string[]
+  annotationLabelOptionsPlain: string[]
+  annotationLabelOptionsSkeleton: string[]
   clearToolTransientInteractions: () => void
 }
 
-export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTransientInteractions }: UseToolWorkflowBindingsParams) {
+export function useToolWorkflowBindings({
+  annotationLabelOptionsPlain,
+  annotationLabelOptionsSkeleton,
+  clearToolTransientInteractions,
+}: UseToolWorkflowBindingsParams) {
   const [toolState, dispatchTool] = useReducer(toolReducer, initialToolState)
   const [rectPendingLabel, setRectPendingLabel] = useState("")
   /** 本次 Mask 流程在点 OK 进入绘制时锁定的标签；到离开「mask + drawing」或取消/选工具前不变。 */
@@ -25,6 +30,11 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
 
   const rightToolMode = getActiveTool(toolState)
   const drawShapeType = getDrawShapeType(toolState)
+
+  const annotationLabelsAllowedForDrawShape = useMemo(
+    () => (drawShapeType === "skeleton" ? annotationLabelOptionsSkeleton : annotationLabelOptionsPlain),
+    [annotationLabelOptionsPlain, annotationLabelOptionsSkeleton, drawShapeType],
+  )
   const { rectFirstPoint, rectHoverPoint, polygonDraftPoints, polygonHoverPoint } = getToolDraft(toolState)
   const toolWorkflowPhase = getToolWorkflowPhase(toolState)
   const rectPickerOpen = isRectPickerOpen(toolState)
@@ -61,7 +71,8 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
       label: string
     }) => {
       const t = params.label.trim()
-      if (!t || !annotationLabelOptions.includes(t)) return
+      const allowed = params.mode === "skeleton" ? annotationLabelOptionsSkeleton : annotationLabelOptionsPlain
+      if (!t || !allowed.includes(t)) return
       setRectPendingLabel(t)
       if (params.drawShapeType === "mask") {
         setMaskDrawingSessionLabel(t)
@@ -71,7 +82,7 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
       dispatchTool({ type: "enterPickingLabel", mode: params.mode, drawShapeType: params.drawShapeType })
       dispatchTool({ type: "enterDrawing" })
     },
-    [annotationLabelOptions, dispatchTool],
+    [annotationLabelOptionsPlain, annotationLabelOptionsSkeleton, dispatchTool],
   )
 
   const handleStartMaskTool = useCallback(() => {
@@ -95,10 +106,10 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
   }, [])
 
   useEffect(() => {
-    if (!rectPendingLabel || !annotationLabelOptions.includes(rectPendingLabel)) {
-      setRectPendingLabel(annotationLabelOptions[0] ?? "")
+    if (!rectPendingLabel || !annotationLabelsAllowedForDrawShape.includes(rectPendingLabel)) {
+      setRectPendingLabel(annotationLabelsAllowedForDrawShape[0] ?? "")
     }
-  }, [annotationLabelOptions, rectPendingLabel])
+  }, [annotationLabelsAllowedForDrawShape, rectPendingLabel])
 
   useEffect(() => {
     if (!(toolWorkflowPhase === "drawing" && drawShapeType === "mask")) {

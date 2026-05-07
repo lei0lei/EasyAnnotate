@@ -1,18 +1,14 @@
 import { loadAppConfig } from "@/lib/app-config-storage"
 
-/** 应用级快捷键：设置页与画布等处共用 id / 默认键位 */
+/** 应用级快捷键：设置页与标注页等处共用 id / 默认键位 */
 export const APP_SHORTCUT_ROWS: { id: string; label: string; defaultBinding: string }[] = [
-  { id: "img-prev", label: "上一张图像", defaultBinding: "A 或 ←" },
-  { id: "img-next", label: "下一张图像", defaultBinding: "D 或 →" },
-  { id: "save", label: "保存标注", defaultBinding: "Ctrl + S" },
-  { id: "undo", label: "撤销", defaultBinding: "Ctrl + Z" },
-  { id: "redo", label: "重做", defaultBinding: "Ctrl + Y" },
+  { id: "img-prev", label: "上一张", defaultBinding: "A 或 ←" },
+  { id: "img-next", label: "下一张", defaultBinding: "D 或 →" },
   { id: "select-tool", label: "切换选择模式", defaultBinding: "Escape" },
   { id: "del", label: "删除选中标注", defaultBinding: "Delete" },
+  { id: "undo", label: "撤销", defaultBinding: "Ctrl + Z" },
+  { id: "redo", label: "重做", defaultBinding: "Ctrl + Y" },
   { id: "new-annotation", label: "新建标注", defaultBinding: "N" },
-  { id: "zoom-in", label: "放大画布", defaultBinding: "Ctrl + =" },
-  { id: "zoom-out", label: "缩小画布", defaultBinding: "Ctrl + -" },
-  { id: "open-settings", label: "打开设置", defaultBinding: "Ctrl + ," },
 ]
 
 export function getDefaultShortcutBinding(id: string): string {

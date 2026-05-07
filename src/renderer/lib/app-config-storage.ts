@@ -11,6 +11,8 @@ export type AppConfig = {
   backend: {
     host: string
     port: string
+    /** 便携 Python backend 根目录（含 start.bat）；空表示自动查找 */
+    localBackendDir: string
   }
   storagePaths: {
     databaseDir: string
@@ -37,7 +39,7 @@ export type AppConfig = {
 
 const DEFAULT: AppConfig = {
   version: APP_CONFIG_VERSION,
-  backend: { host: "127.0.0.1", port: "8080" },
+  backend: { host: "127.0.0.1", port: "8080", localBackendDir: "" },
   storagePaths: { databaseDir: "", assetsDir: "", globalConfigDir: "" },
   pageFlow: {
     workflow: { openEditorOnCreate: true },
@@ -92,6 +94,8 @@ function isAppConfigV2(d: unknown): d is AppConfig {
   if (!isRecord(d)) return false
   if (d.version !== APP_CONFIG_VERSION) return false
   if (!isRecord(d.backend) || typeof d.backend.host !== "string" || typeof d.backend.port !== "string") return false
+  const localBackendDir = d.backend.localBackendDir
+  if (localBackendDir !== undefined && typeof localBackendDir !== "string") return false
   if (
     !isRecord(d.storagePaths) ||
     typeof d.storagePaths.databaseDir !== "string" ||

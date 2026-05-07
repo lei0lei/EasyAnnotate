@@ -426,6 +426,24 @@ message ExportJobItem {
   string updated_at = 12;
 }
 
+/** 从主进程启动便携 Python 后端（Windows：在指定目录执行 start.bat） */
+message StartLocalBackendRequest {
+  /** 用户选择的 backend 根目录（须含 start.bat）；空则自动查找 */
+  string backend_directory = 1;
+}
+
+message StartLocalBackendResponse {
+  bool ok = 1;
+  string error_message = 2;
+  /** 调用前 /health 已可用，未再拉起新进程 */
+  bool already_running = 3;
+}
+
+/** 主进程探测本地 FastAPI /health（避免渲染进程受 CORS / 安全策略影响） */
+message LocalBackendStatusResponse {
+  bool reachable = 1;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -465,4 +483,6 @@ service AppService {
   rpc ListAnnotationsByProject(ListAnnotationsByProjectRequest) returns (ListAnnotationsResponse);
   rpc UpsertAnnotation(UpsertAnnotationRequest) returns (google.protobuf.Empty);
   rpc DeleteAnnotation(DeleteAnnotationRequest) returns (google.protobuf.Empty);
+  rpc StartLocalBackend(StartLocalBackendRequest) returns (StartLocalBackendResponse);
+  rpc GetLocalBackendStatus(google.protobuf.Empty) returns (LocalBackendStatusResponse);
 }

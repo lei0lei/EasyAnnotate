@@ -82,6 +82,18 @@ function shapePointsWithVertexOrLiveOverride(
   return shape.points
 }
 
+/** cuboid2d 拖拽预览单独通道，避免每帧触发其它 rendered* 的 useMemo 全量重算 */
+function shapePointsForCuboid2d(
+  index: number,
+  shape: { points: number[][] },
+  dragCuboidLivePoints: DragLivePointsOverride | null | undefined,
+  dragLivePoints: DragLivePointsOverride | null | undefined,
+  dragVertexLive: DragVertexLiveOverride | null | undefined,
+): number[][] {
+  if (dragCuboidLivePoints && dragCuboidLivePoints.shapeIndex === index) return dragCuboidLivePoints.points
+  return shapePointsWithVertexOrLiveOverride(index, shape, dragLivePoints, dragVertexLive)
+}
+
 export function buildRenderedRectangles(context: RenderShapeContext & { stageWidth: number; stageHeight: number }): RenderedRectangle[] {
   const { annotationDoc, hiddenShapeIndexes, hiddenClassLabels, labelColorMap, imageToStage, stageWidth, stageHeight, dragLivePoints } =
     context
@@ -439,9 +451,22 @@ function readCuboid2dHeightPx(shape: { attributes?: Record<string, unknown> }): 
 }
 
 export function buildRenderedCuboids2d(
-  context: RenderShapeContext & { dragVertexLive?: DragVertexLiveOverride | null },
+  context: RenderShapeContext & {
+    dragVertexLive?: DragVertexLiveOverride | null
+    /** 与 dragLivePoints 分离：仅 cuboid 拖拽每帧更新，不触发矩形/多边形/mask 等 memo */
+    dragCuboidLivePoints?: DragLivePointsOverride | null
+  },
 ): RenderedCuboid2d[] {
-  const { annotationDoc, hiddenShapeIndexes, hiddenClassLabels, labelColorMap, imageToStage, dragLivePoints, dragVertexLive } = context
+  const {
+    annotationDoc,
+    hiddenShapeIndexes,
+    hiddenClassLabels,
+    labelColorMap,
+    imageToStage,
+    dragLivePoints,
+    dragCuboidLivePoints,
+    dragVertexLive,
+  } = context
   if (!annotationDoc) return []
   const hiddenSet = new Set(hiddenShapeIndexes)
   const hiddenClassSet = new Set(hiddenClassLabels)
@@ -449,7 +474,7 @@ export function buildRenderedCuboids2d(
     .map((shape, index) => {
       if (hiddenSet.has(index)) return null
       if (hiddenClassSet.has(shape.label)) return null
-      const pts = shapePointsWithVertexOrLiveOverride(index, shape, dragLivePoints, dragVertexLive)
+      const pts = shapePointsForCuboid2d(index, shape, dragCuboidLivePoints, dragLivePoints, dragVertexLive)
       if (shape.shape_type !== "cuboid2d" || pts.length < 4) return null
       const usesExplicitQuadPair = pts.length >= 8
       let baseStagePoints: Point[]

@@ -86,6 +86,11 @@ import {
 import { deleteProjectTasksFile, readProjectTasks, writeProjectTasks } from "./project-tasks-disk";
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
 import { listDatasetExportJobs, startDatasetExportJob } from "./dataset-export";
+import {
+  probeLocalBackendHealth,
+  startEmbeddedPythonBackend,
+  stopEmbeddedPythonBackend,
+} from "./local-backend-launcher";
 
 function sanitizeSegment(value: string): string {
   const trimmed = value.trim()
@@ -274,6 +279,14 @@ win.setWindowTitleVisible(false)
 win.setWindowTitlebarVisible(false)
 win.centerWindow()
 win.show()
+
+win.on("closed", () => {
+  stopEmbeddedPythonBackend()
+})
+
+process.on("exit", () => {
+  stopEmbeddedPythonBackend()
+})
 
 // Handle the IPC calls from the renderer process.
 ipc.registerService(GreetService({
@@ -1030,5 +1043,12 @@ ipc.registerService(AppService({
   async DeleteAnnotation(request: DeleteAnnotationRequest) {
     await deleteAnnotation(request.databaseDir, request.id)
     return {}
+  },
+  async GetLocalBackendStatus(_request) {
+    const reachable = await probeLocalBackendHealth()
+    return { reachable }
+  },
+  async StartLocalBackend(request) {
+    return await startEmbeddedPythonBackend(request.backendDirectory)
   },
 }))

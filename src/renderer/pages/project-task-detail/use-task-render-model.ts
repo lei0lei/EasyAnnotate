@@ -33,6 +33,8 @@ type UseTaskRenderModelParams = {
   /** 与画布 view 层一致：仅 fit，用户平移/缩放在 page-sections 外层 transform */
   imageToStageBase: (point: Point) => Point | null
   dragLivePoints: DragLivePointsOverride | null
+  /** cuboid2d 八点预览：与 dragLivePoints 分离，避免每帧重算矩形/多边形/mask 等 */
+  dragCuboidLivePoints: DragLivePointsOverride | null
   /** 单顶点拖拽：与 dragLivePoints 互斥使用，且仅驱动 polygon / skeleton / cuboid 的 memo */
   dragVertexLive: DragVertexLiveOverride | null
   dragLiveMaskRle: DragLiveMaskRleOverride | null
@@ -50,6 +52,7 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     imageGeometry,
     imageToStageBase,
     dragLivePoints,
+    dragCuboidLivePoints,
     dragVertexLive,
     dragLiveMaskRle,
   } = params
@@ -111,9 +114,20 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       labelColorMap,
       imageToStage: (point) => imageToStageBase(point),
       dragLivePoints,
+      dragCuboidLivePoints,
       dragVertexLive,
     })
-  }, [annotationDoc, dragLivePoints, dragVertexLive, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
+  }, [
+    annotationDoc,
+    dragCuboidLivePoints,
+    dragLivePoints,
+    dragVertexLive,
+    hiddenClassLabels,
+    hiddenShapeIndexes,
+    imageGeometry,
+    imageToStageBase,
+    labelColorMap,
+  ])
 
   const renderedPoints = useMemo(() => {
     return buildRenderedPoints({

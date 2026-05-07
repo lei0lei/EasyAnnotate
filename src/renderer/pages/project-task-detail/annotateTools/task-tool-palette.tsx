@@ -3,7 +3,7 @@
  * 职责：组合并渲染右侧标注工具栏，并在当前工具旁展示标签选择弹出框。
  * 边界：仅做工具按钮编排，不处理具体工具逻辑。
  */
-import { useCallback, useRef, type RefObject } from "react"
+import { useCallback, useEffect, useRef, type RefObject } from "react"
 import { TaskRectLabelPicker } from "@/pages/project-task-detail/components"
 import { Box3dToolButton } from "./box3d-tool-button"
 import { MaskToolButton } from "./circle-tool-button"
@@ -30,6 +30,7 @@ export function TaskToolPalette({
   onClearSelection,
   rectPickerProps,
 }: TaskToolPaletteProps) {
+  const toolbarShellRef = useRef<HTMLDivElement | null>(null)
   const refRect = useRef<HTMLDivElement | null>(null)
   const refRotRect = useRef<HTMLDivElement | null>(null)
   const refPolygon = useRef<HTMLDivElement | null>(null)
@@ -56,8 +57,23 @@ export function TaskToolPalette({
     return null
   }, [rectPickerProps.drawShapeType, rectPickerProps.rectPickerOpen])
 
+  useEffect(() => {
+    if (!rectPickerProps.rectPickerOpen) return
+    const onCancel = rectPickerProps.onCancel
+    const onPointerDownCapture = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (toolbarShellRef.current?.contains(target)) return
+      const panel = document.querySelector("[data-ea-label-picker-panel]")
+      if (panel?.contains(target)) return
+      onCancel()
+    }
+    document.addEventListener("pointerdown", onPointerDownCapture, true)
+    return () => document.removeEventListener("pointerdown", onPointerDownCapture, true)
+  }, [rectPickerProps.onCancel, rectPickerProps.rectPickerOpen])
+
   return (
-    <div className="absolute top-1/2 right-4 z-50 -translate-y-1/2">
+    <div ref={toolbarShellRef} className="absolute top-1/2 right-4 z-50 -translate-y-1/2" data-ea-task-tool-palette="">
       <TaskRectLabelPicker {...rectPickerProps} getAnchor={getAnchor} />
       <div className="flex flex-col gap-2 rounded-md border border-border/70 bg-background/95 p-2 shadow-sm">
         <SelectToolButton active={rightToolMode === "select"} onSelectTool={onSelectTool} />

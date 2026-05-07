@@ -109,6 +109,22 @@
         @apply border-border;
     }
 
+    /* App UI: avoid accidental text selection; keep inputs / editable content selectable. */
+    html {
+        user-select: none;
+        -webkit-user-select: none;
+    }
+
+    textarea,
+    select,
+    [contenteditable="true"],
+    [contenteditable=""],
+    [contenteditable="plaintext-only"],
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]):not([type="color"]) {
+        user-select: text;
+        -webkit-user-select: text;
+    }
+
     body {
         @apply bg-background text-foreground;
     }

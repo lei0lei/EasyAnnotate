@@ -136,6 +136,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setRotationTransformAction,
   } = useTaskDragState()
   const [dragLivePoints, setDragLivePoints] = useState<DragLivePointsOverride | null>(null)
+  const [dragCuboidLivePoints, setDragCuboidLivePoints] = useState<DragLivePointsOverride | null>(null)
   const [dragVertexLive, setDragVertexLive] = useState<DragVertexLiveOverride | null>(null)
   const [dragLiveMaskRle, setDragLiveMaskRle] = useState<DragLiveMaskRleOverride | null>(null)
   const [dragStageNudge, setDragStageNudge] = useState<DragStageNudge | null>(null)
@@ -173,7 +174,16 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setRawHighlightCorner(null)
     setDragVertexLive(null)
   }, [])
-  const { taskName, currentFile, currentFileName, progressText, imagePathCandidates, annotationLabelOptions, labelColorMap } = useTaskDerivedState({
+  const {
+    taskName,
+    currentFile,
+    currentFileName,
+    progressText,
+    imagePathCandidates,
+    annotationLabelOptionsPlain,
+    annotationLabelOptionsSkeleton,
+    labelColorMap,
+  } = useTaskDerivedState({
     projectId,
     taskId,
     project,
@@ -212,7 +222,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     maskDrawingSessionLabel,
     startDrawingWithPreset,
   } = useToolWorkflowBindings({
-    annotationLabelOptions,
+    annotationLabelOptionsPlain,
+    annotationLabelOptionsSkeleton,
     clearToolTransientInteractions,
   })
 
@@ -562,8 +573,10 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     const presetBase = rightToolModeToDrawingPreset(lastDrawingToolRef.current)
     if (!presetBase) return
     let label = lastAnnotationLabelRef.current
-    if (!annotationLabelOptions.includes(label)) {
-      label = annotationLabelOptions[0] ?? ""
+    const allowed =
+      lastDrawingToolRef.current === "skeleton" ? annotationLabelOptionsSkeleton : annotationLabelOptionsPlain
+    if (!allowed.includes(label)) {
+      label = allowed[0] ?? ""
     }
     if (!label.trim()) return
     clearMaskTransientState()
@@ -574,7 +587,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     startDrawingWithPreset({ ...presetBase, label })
   }, [
     annotationHabitPrimed,
-    annotationLabelOptions,
+    annotationLabelOptionsPlain,
+    annotationLabelOptionsSkeleton,
     clearBox3dDraft,
     clearMaskTransientState,
     clearPolygonDraft,
@@ -586,6 +600,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const drawingLayerActive =
     toolWorkflowPhase ===
       "drawing" && (canDrawRectangle || canDrawPolygon || canDrawMask || canDrawKeypoint || canDrawBox3d || canDrawSkeleton)
+  /** 标签弹窗与当前 drawShapeType 一致：骨架仅骨架类，其余工具仅普通类 */
+  const taskRectPickerLabelOptions = useMemo(
+    () => (drawShapeType === "skeleton" ? annotationLabelOptionsSkeleton : annotationLabelOptionsPlain),
+    [annotationLabelOptionsPlain, annotationLabelOptionsSkeleton, drawShapeType],
+  )
   const pendingRectColor = labelColorMap.get((maskDrawingSessionLabel ?? "").trim() || rectPendingLabel) ?? "#f59e0b"
   const resolveShapeIndexById = useCallback(
     (shapeId: string | null) => findShapeIndexByStableId(annotationDocRef.current, shapeId),
@@ -615,6 +634,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       imageGeometry,
       imageToStageBase,
       dragLivePoints,
+      dragCuboidLivePoints,
       dragVertexLive,
       dragLiveMaskRle,
     })
@@ -748,6 +768,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     updateMaskRle: dragSessionUpdateMaskRle,
     setRawHighlightCorner,
     setDragLivePoints,
+    setDragCuboidLivePoints,
     setDragVertexLive,
     setDragLiveMaskRle,
     setDragStageNudge,
@@ -878,7 +899,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     polygonDraftPointCount,
     rectPickerOpen,
     rectPendingLabel,
-    annotationLabelOptions,
+    annotationLabelOptions: taskRectPickerLabelOptions,
     maskDrawMode,
     maskBrushSize,
     onSelectTool: handleSelectToolFromPalette,

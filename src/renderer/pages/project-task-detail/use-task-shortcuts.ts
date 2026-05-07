@@ -1,6 +1,6 @@
 /**
  * 模块：project-task-detail/use-task-shortcuts
- * 职责：标注页快捷键；上一张/下一张、切换选择模式、删除等走 app-config，撤销重做暂仍硬编码。
+ * 职责：标注页快捷键；上一张/下一张、切换选择模式、删除、撤销/重做、新建标注均走 app-config。
  * 使用 capture 阶段并 stopPropagation；首张/末张仍消费翻页键；在带 data-ea-app-chrome 的顶栏/侧栏内额外吞掉未处理的单字符键，避免 D/F 等触发列表 typeahead。
  * 「新建标注」在尚未从工具栏完成过一次标签确认前不响应快捷键。
  */
@@ -82,18 +82,14 @@ export function useTaskShortcuts({
 
       const focusInAppChrome = isInsideAppLayoutChrome(document.activeElement)
 
-      const isModifierPressed = event.ctrlKey || event.metaKey
-      const lowerKey = event.key.toLowerCase()
-      if (isModifierPressed && lowerKey === "z") {
+      const undoBinding = getEffectiveShortcutBinding("undo")
+      if (bindingMatchesEvent(undoBinding, event)) {
         consumeShortcutEvent(event)
-        if (event.shiftKey) {
-          if (canRedo) redo()
-          return
-        }
         if (canUndo) undo()
         return
       }
-      if (isModifierPressed && lowerKey === "y") {
+      const redoBinding = getEffectiveShortcutBinding("redo")
+      if (bindingMatchesEvent(redoBinding, event)) {
         consumeShortcutEvent(event)
         if (canRedo) redo()
         return

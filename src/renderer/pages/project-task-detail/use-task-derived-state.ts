@@ -51,6 +51,22 @@ export function useTaskDerivedState({ projectId, taskId, project, files, current
     return (project?.tags ?? []).map((item) => item.name.trim()).filter(Boolean)
   }, [project?.tags])
 
+  /** 普通类标签：除骨架工具外的绘制工具下拉框 */
+  const annotationLabelOptionsPlain = useMemo(() => {
+    return (project?.tags ?? [])
+      .filter((item) => item.kind !== "skeleton")
+      .map((item) => item.name.trim())
+      .filter(Boolean)
+  }, [project?.tags])
+
+  /** 骨架类标签：仅骨架工具 */
+  const annotationLabelOptionsSkeleton = useMemo(() => {
+    return (project?.tags ?? [])
+      .filter((item) => item.kind === "skeleton")
+      .map((item) => item.name.trim())
+      .filter(Boolean)
+  }, [project?.tags])
+
   const labelColorMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const tag of project?.tags ?? []) {
@@ -68,6 +84,8 @@ export function useTaskDerivedState({ projectId, taskId, project, files, current
     progressText,
     imagePathCandidates,
     annotationLabelOptions,
+    annotationLabelOptionsPlain,
+    annotationLabelOptionsSkeleton,
     labelColorMap,
   }
 }

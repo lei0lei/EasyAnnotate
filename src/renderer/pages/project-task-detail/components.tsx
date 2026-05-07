@@ -746,7 +746,7 @@ export function TaskRectLabelPicker({
       : undefined
 
   const panel = (
-    <div className={positionClass} style={positionStyle}>
+    <div className={positionClass} style={positionStyle} data-ea-label-picker-panel="">
       <p className="mb-2 text-xs text-muted-foreground">{pickerTitle}</p>
       {annotationLabelOptions.length > 0 ? (
         <select
@@ -762,7 +762,9 @@ export function TaskRectLabelPicker({
         </select>
       ) : (
         <p className="rounded border border-dashed border-border/80 bg-muted/30 px-2 py-2 text-xs text-muted-foreground">
-          请先在项目详情中添加标签，再返回任务进行标注。
+          {drawShapeType === "skeleton"
+            ? "请先在项目详情中添加骨架类标签，再使用骨架工具。"
+            : "请先在项目详情中添加普通类标签，再返回任务进行标注。"}
         </p>
       )}
       {drawShapeType === "mask" ? (
