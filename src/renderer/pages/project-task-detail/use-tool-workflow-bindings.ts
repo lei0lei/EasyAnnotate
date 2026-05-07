@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react"
+import type { RightToolMode } from "@/pages/project-task-detail/types"
 import {
   getActiveTool,
   getDrawShapeType,
@@ -8,6 +9,7 @@ import {
   isRectDrawingEnabled,
   isRectPickerOpen,
   toolReducer,
+  type DrawShapeWithPolygon,
 } from "@/pages/project-task-detail/tool-state"
 
 type UseToolWorkflowBindingsParams = {
@@ -18,6 +20,8 @@ type UseToolWorkflowBindingsParams = {
 export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTransientInteractions }: UseToolWorkflowBindingsParams) {
   const [toolState, dispatchTool] = useReducer(toolReducer, initialToolState)
   const [rectPendingLabel, setRectPendingLabel] = useState("")
+  /** 本次 Mask 流程在点 OK 进入绘制时锁定的标签；到离开「mask + drawing」或取消/选工具前不变。 */
+  const [maskDrawingSessionLabel, setMaskDrawingSessionLabel] = useState<string | null>(null)
 
   const rightToolMode = getActiveTool(toolState)
   const drawShapeType = getDrawShapeType(toolState)
@@ -28,32 +32,65 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
   const rectDrawShapeType: "rectangle" | "rotation" = drawShapeType === "rotation" ? "rotation" : "rectangle"
 
   const handleSelectToolClick = useCallback(() => {
+    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "exitToEditing" })
     clearToolTransientInteractions()
   }, [clearToolTransientInteractions])
 
   const handleRectPickerConfirm = useCallback(() => {
-    if (!rectPendingLabel) return
+    const label = rectPendingLabel.trim()
+    if (!label) return
+    if (drawShapeType === "mask") {
+      setMaskDrawingSessionLabel(label)
+    } else {
+      setMaskDrawingSessionLabel(null)
+    }
     dispatchTool({ type: "enterDrawing" })
-  }, [rectPendingLabel])
+  }, [rectPendingLabel, drawShapeType])
 
   const handleRectPickerCancel = useCallback(() => {
+    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "cancelPicking" })
   }, [])
 
+  /** 跳过标签弹窗，直接进入绘制（与点「确定」后状态一致） */
+  const startDrawingWithPreset = useCallback(
+    (params: {
+      mode: Exclude<RightToolMode, "select" | "circle" | "text">
+      drawShapeType: DrawShapeWithPolygon
+      label: string
+    }) => {
+      const t = params.label.trim()
+      if (!t || !annotationLabelOptions.includes(t)) return
+      setRectPendingLabel(t)
+      if (params.drawShapeType === "mask") {
+        setMaskDrawingSessionLabel(t)
+      } else {
+        setMaskDrawingSessionLabel(null)
+      }
+      dispatchTool({ type: "enterPickingLabel", mode: params.mode, drawShapeType: params.drawShapeType })
+      dispatchTool({ type: "enterDrawing" })
+    },
+    [annotationLabelOptions, dispatchTool],
+  )
+
   const handleStartMaskTool = useCallback(() => {
+    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "enterPickingLabel", mode: "mask", drawShapeType: "mask" })
   }, [])
 
   const handleStartKeypointTool = useCallback(() => {
+    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "enterPickingLabel", mode: "keypoint", drawShapeType: "keypoint" })
   }, [])
 
   const handleStartBox3dTool = useCallback(() => {
+    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "enterPickingLabel", mode: "box3d", drawShapeType: "box3d" })
   }, [])
 
   const handleStartSkeletonTool = useCallback(() => {
+    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "enterPickingLabel", mode: "skeleton", drawShapeType: "skeleton" })
   }, [])
 
@@ -62,6 +99,12 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
       setRectPendingLabel(annotationLabelOptions[0] ?? "")
     }
   }, [annotationLabelOptions, rectPendingLabel])
+
+  useEffect(() => {
+    if (!(toolWorkflowPhase === "drawing" && drawShapeType === "mask")) {
+      setMaskDrawingSessionLabel(null)
+    }
+  }, [toolWorkflowPhase, drawShapeType])
 
   return useMemo(
     () => ({
@@ -85,6 +128,8 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
       handleStartMaskTool,
       rectPendingLabel,
       setRectPendingLabel,
+      maskDrawingSessionLabel,
+      startDrawingWithPreset,
     }),
     [
       drawShapeType,
@@ -95,7 +140,9 @@ export function useToolWorkflowBindings({ annotationLabelOptions, clearToolTrans
       handleStartKeypointTool,
       handleStartSkeletonTool,
       handleStartMaskTool,
+      maskDrawingSessionLabel,
       rectPendingLabel,
+      startDrawingWithPreset,
       polygonDraftPoints,
       polygonHoverPoint,
       rectDrawingEnabled,

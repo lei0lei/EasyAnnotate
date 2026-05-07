@@ -16,7 +16,6 @@ type ToolDispatch =
   | { type: "appendPolygonPoint"; point: Point }
   | { type: "clearPolygonDraft" }
   | { type: "popPolygonPoint" }
-  | { type: "exitToEditing" }
 
 type UsePolygonToolParams = {
   rightToolMode: RightToolMode
@@ -29,7 +28,7 @@ type UsePolygonToolParams = {
   getCurrentImageGeometry: () => ImageGeometry | null
   stageToImageStrictWithGeometry: (point: Point, geometry: ImageGeometry) => Point | null
   imageToStage: (point: Point) => Point | null
-  imageOffset: { x: number; y: number }
+  /** 用于草稿顶点悬停判定：阈值按屏幕约 8px 折算到 base stage */
   imageScale: number
   polygonDraftPoints: Point[]
   polygonHoverPoint: Point | null
@@ -43,6 +42,8 @@ type UsePolygonToolParams = {
     shape: XAnyLabelFile["shapes"][number]
   }) => { shapeIndex: number; shapeId: string }
   onShapeCreated?: (event: CanvasShapeCreatedEvent) => void
+  /** 成功新建一条标注后回到选择模式 */
+  onCommittedExitToSelect?: () => void
 }
 
 export function usePolygonTool(params: UsePolygonToolParams) {
@@ -67,9 +68,6 @@ export function usePolygonTool(params: UsePolygonToolParams) {
   }, [
     canDrawPolygon,
     params.imageGeometry,
-    params.imageOffset.x,
-    params.imageOffset.y,
-    params.imageScale,
     params.imageToStage,
     params.polygonDraftPoints,
     params.polygonHoverPoint,
@@ -79,13 +77,14 @@ export function usePolygonTool(params: UsePolygonToolParams) {
     if (!canDrawPolygon || !params.polygonHoverPoint || params.polygonDraftPoints.length === 0) return null
     const hoverStagePoint = params.imageToStage(params.polygonHoverPoint)
     if (!hoverStagePoint) return null
+    const hitR = 8 / Math.max(params.imageScale, 0.001)
     let matchedIndex: number | null = null
     let minDistance = Number.POSITIVE_INFINITY
     params.polygonDraftPoints.forEach((point, index) => {
       const stagePoint = params.imageToStage(point)
       if (!stagePoint) return
       const distance = Math.hypot(stagePoint.x - hoverStagePoint.x, stagePoint.y - hoverStagePoint.y)
-      if (distance <= 8 && distance < minDistance) {
+      if (distance <= hitR && distance < minDistance) {
         matchedIndex = index
         minDistance = distance
       }
@@ -94,8 +93,6 @@ export function usePolygonTool(params: UsePolygonToolParams) {
   }, [
     canDrawPolygon,
     params.imageGeometry,
-    params.imageOffset.x,
-    params.imageOffset.y,
     params.imageScale,
     params.imageToStage,
     params.polygonDraftPoints,
@@ -145,8 +142,7 @@ export function usePolygonTool(params: UsePolygonToolParams) {
         shapeType: "polygon",
         source: "draw",
       })
-      params.dispatchTool({ type: "clearPolygonDraft" })
-      params.dispatchTool({ type: "exitToEditing" })
+      params.onCommittedExitToSelect?.()
     },
     [canDrawPolygon, params],
   )

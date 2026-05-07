@@ -41,6 +41,8 @@ type UseRectRotToolParams = {
     shape: XAnyLabelFile["shapes"][number]
   }) => { shapeIndex: number; shapeId: string }
   onShapeCreated?: (event: CanvasShapeCreatedEvent) => void
+  /** 成功新建一条标注后回到选择模式（与点选择工具一致） */
+  onCommittedExitToSelect?: () => void
 }
 
 export function useRectRotTool(params: UseRectRotToolParams) {
@@ -132,7 +134,7 @@ export function useRectRotTool(params: UseRectRotToolParams) {
         shapeType: params.drawShapeType === "rotation" ? "rotation" : "rectangle",
         source: "draw",
       })
-      params.dispatchTool({ type: "clearRectPoints" })
+      params.onCommittedExitToSelect?.()
     },
     [canDrawRectangle, params],
   )

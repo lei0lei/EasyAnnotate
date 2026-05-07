@@ -12,6 +12,8 @@ import { formatBytes } from "@/pages/project-task-detail/utils"
 import { findShapeIndexByStableId } from "@/pages/project-task-detail/shape-identity"
 import { useDragSessions } from "@/pages/project-task-detail/use-drag-sessions"
 import { useTaskCanvasEngine } from "@/pages/project-task-detail/use-task-canvas-engine"
+import type { DragStageNudge } from "@/pages/project-task-detail/page-sections"
+import type { DragLiveMaskRleOverride, DragLivePointsOverride, DragVertexLiveOverride } from "@/pages/project-task-detail/rendered-shapes"
 import { useTaskRenderModel } from "@/pages/project-task-detail/use-task-render-model"
 import { useMaskTool } from "@/pages/project-task-detail/annotateTools/use-mask-tool"
 import { useBox3dTool } from "@/pages/project-task-detail/annotateTools/use-box3d-tool"
@@ -41,10 +43,8 @@ import { AnnotationStoreProvider } from "@/pages/project-task-detail/annotation-
 import { TaskHeaderContainer } from "@/pages/project-task-detail/header-container"
 import { TaskSidebarContainer } from "@/pages/project-task-detail/sidebar-container"
 import { TaskCanvasContainer } from "@/pages/project-task-detail/canvas-container"
-import type {
-  LabelsTab,
-  LeftPanelMode,
-} from "@/pages/project-task-detail/types"
+import { rightToolModeToDrawingPreset } from "@/pages/project-task-detail/drawing-tool-preset"
+import type { LabelsTab, LeftPanelMode, RightToolMode } from "@/pages/project-task-detail/types"
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react"
 
 export type ProjectTaskDetailContentProps = {
@@ -135,6 +135,10 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     rotationTransformAction,
     setRotationTransformAction,
   } = useTaskDragState()
+  const [dragLivePoints, setDragLivePoints] = useState<DragLivePointsOverride | null>(null)
+  const [dragVertexLive, setDragVertexLive] = useState<DragVertexLiveOverride | null>(null)
+  const [dragLiveMaskRle, setDragLiveMaskRle] = useState<DragLiveMaskRleOverride | null>(null)
+  const [dragStageNudge, setDragStageNudge] = useState<DragStageNudge | null>(null)
   const dragSession = useMemo(
     () => ({
       shapeDragAction,
@@ -167,6 +171,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setRotationDragAction(null)
     setRotationTransformAction(null)
     setRawHighlightCorner(null)
+    setDragVertexLive(null)
   }, [])
   const { taskName, currentFile, currentFileName, progressText, imagePathCandidates, annotationLabelOptions, labelColorMap } = useTaskDerivedState({
     projectId,
@@ -204,10 +209,39 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     handleStartSkeletonTool,
     rectPendingLabel,
     setRectPendingLabel,
+    maskDrawingSessionLabel,
+    startDrawingWithPreset,
   } = useToolWorkflowBindings({
     annotationLabelOptions,
     clearToolTransientInteractions,
   })
+
+  const toolbarAnnotationPrimingPendingRef = useRef(false)
+  const lastDrawingToolRef = useRef<RightToolMode>("rect")
+  const lastAnnotationLabelRef = useRef("")
+  const [annotationHabitPrimed, setAnnotationHabitPrimed] = useState(false)
+
+  useEffect(() => {
+    toolbarAnnotationPrimingPendingRef.current = false
+    setAnnotationHabitPrimed(false)
+    lastAnnotationLabelRef.current = ""
+    lastDrawingToolRef.current = "rect"
+  }, [projectId, taskId])
+
+  const handleRectPickerConfirmWrapped = useCallback(() => {
+    if (toolbarAnnotationPrimingPendingRef.current) {
+      toolbarAnnotationPrimingPendingRef.current = false
+      setAnnotationHabitPrimed(true)
+      lastDrawingToolRef.current = rightToolMode
+      lastAnnotationLabelRef.current = rectPendingLabel.trim()
+    }
+    handleRectPickerConfirmFromBindings()
+  }, [handleRectPickerConfirmFromBindings, rectPendingLabel, rightToolMode])
+
+  const handleRectPickerCancelWrapped = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = false
+    handleRectPickerCancel()
+  }, [handleRectPickerCancel])
 
   const { reloadTaskFiles } = useTaskBootstrap({
     projectId,
@@ -245,6 +279,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     toggleClassVisibility,
     reorderShapeLayer,
     applyShapePatch,
+    applyMaskRlePatch,
     createShape,
     replaceDoc,
     resetDoc,
@@ -295,8 +330,13 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     replaceDoc: handleLoadedDocReplace,
   })
 
-  const { imageGeometry, getCurrentImageGeometry, stageToImageWithGeometry, stageToImageStrictWithGeometry, imageToStage } =
-    useTaskCanvasGeometryState({
+  const {
+    imageGeometry,
+    getCurrentImageGeometry,
+    stageToImageWithGeometry,
+    stageToImageStrictWithGeometry,
+    imageToStageBase,
+  } = useTaskCanvasGeometryState({
       imageNaturalSize,
       stageSize,
       stageRef,
@@ -310,6 +350,17 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       setIsPanning,
       panStartRef,
     })
+
+  /** 与 base 坐标系下的标注层一致，供 drag nudge 使用（外层 CSS scale 会映射到屏幕） */
+  const projectImageDeltaToStage = useCallback(
+    (dix: number, diy: number) => {
+      const p0 = imageToStageBase({ x: 0, y: 0 })
+      const p1 = imageToStageBase({ x: dix, y: diy })
+      if (!p0 || !p1) return { dx: 0, dy: 0 }
+      return { dx: p1.x - p0.x, dy: p1.y - p0.y }
+    },
+    [imageToStageBase],
+  )
 
   const {
     canDrawRectangle,
@@ -328,7 +379,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     stageRef,
     getCurrentImageGeometry,
     stageToImageStrictWithGeometry,
-    imageToStage,
+    imageToStage: imageToStageBase,
     rectFirstPoint,
     rectHoverPoint,
     drawShapeType: rectDrawShapeType,
@@ -337,6 +388,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     activeImageSize: imageNaturalSize,
     rectPendingLabel,
     onShapeCreated: handleEngineShapeCreated,
+    onCommittedExitToSelect: handleSelectToolClick,
   })
 
   const {
@@ -360,8 +412,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     stageRef,
     getCurrentImageGeometry,
     stageToImageStrictWithGeometry,
-    imageToStage,
-    imageOffset,
+    imageToStage: imageToStageBase,
     imageScale,
     polygonDraftPoints,
     polygonHoverPoint,
@@ -370,6 +421,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     rectPendingLabel,
     createShape,
     onShapeCreated: handleEngineShapeCreated,
+    onCommittedExitToSelect: handleSelectToolClick,
   })
 
   const {
@@ -395,17 +447,16 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     stageRef,
     getCurrentImageGeometry,
     stageToImageStrictWithGeometry,
-    imageToStage,
-    imageOffset,
-    imageScale,
+    imageToStage: imageToStageBase,
     annotationDoc,
-    applyShapePatch,
+    applyMaskRlePatch,
     createShape,
     deleteShape,
     selectedShapeIndex,
     setSelectedShapeIndex,
     imageNaturalSize,
     rectPendingLabel,
+    maskSessionLabel: (maskDrawingSessionLabel ?? "").trim() || rectPendingLabel.trim(),
     onShapeCreated: handleEngineShapeCreated,
   })
 
@@ -429,11 +480,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     stageRef,
     getCurrentImageGeometry,
     stageToImageStrictWithGeometry,
-    imageToStage,
+    imageToStage: imageToStageBase,
     createShape,
     onShapeCreated: handleEngineShapeCreated,
     onDefaultCuboidPlaced: (shapeId) => setSelectedShapeId(shapeId),
-    onCuboidCommitted: () => dispatchTool({ type: "exitToEditing" }),
+    onCuboidCommitted: handleSelectToolClick,
   })
 
   const { canDrawKeypoint, handleKeypointDrawClick } = useKeypointTool({
@@ -450,7 +501,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     stageToImageStrictWithGeometry,
     createShape,
     onShapeCreated: handleEngineShapeCreated,
-    onKeypointCommitted: () => dispatchTool({ type: "exitToEditing" }),
+    onKeypointCommitted: handleSelectToolClick,
   })
 
   const { canDrawSkeleton, handleSkeletonDrawClick } = useSkeletonTool({
@@ -468,13 +519,74 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     stageToImageStrictWithGeometry,
     createShape,
     onShapeCreated: handleEngineShapeCreated,
-    onSkeletonCommitted: () => dispatchTool({ type: "exitToEditing" }),
+    onSkeletonCommitted: handleSelectToolClick,
   })
+
+  const handleStartRectToolFromToolbar = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = true
+    handleStartRectTool()
+  }, [handleStartRectTool])
+
+  const handleStartRotRectToolFromToolbar = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = true
+    handleStartRotRectTool()
+  }, [handleStartRotRectTool])
+
+  const handleStartPolygonToolFromToolbar = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = true
+    handleStartPolygonTool()
+  }, [handleStartPolygonTool])
+
+  const handleStartMaskToolFromToolbar = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = true
+    handleStartMaskTool()
+  }, [handleStartMaskTool])
+
+  const handleStartKeypointToolFromToolbar = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = true
+    handleStartKeypointTool()
+  }, [handleStartKeypointTool])
+
+  const handleStartBox3dToolFromToolbar = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = true
+    handleStartBox3dTool()
+  }, [handleStartBox3dTool])
+
+  const handleStartSkeletonToolFromToolbar = useCallback(() => {
+    toolbarAnnotationPrimingPendingRef.current = true
+    handleStartSkeletonTool()
+  }, [handleStartSkeletonTool])
+
+  const repeatNewAnnotation = useCallback(() => {
+    if (!annotationHabitPrimed) return
+    const presetBase = rightToolModeToDrawingPreset(lastDrawingToolRef.current)
+    if (!presetBase) return
+    let label = lastAnnotationLabelRef.current
+    if (!annotationLabelOptions.includes(label)) {
+      label = annotationLabelOptions[0] ?? ""
+    }
+    if (!label.trim()) return
+    clearMaskTransientState()
+    clearBox3dDraft()
+    clearPolygonDraft()
+    clearSelectedShape()
+    handleSelectToolClick()
+    startDrawingWithPreset({ ...presetBase, label })
+  }, [
+    annotationHabitPrimed,
+    annotationLabelOptions,
+    clearBox3dDraft,
+    clearMaskTransientState,
+    clearPolygonDraft,
+    clearSelectedShape,
+    handleSelectToolClick,
+    startDrawingWithPreset,
+  ])
 
   const drawingLayerActive =
     toolWorkflowPhase ===
       "drawing" && (canDrawRectangle || canDrawPolygon || canDrawMask || canDrawKeypoint || canDrawBox3d || canDrawSkeleton)
-  const pendingRectColor = labelColorMap.get(rectPendingLabel) ?? "#f59e0b"
+  const pendingRectColor = labelColorMap.get((maskDrawingSessionLabel ?? "").trim() || rectPendingLabel) ?? "#f59e0b"
   const resolveShapeIndexById = useCallback(
     (shapeId: string | null) => findShapeIndexByStableId(annotationDocRef.current, shapeId),
     [annotationDocRef],
@@ -499,10 +611,12 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       hiddenClassLabels,
       selectedShapeId,
       labelColorMap,
+      projectTags: project?.tags,
       imageGeometry,
-      imageOffset,
-      imageScale,
-      imageToStage,
+      imageToStageBase,
+      dragLivePoints,
+      dragVertexLive,
+      dragLiveMaskRle,
     })
 
   const {
@@ -602,7 +716,26 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     redo,
     canUndo,
     canRedo,
+    canGoPrevImage: taskSessionController.canGoPrev,
+    canGoNextImage: taskSessionController.canGoNext,
+    goPrevImage: taskSessionController.prevFile,
+    goNextImage: taskSessionController.nextFile,
+    canRepeatNewAnnotation: annotationHabitPrimed,
+    repeatNewAnnotation,
   })
+
+  const dragSessionUpdateShapePoints = useCallback(
+    (shapeIndex: number, points: number[][], shouldPersist: boolean) => applyShapePatch(shapeIndex, points, { persist: shouldPersist }),
+    [applyShapePatch],
+  )
+  const dragSessionUpdateMaskRle = useCallback(
+    (
+      shapeIndex: number,
+      payload: { counts: number[]; w: number; h: number; brushSize: number },
+      shouldPersist: boolean,
+    ) => applyMaskRlePatch(shapeIndex, payload, { persist: shouldPersist }),
+    [applyMaskRlePatch],
+  )
 
   useDragSessions({
     dragSession,
@@ -611,8 +744,14 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     stageRef,
     getCurrentImageGeometry,
     stageToImageWithGeometry,
-    updateShapePoints: (shapeIndex, points, shouldPersist) => applyShapePatch(shapeIndex, points, { persist: shouldPersist }),
+    updateShapePoints: dragSessionUpdateShapePoints,
+    updateMaskRle: dragSessionUpdateMaskRle,
     setRawHighlightCorner,
+    setDragLivePoints,
+    setDragVertexLive,
+    setDragLiveMaskRle,
+    setDragStageNudge,
+    projectImageDeltaToStage,
   })
 
   usePersistAfterDrag({ dragSession, persistIfDirty })
@@ -704,6 +843,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     canDrawSkeleton,
     imageOffset,
     imageScale,
+    imageFitScale: imageGeometry?.fitScale ?? 1,
     drawingLayerActive,
     renderedMasks,
     renderedPolygons,
@@ -720,6 +860,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     selectedCuboid2d,
     selectedRect,
     rawHighlightCorner,
+    dragStageNudge,
   })
 
   const handleSelectToolFromPalette = useCallback(() => {
@@ -741,19 +882,19 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     maskDrawMode,
     maskBrushSize,
     onSelectTool: handleSelectToolFromPalette,
-    onStartRectTool: handleStartRectTool,
-    onStartRotRectTool: handleStartRotRectTool,
-    onStartPolygonTool: handleStartPolygonTool,
-    onStartMaskTool: handleStartMaskTool,
-    onStartKeypointTool: handleStartKeypointTool,
-    onStartBox3dTool: handleStartBox3dTool,
-    onStartSkeletonTool: handleStartSkeletonTool,
+    onStartRectTool: handleStartRectToolFromToolbar,
+    onStartRotRectTool: handleStartRotRectToolFromToolbar,
+    onStartPolygonTool: handleStartPolygonToolFromToolbar,
+    onStartMaskTool: handleStartMaskToolFromToolbar,
+    onStartKeypointTool: handleStartKeypointToolFromToolbar,
+    onStartBox3dTool: handleStartBox3dToolFromToolbar,
+    onStartSkeletonTool: handleStartSkeletonToolFromToolbar,
     onClearSelection: clearSelectedShape,
     onRectPendingLabelChange: setRectPendingLabel,
     onMaskDrawModeChange: setMaskDrawMode,
     onMaskBrushSizeChange: setMaskBrushSize,
-    onRectPickerCancel: handleRectPickerCancel,
-    onRectPickerConfirm: handleRectPickerConfirmFromBindings,
+    onRectPickerCancel: handleRectPickerCancelWrapped,
+    onRectPickerConfirm: handleRectPickerConfirmWrapped,
     box3dAwaitingSecondClick,
   })
 

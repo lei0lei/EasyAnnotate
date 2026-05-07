@@ -391,6 +391,147 @@ export async function startDatasetExport(payload: {
   }
 }
 
+/** 任务列表元数据（持久化于全局配置目录下的 project-tasks/） */
+export type ProjectTaskItem = {
+  id: string
+  name: string
+  subset: string
+  fileCount: number
+  createdAt: string
+  updatedAt: string
+  coverColor: string
+}
+
+function legacyTasksStorageKey(projectId: string): string {
+  return `easyannotate:project:${projectId}:tasks`
+}
+
+function normalizeTasksFromJson(parsed: unknown): ProjectTaskItem[] {
+  if (!Array.isArray(parsed)) return []
+  return parsed
+    .filter((item): item is Partial<ProjectTaskItem> => typeof item === "object" && item !== null)
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : "",
+      name: typeof item.name === "string" ? item.name.trim() : "",
+      subset: typeof item.subset === "string" ? item.subset.trim() : "",
+      fileCount:
+        typeof item.fileCount === "number" && Number.isFinite(item.fileCount) ? Math.max(0, Math.floor(item.fileCount)) : 0,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
+      updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
+      coverColor: typeof item.coverColor === "string" && item.coverColor.trim() ? item.coverColor.trim() : "#334155",
+    }))
+    .filter((item) => item.id.length > 0 && item.name.length > 0)
+}
+
+function mapProtoTasksToItems(
+  tasks: Array<{
+    id?: string
+    name?: string
+    subset?: string
+    fileCount?: number
+    createdAt?: string
+    updatedAt?: string
+    coverColor?: string
+  }>,
+): ProjectTaskItem[] {
+  return (tasks ?? []).map((t) => ({
+    id: t.id ?? "",
+    name: (t.name ?? "").trim(),
+    subset: (t.subset ?? "").trim(),
+    fileCount: Math.max(0, Math.floor(Number(t.fileCount) || 0)),
+    createdAt: t.createdAt ?? "",
+    updatedAt: t.updatedAt ?? "",
+    coverColor: (t.coverColor ?? "").trim() || "#334155",
+  }))
+}
+
+async function saveProjectTasksToDisk(
+  projectId: string,
+  tasks: ProjectTaskItem[],
+): Promise<{ errorMessage: string }> {
+  const response = await ipc.app.SaveProjectTasks({
+    globalConfigDir: globalConfigDir(),
+    projectId,
+    tasks: tasks.map((t) => ({
+      id: t.id,
+      name: t.name,
+      subset: t.subset,
+      fileCount: t.fileCount,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      coverColor: t.coverColor,
+    })),
+  })
+  return { errorMessage: response.errorMessage || "" }
+}
+
+async function tryMigrateLegacyTasksFromLocalStorage(projectId: string): Promise<ProjectTaskItem[]> {
+  let raw: string | null = null
+  try {
+    raw = localStorage.getItem(legacyTasksStorageKey(projectId))
+  } catch {
+    return []
+  }
+  if (!raw) return []
+  try {
+    const migrated = normalizeTasksFromJson(JSON.parse(raw) as unknown)
+    if (migrated.length === 0) return []
+    const { errorMessage } = await saveProjectTasksToDisk(projectId, migrated)
+    if (errorMessage) return []
+    try {
+      localStorage.removeItem(legacyTasksStorageKey(projectId))
+    } catch {
+      // ignore
+    }
+    return migrated
+  } catch {
+    return []
+  }
+}
+
+export async function listProjectTasks(projectId: string): Promise<ProjectTaskItem[]> {
+  const response = await ipc.app.ListProjectTasks({
+    globalConfigDir: globalConfigDir(),
+    projectId,
+  })
+  if (response.errorMessage) return []
+  const fromDisk = mapProtoTasksToItems(response.tasks ?? [])
+  if (fromDisk.length > 0) return fromDisk
+  return tryMigrateLegacyTasksFromLocalStorage(projectId)
+}
+
+export async function saveProjectTasks(projectId: string, tasks: ProjectTaskItem[]): Promise<{ errorMessage: string }> {
+  return saveProjectTasksToDisk(projectId, tasks)
+}
+
+export async function getProjectExportVersionsFromDisk(projectId: string): Promise<{
+  jsonText: string
+  exists: boolean
+  errorMessage: string
+}> {
+  const response = await ipc.app.GetProjectExportVersions({
+    globalConfigDir: globalConfigDir(),
+    projectId,
+  })
+  return {
+    jsonText: response.jsonText || "",
+    exists: response.exists,
+    errorMessage: response.errorMessage || "",
+  }
+}
+
+export async function saveProjectExportVersionsToDisk(
+  projectId: string,
+  jsonText: string,
+): Promise<{ errorMessage: string }> {
+  const response = await ipc.app.SaveProjectExportVersions({
+    globalConfigDir: globalConfigDir(),
+    projectId,
+    jsonText,
+  })
+  return { errorMessage: response.errorMessage || "" }
+}
+
 export async function listExportJobs(): Promise<ExportJobItem[]> {
   const response = await ipc.app.ListExportJobs({})
   return (response.jobs ?? []).map((job) => ({

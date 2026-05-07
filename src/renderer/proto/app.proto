@@ -96,6 +96,17 @@ message SaveAppConfigToDiskRequest {
   string app_config_json = 2;
 }
 
+message GetAppConfigFromDiskRequest {
+  /** 为空时使用默认全局配置目录 */
+  string global_config_dir = 1;
+}
+
+message GetAppConfigFromDiskResponse {
+  string app_config_json = 1;
+  bool exists = 2;
+  string error_message = 3;
+}
+
 message ValidateProjectDirectoryRequest {
   string path = 1;
 }
@@ -250,6 +261,59 @@ message ListTaskFilesResponse {
   string error_message = 2;
 }
 
+/** 项目任务列表项（与 renderer TaskItem 对齐，持久化于 global_config_dir/project-tasks/） */
+message ProjectTaskItem {
+  string id = 1;
+  string name = 2;
+  string subset = 3;
+  int32 file_count = 4;
+  string created_at = 5;
+  string updated_at = 6;
+  string cover_color = 7;
+}
+
+message ListProjectTasksRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+}
+
+message ListProjectTasksResponse {
+  repeated ProjectTaskItem tasks = 1;
+  string error_message = 2;
+}
+
+message SaveProjectTasksRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  repeated ProjectTaskItem tasks = 3;
+}
+
+message SaveProjectTasksResponse {
+  string error_message = 1;
+}
+
+/** 项目导出页 Version 配置（JSON 文档，与 renderer ExportVersionDoc 对齐） */
+message GetProjectExportVersionsRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+}
+
+message GetProjectExportVersionsResponse {
+  string json_text = 1;
+  bool exists = 2;
+  string error_message = 3;
+}
+
+message SaveProjectExportVersionsRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string json_text = 3;
+}
+
+message SaveProjectExportVersionsResponse {
+  string error_message = 1;
+}
+
 message ReadImageFileRequest {
   string path = 1;
 }
@@ -378,6 +442,10 @@ service AppService {
   rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
   rpc SaveTaskFiles(SaveTaskFilesRequest) returns (SaveTaskFilesResponse);
   rpc ListTaskFiles(ListTaskFilesRequest) returns (ListTaskFilesResponse);
+  rpc ListProjectTasks(ListProjectTasksRequest) returns (ListProjectTasksResponse);
+  rpc SaveProjectTasks(SaveProjectTasksRequest) returns (SaveProjectTasksResponse);
+  rpc GetProjectExportVersions(GetProjectExportVersionsRequest) returns (GetProjectExportVersionsResponse);
+  rpc SaveProjectExportVersions(SaveProjectExportVersionsRequest) returns (SaveProjectExportVersionsResponse);
   rpc ReadImageFile(ReadImageFileRequest) returns (ReadImageFileResponse);
   rpc ReadImageAnnotation(ReadImageAnnotationRequest) returns (ReadImageAnnotationResponse);
   rpc WriteImageAnnotation(WriteImageAnnotationRequest) returns (WriteImageAnnotationResponse);
@@ -390,6 +458,7 @@ service AppService {
   rpc GetDefaultDatabaseDir(google.protobuf.Empty) returns (DefaultDatabaseDirResponse);
   rpc GetDefaultGlobalConfigDir(google.protobuf.Empty) returns (DefaultGlobalConfigDirResponse);
   rpc SaveAppConfigToDisk(SaveAppConfigToDiskRequest) returns (google.protobuf.Empty);
+  rpc GetAppConfigFromDisk(GetAppConfigFromDiskRequest) returns (GetAppConfigFromDiskResponse);
   rpc ListAnnotationProjects(ListAnnotationProjectsRequest) returns (ListAnnotationProjectsResponse);
   rpc UpsertAnnotationProject(UpsertAnnotationProjectRequest) returns (google.protobuf.Empty);
   rpc DeleteAnnotationProject(DeleteAnnotationProjectRequest) returns (google.protobuf.Empty);

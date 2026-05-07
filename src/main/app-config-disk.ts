@@ -39,3 +39,16 @@ export function saveAppConfigToDisk(globalConfigDir: string, appConfigJson: stri
   const filePath = path.join(configDir, CONFIG_FILE_NAME)
   fs.writeFileSync(filePath, appConfigJson, "utf8")
 }
+
+export function readAppConfigFromDisk(globalConfigDir: string): { jsonText: string; exists: boolean } {
+  const configDir = resolveConfigDir(globalConfigDir)
+  const filePath = path.join(configDir, CONFIG_FILE_NAME)
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { jsonText: "", exists: false }
+    }
+    return { jsonText: fs.readFileSync(filePath, "utf8"), exists: true }
+  } catch {
+    return { jsonText: "", exists: false }
+  }
+}

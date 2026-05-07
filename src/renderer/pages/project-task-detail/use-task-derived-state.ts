@@ -3,10 +3,10 @@
  * 职责：集中计算任务详情页纯派生数据（任务名、文件信息、路径候选、标签映射）。
  * 边界：仅做派生计算，不管理可变状态与副作用。
  */
-import { readTasks } from "@/lib/project-tasks-storage"
+import { loadTasks } from "@/lib/project-tasks-storage"
 import type { ProjectItem, TaskFileItem } from "@/lib/projects-api"
 import { fileNameFromPath, normalizeTagColor, resolveTaskImagePath } from "@/pages/project-task-detail/utils"
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 type UseTaskDerivedStateParams = {
   projectId: string | undefined
@@ -17,11 +17,24 @@ type UseTaskDerivedStateParams = {
 }
 
 export function useTaskDerivedState({ projectId, taskId, project, files, currentIndex }: UseTaskDerivedStateParams) {
-  const taskName = useMemo(() => {
-    if (!projectId || !taskId) return taskId ?? "—"
-    const task = readTasks(projectId).find((item) => item.id === taskId)
-    return task?.name ?? taskId
+  const [taskRecordName, setTaskRecordName] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!projectId || !taskId) {
+      setTaskRecordName(null)
+      return
+    }
+    let alive = true
+    void loadTasks(projectId).then((tasks) => {
+      if (!alive) return
+      setTaskRecordName(tasks.find((item) => item.id === taskId)?.name ?? null)
+    })
+    return () => {
+      alive = false
+    }
   }, [projectId, taskId])
+
+  const taskName = !projectId || !taskId ? (taskId ?? "—") : (taskRecordName ?? taskId)
 
   const currentFile = files[currentIndex]
   const currentFileName = fileNameFromPath(currentFile?.filePath ?? "")

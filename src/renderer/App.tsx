@@ -1,6 +1,7 @@
 import { ThemeProvider } from "@/components/theme-provider"
 import { STORAGE_KEYS } from "@/lib/storage/keys"
 import { AppLayout } from "@/components/app-layout"
+import { hydrateAppConfigFromDisk } from "@/lib/app-config-storage"
 import BackendsPage from "@/pages/backends"
 import EventsPage from "@/pages/events"
 import HomePage from "@/pages/home"
@@ -28,11 +29,24 @@ import WorkflowEditorPage from "@/pages/workflow-editor"
 import WorkflowsHubPage from "@/pages/workflows-hub"
 import { WorkflowsOutlet } from "@/pages/workflows-outlet"
 import SettingsPage from "@/pages/settings"
+import { Loader2 } from "lucide-react"
+import { useEffect, useState } from "react"
 import { Navigate, Route, Routes } from "react-router-dom"
 
 export default function App() {
+  const [configReady, setConfigReady] = useState(false)
+  useEffect(() => {
+    void hydrateAppConfigFromDisk().finally(() => setConfigReady(true))
+  }, [])
+
   return (
     <ThemeProvider storageKey={STORAGE_KEYS.theme}>
+      {!configReady ? (
+        <div className="flex min-h-[calc(100vh-var(--ea-titlebar-height,36px))] items-center justify-center bg-background text-muted-foreground">
+          <Loader2 className="h-8 w-8 animate-spin" aria-hidden />
+          <span className="sr-only">正在加载应用配置</span>
+        </div>
+      ) : (
       <Routes>
         <Route element={<AppLayout />}>
           <Route index element={<HomePage />} />
@@ -71,6 +85,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
+      )}
     </ThemeProvider>
   )
 }

@@ -19,6 +19,14 @@ import {
   DeleteImageAnnotationResponse,
   ListTaskFilesRequest,
   ListTaskFilesResponse,
+  ListProjectTasksRequest,
+  ListProjectTasksResponse,
+  SaveProjectTasksRequest,
+  SaveProjectTasksResponse,
+  GetProjectExportVersionsRequest,
+  GetProjectExportVersionsResponse,
+  SaveProjectExportVersionsRequest,
+  SaveProjectExportVersionsResponse,
   ReadImageAnnotationRequest,
   ReadImageAnnotationResponse,
   ReadImageFileRequest,
@@ -42,6 +50,8 @@ import {
   SelectDirectoryRequest,
   SelectFilesRequest,
   SaveAppConfigToDiskRequest,
+  GetAppConfigFromDiskRequest,
+  GetAppConfigFromDiskResponse,
   SelectFilesResponse,
   SetThemeRequest,
   UpdateProjectRequest,
@@ -60,9 +70,20 @@ import {
   upsertAnnotation,
   upsertAnnotationProject,
 } from "./annotation-sqlite";
-import { getDefaultDatabaseDir, getDefaultGlobalConfigDir, saveAppConfigToDisk } from "./app-config-disk";
+import {
+  getDefaultDatabaseDir,
+  getDefaultGlobalConfigDir,
+  readAppConfigFromDisk,
+  saveAppConfigToDisk,
+} from "./app-config-disk";
 import { validateProjectDirectory } from "./project-directory";
 import { protoProjectTagsToRecords, projectTagRecordsToProto } from "./project-tag-ipc";
+import {
+  deleteProjectExportVersionsFile,
+  readProjectExportVersionsJson,
+  writeProjectExportVersionsJson,
+} from "./project-export-versions-disk";
+import { deleteProjectTasksFile, readProjectTasks, writeProjectTasks } from "./project-tasks-disk";
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
 import { listDatasetExportJobs, startDatasetExportJob } from "./dataset-export";
 
@@ -513,6 +534,8 @@ ipc.registerService(AppService({
       const existing = getProject(request.globalConfigDir, request.id)
       const found = deleteProject(request.globalConfigDir, request.id)
       if (found && existing) {
+        deleteProjectTasksFile(request.globalConfigDir, request.id)
+        deleteProjectExportVersionsFile(request.globalConfigDir, request.id)
         if (existing.storageType === "local" && existing.localPath) {
           fs.rmSync(existing.localPath, { recursive: true, force: true })
         }
@@ -612,6 +635,70 @@ ipc.registerService(AppService({
         files: [],
         errorMessage: error instanceof Error ? error.message : String(error),
       }
+    }
+  },
+  async ListProjectTasks(request: ListProjectTasksRequest): Promise<ListProjectTasksResponse> {
+    try {
+      const tasks = readProjectTasks(request.globalConfigDir, request.projectId).map((t) => ({
+        id: t.id,
+        name: t.name,
+        subset: t.subset,
+        fileCount: t.fileCount,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+        coverColor: t.coverColor,
+      }))
+      return { tasks, errorMessage: "" }
+    } catch (error) {
+      return {
+        tasks: [],
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async SaveProjectTasks(request: SaveProjectTasksRequest): Promise<SaveProjectTasksResponse> {
+    try {
+      const project = getProject(request.globalConfigDir, request.projectId)
+      if (!project) {
+        return { errorMessage: "项目不存在。" }
+      }
+      const records = (request.tasks ?? []).map((t) => ({
+        id: (t.id ?? "").trim(),
+        name: (t.name ?? "").trim(),
+        subset: (t.subset ?? "").trim(),
+        fileCount: Math.max(0, Math.floor(Number(t.fileCount) || 0)),
+        createdAt: (t.createdAt ?? "").trim(),
+        updatedAt: (t.updatedAt ?? "").trim(),
+        coverColor: (t.coverColor ?? "").trim() || "#334155",
+      }))
+      writeProjectTasks(request.globalConfigDir, request.projectId, records)
+      return { errorMessage: "" }
+    } catch (error) {
+      return { errorMessage: error instanceof Error ? error.message : String(error) }
+    }
+  },
+  async GetProjectExportVersions(request: GetProjectExportVersionsRequest): Promise<GetProjectExportVersionsResponse> {
+    try {
+      const { jsonText, exists } = readProjectExportVersionsJson(request.globalConfigDir, request.projectId)
+      return { jsonText, exists, errorMessage: "" }
+    } catch (error) {
+      return {
+        jsonText: "",
+        exists: false,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async SaveProjectExportVersions(request: SaveProjectExportVersionsRequest): Promise<SaveProjectExportVersionsResponse> {
+    try {
+      const project = getProject(request.globalConfigDir, request.projectId)
+      if (!project) {
+        return { errorMessage: "项目不存在。" }
+      }
+      writeProjectExportVersionsJson(request.globalConfigDir, request.projectId, request.jsonText ?? "")
+      return { errorMessage: "" }
+    } catch (error) {
+      return { errorMessage: error instanceof Error ? error.message : String(error) }
     }
   },
   async ReadImageFile(request: ReadImageFileRequest): Promise<ReadImageFileResponse> {
@@ -875,6 +962,18 @@ ipc.registerService(AppService({
   async SaveAppConfigToDisk(request: SaveAppConfigToDiskRequest) {
     saveAppConfigToDisk(request.globalConfigDir, request.appConfigJson)
     return {}
+  },
+  async GetAppConfigFromDisk(request: GetAppConfigFromDiskRequest): Promise<GetAppConfigFromDiskResponse> {
+    try {
+      const { jsonText, exists } = readAppConfigFromDisk(request.globalConfigDir)
+      return { appConfigJson: jsonText, exists, errorMessage: "" }
+    } catch (error) {
+      return {
+        appConfigJson: "",
+        exists: false,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
   },
   async ListAnnotationProjects(request: ListAnnotationProjectsRequest) {
     const projects = (await listAnnotationProjects(request.databaseDir)).map((project) => ({

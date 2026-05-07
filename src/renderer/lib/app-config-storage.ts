@@ -1,5 +1,5 @@
+import { ipc } from "@/gen/ipc"
 import { STORAGE_KEYS } from "@/lib/storage/keys"
-import { readLocalJson, writeLocalJson } from "@/lib/storage/json-local"
 
 /** 与磁盘上 JSON 结构版本号一致，便于做迁移；升级时加 migrate 逻辑即可 */
 const APP_CONFIG_VERSION = 2
@@ -58,6 +58,7 @@ type AppConfigV1 = {
     assetsDir?: string
     imagesDir?: string
     annotationsDir?: string
+    globalConfigDir?: string
   }
   shortcuts?: Partial<Record<string, string>>
 }
@@ -118,8 +119,7 @@ function isAppConfigAnyVersion(d: unknown): d is AppConfigAnyVersion {
   return isAppConfigV2(d) || isAppConfigV1(d)
 }
 
-export function loadAppConfig(): AppConfig {
-  const raw = readLocalJson<AppConfigAnyVersion>(STORAGE_KEYS.appConfig, isAppConfigAnyVersion, DEFAULT)
+function normalizeAnyToV2(raw: AppConfigAnyVersion): AppConfig {
   if (raw.version === APP_CONFIG_VERSION) {
     return {
       version: APP_CONFIG_VERSION,
@@ -161,6 +161,110 @@ export function loadAppConfig(): AppConfig {
   }
 }
 
+function parseAppConfigJson(jsonText: string): AppConfig | null {
+  try {
+    const parsed = JSON.parse(jsonText) as unknown
+    if (!isAppConfigAnyVersion(parsed)) return null
+    return normalizeAnyToV2(parsed)
+  } catch {
+    return null
+  }
+}
+
+function readLegacyLocalStorage(): AppConfig | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.appConfig)
+    if (!raw) return null
+    return parseAppConfigJson(raw)
+  } catch {
+    return null
+  }
+}
+
+function removeLegacyAppConfigLocalStorage(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.appConfig)
+  } catch {
+    // ignore
+  }
+}
+
+/** 启动后由 hydrate 写入；在此之前 loadAppConfig 仅作兜底 */
+let memoryConfig: AppConfig | null = null
+let hydratePromise: Promise<void> | null = null
+
+function resolveSaveGlobalConfigDir(cfg: AppConfig): string {
+  return cfg.storagePaths.globalConfigDir.trim()
+}
+
+export function loadAppConfig(): AppConfig {
+  if (memoryConfig) return memoryConfig
+  return readLegacyLocalStorage() ?? { ...DEFAULT }
+}
+
+function persistAppConfigToDisk(cfg: AppConfig): void {
+  void ipc.app
+    .SaveAppConfigToDisk({
+      globalConfigDir: resolveSaveGlobalConfigDir(cfg),
+      appConfigJson: JSON.stringify(cfg, null, 2),
+    })
+    .catch(() => {
+      // 写入失败时内存仍为最新；用户可在设置页重试
+    })
+}
+
+/**
+ * 从磁盘加载应用配置（权威），并一次性迁移旧版 localStorage `ea-app-config`。
+ * 须在路由渲染前调用一次（见 App.tsx）。
+ */
+export function hydrateAppConfigFromDisk(): Promise<void> {
+  if (hydratePromise) return hydratePromise
+  hydratePromise = (async () => {
+    const defRes = await ipc.app.GetDefaultGlobalConfigDir({})
+    const defaultDir = (defRes.path || "").trim()
+
+    const legacy = readLegacyLocalStorage()
+    const dirsToTry: string[] = []
+    const legacyDir = legacy?.storagePaths.globalConfigDir?.trim()
+    if (legacyDir) dirsToTry.push(legacyDir)
+    if (defaultDir && !dirsToTry.includes(defaultDir)) dirsToTry.push(defaultDir)
+
+    for (const dir of dirsToTry) {
+      const r = await ipc.app.GetAppConfigFromDisk({ globalConfigDir: dir })
+      if (r.errorMessage) continue
+      if (r.exists && (r.appConfigJson || "").trim()) {
+        const parsed = parseAppConfigJson(r.appConfigJson)
+        if (parsed) {
+          memoryConfig = parsed
+          removeLegacyAppConfigLocalStorage()
+          return
+        }
+      }
+    }
+
+    if (legacy) {
+      memoryConfig = legacy
+      const saveDir = resolveSaveGlobalConfigDir(legacy) || defaultDir
+      await ipc.app.SaveAppConfigToDisk({
+        globalConfigDir: saveDir,
+        appConfigJson: JSON.stringify(memoryConfig, null, 2),
+      })
+      removeLegacyAppConfigLocalStorage()
+      return
+    }
+
+    memoryConfig = {
+      ...DEFAULT,
+      storagePaths: { ...DEFAULT.storagePaths, globalConfigDir: defaultDir },
+    }
+    await ipc.app.SaveAppConfigToDisk({
+      globalConfigDir: defaultDir,
+      appConfigJson: JSON.stringify(memoryConfig, null, 2),
+    })
+  })()
+  return hydratePromise
+}
+
 export function updateAppConfig(patch: {
   backend?: Partial<AppConfig["backend"]>
   storagePaths?: Partial<AppConfig["storagePaths"]>
@@ -194,16 +298,19 @@ export function updateAppConfig(patch: {
       }
     }
   }
-  writeLocalJson(STORAGE_KEYS.appConfig, {
+  const next: AppConfig = {
     ...cur,
     version: APP_CONFIG_VERSION,
     backend,
     storagePaths,
     pageFlow,
     shortcuts,
-  })
+  }
+  memoryConfig = next
+  persistAppConfigToDisk(next)
 }
 
 export function resetAppConfigToDefaults(): void {
-  writeLocalJson(STORAGE_KEYS.appConfig, { ...DEFAULT })
+  memoryConfig = { ...DEFAULT }
+  persistAppConfigToDisk(memoryConfig)
 }

@@ -106,6 +106,14 @@ export type RenderedMask = {
   top: number
   width: number
   height: number
+  /** CVAT 风格 RLE：与整图同尺寸；有则走光栅叠图而非折线笔划 */
+  raster?: {
+    counts: number[]
+    imageWidth: number
+    imageHeight: number
+  }
+  /** 整图在 stage 上的外接矩形，用于 foreignObject 与底图像素对齐 */
+  stageImageRect?: { left: number; top: number; width: number; height: number }
 }
 
 /**

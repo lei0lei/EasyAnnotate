@@ -48,6 +48,9 @@ import type { LeftPanelMode, RenderedRectangle } from "@/pages/project-task-deta
 
 type RectangleOverlayItemProps = {
   item: RenderedRectangle
+  /** 纯平移拖拽时 stage 像素偏移（translate3d），与 left/top 叠加 */
+  dragNudgeDx?: number
+  dragNudgeDy?: number
   drawingLayerActive: boolean
   isSelected: boolean
   isHovered: boolean
@@ -60,6 +63,8 @@ type RectangleOverlayItemProps = {
 export const RectangleOverlayItem = memo(
   function RectangleOverlayItem({
     item,
+    dragNudgeDx = 0,
+    dragNudgeDy = 0,
     drawingLayerActive,
     isSelected,
     isHovered,
@@ -68,6 +73,8 @@ export const RectangleOverlayItem = memo(
     onMouseDown,
     onClick,
   }: RectangleOverlayItemProps) {
+    const nudge =
+      dragNudgeDx !== 0 || dragNudgeDy !== 0 ? `translate3d(${dragNudgeDx}px, ${dragNudgeDy}px, 0)` : undefined
     return (
       <div
         className={cn(
@@ -85,6 +92,7 @@ export const RectangleOverlayItem = memo(
           borderRightWidth: item.clippedRight ? 0 : 2,
           borderBottomWidth: item.clippedBottom ? 0 : 2,
           backgroundColor: isSelected || isHovered ? `${item.color}33` : "transparent",
+          transform: nudge,
         }}
         onMouseEnter={() => onMouseEnter(item.shapeId)}
         onMouseLeave={() => onMouseLeave(item.shapeId)}
@@ -105,6 +113,8 @@ export const RectangleOverlayItem = memo(
     prev.drawingLayerActive === next.drawingLayerActive &&
     prev.isSelected === next.isSelected &&
     prev.isHovered === next.isHovered &&
+    prev.dragNudgeDx === next.dragNudgeDx &&
+    prev.dragNudgeDy === next.dragNudgeDy &&
     prev.item.index === next.item.index &&
     prev.item.shapeId === next.item.shapeId &&
     prev.item.label === next.item.label &&

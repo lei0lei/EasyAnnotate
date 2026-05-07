@@ -57,6 +57,7 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
     hiddenClassLabels: [...params.hiddenClassLabels],
   })
   const shapeManagement = useShapeManagement(params)
+  const { updateShapePoints: patchDocShapePoints, updateMaskShapeRle: patchDocMaskRle } = shapeManagement
   const resolveShapeIdFromDoc = useCallback((doc: XAnyLabelFile | null, shapeIndex: number | null | undefined) => {
     if (shapeIndex === null || shapeIndex === undefined) return undefined
     return getShapeStableIdAtIndex(doc, shapeIndex) ?? undefined
@@ -109,7 +110,7 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
       dirtyRef.current = false
       lastDirtyEventRef.current = null
     },
-    [params],
+    [params.persistAnnotation, params.setHistory],
   )
 
   const commitDoc = useCallback(
@@ -129,7 +130,7 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
   const applyShapePatch = useCallback(
     (shapeIndex: number, points: number[][], options?: { persist?: boolean }) => {
       const shouldPersist = options?.persist ?? false
-      const nextDoc = shapeManagement.updateShapePoints(shapeIndex, points)
+      const nextDoc = patchDocShapePoints(shapeIndex, points)
       if (shouldPersist) {
         if (nextDoc) {
           commitDoc(nextDoc, {
@@ -145,7 +146,29 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
         }
       }
     },
-    [commitDoc, resolveShapeIdFromDoc, shapeManagement],
+    [commitDoc, patchDocShapePoints, resolveShapeIdFromDoc],
+  )
+
+  const applyMaskRlePatch = useCallback(
+    (shapeIndex: number, payload: { counts: number[]; w: number; h: number; brushSize: number }, options?: { persist?: boolean }) => {
+      const shouldPersist = options?.persist ?? false
+      const nextDoc = patchDocMaskRle(shapeIndex, payload)
+      if (shouldPersist) {
+        if (nextDoc) {
+          commitDoc(nextDoc, {
+            source: "command",
+            shapeId: resolveShapeIdFromDoc(nextDoc, shapeIndex),
+          })
+        }
+      } else {
+        dirtyRef.current = true
+        lastDirtyEventRef.current = {
+          source: "command",
+          shapeId: resolveShapeIdFromDoc(nextDoc, shapeIndex),
+        }
+      }
+    },
+    [commitDoc, patchDocMaskRle, resolveShapeIdFromDoc],
   )
 
   const persistIfDirty = useCallback(() => {
@@ -364,6 +387,7 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
     setHoveredShape,
     clearSelection,
     applyShapePatch,
+    applyMaskRlePatch,
     markInteractionDirty,
     lastDirtyEventRef,
     persistIfDirty,

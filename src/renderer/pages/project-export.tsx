@@ -8,8 +8,15 @@ import {
   loadProjectExportVersions,
   saveProjectExportVersions,
 } from "@/lib/project-export-storage"
-import { readTasks } from "@/lib/project-tasks-storage"
-import { getProject, listExportJobs, listTaskFiles, readImageAnnotation, startDatasetExport } from "@/lib/projects-api"
+import {
+  getProject,
+  listExportJobs,
+  listProjectTasks,
+  listTaskFiles,
+  readImageAnnotation,
+  startDatasetExport,
+  type ProjectTaskItem,
+} from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import {
   ArrowLeft,
@@ -153,6 +160,7 @@ export default function ProjectExportPage() {
   const [exportMessage, setExportMessage] = useState("")
   const [saving, setSaving] = useState(false)
   const [hydrated, setHydrated] = useState(false)
+  const [projectTasks, setProjectTasks] = useState<ProjectTaskItem[]>([])
 
   const minGap = 5
   const backHref = projectId ? `/projects/${projectId}` : "/projects/mine"
@@ -184,13 +192,22 @@ export default function ProjectExportPage() {
   useEffect(() => {
     if (!projectId) return
     setHydrated(false)
-    setAllVersions(loadProjectExportVersions(projectId))
-    setHydrated(true)
+    let alive = true
+    void loadProjectExportVersions(projectId).then((items) => {
+      if (!alive) return
+      setAllVersions(items)
+      setHydrated(true)
+    })
+    return () => {
+      alive = false
+    }
   }, [projectId])
 
   useEffect(() => {
     if (!projectId || !hydrated) return
-    saveProjectExportVersions(projectId, allVersions)
+    void saveProjectExportVersions(projectId, allVersions).then(({ errorMessage }) => {
+      if (errorMessage) setExportMessage(`保存导出版本失败：${errorMessage}`)
+    })
   }, [allVersions, hydrated, projectId])
 
   useEffect(() => {
@@ -220,10 +237,10 @@ export default function ProjectExportPage() {
   useEffect(() => {
     let alive = true
     if (!projectId) return
-    void Promise.all([getProject(projectId)]).then(([project]) => {
+    void Promise.all([getProject(projectId), listProjectTasks(projectId)]).then(([project, tasks]) => {
       if (!alive) return
       setProjectName(project?.name ?? "")
-      const tasks = readTasks(projectId)
+      setProjectTasks(tasks)
       const classCount = project?.tags?.length ?? 0
       const targetTaskIds = taskId ? [taskId] : tasks.map((item) => item.id)
       if (taskId) {
@@ -288,13 +305,14 @@ export default function ProjectExportPage() {
     setActiveVersionId(remaining[0]?.id ?? "")
   }
 
-  function handleSaveVersions() {
+  async function handleSaveVersions() {
     if (!projectId || !hydrated) return
     setSaving(true)
-    saveProjectExportVersions(projectId, allVersions)
-    window.setTimeout(() => {
-      setSaving(false)
-    }, 500)
+    const { errorMessage } = await saveProjectExportVersions(projectId, allVersions)
+    if (errorMessage) {
+      setExportMessage(`保存导出版本失败：${errorMessage}`)
+    }
+    setSaving(false)
   }
 
   function handleExport() {
@@ -308,7 +326,7 @@ export default function ProjectExportPage() {
       trainBoundary: activeVersion.trainBoundary,
       valBoundary: activeVersion.valBoundary,
       versionName: activeVersion.name,
-      taskNames: readTasks(projectId || "").map((task) => ({ taskId: task.id, taskName: task.name })),
+      taskNames: projectTasks.map((task) => ({ taskId: task.id, taskName: task.name })),
     }).then((result) => {
       if (result.canceled) {
         setExporting(false)

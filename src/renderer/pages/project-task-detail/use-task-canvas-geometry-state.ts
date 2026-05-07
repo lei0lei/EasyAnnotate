@@ -66,6 +66,15 @@ export function useTaskCanvasGeometryState(params: UseTaskCanvasGeometryStatePar
     [imageGeometry, imageOffset, imageScale],
   )
 
+  /** 仅含 object-fit 适配，不含用户缩放/平移；与画布外层 CSS transform 组合后与 imageToStage 一致 */
+  const imageToStageBase = useCallback(
+    (point: Point): Point | null => {
+      if (!imageGeometry) return null
+      return imageToStagePoint(point, imageGeometry, { scale: 1, offset: { x: 0, y: 0 } })
+    },
+    [imageGeometry],
+  )
+
   useEffect(() => {
     const next = imageGeometry
     const prev = previousImageGeometryRef.current
@@ -112,5 +121,6 @@ export function useTaskCanvasGeometryState(params: UseTaskCanvasGeometryStatePar
     stageToImageWithGeometry,
     stageToImageStrictWithGeometry,
     imageToStage,
+    imageToStageBase,
   }
 }

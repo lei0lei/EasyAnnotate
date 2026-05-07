@@ -34,6 +34,7 @@ function AppSidebarInner({ collapsed }: AppSidebarProps) {
 
   return (
     <aside
+      data-ea-app-chrome
       className={cn(
         "relative z-10 flex h-full shrink-0 flex-col overflow-hidden border-r border-border/80",
         "bg-gradient-to-b from-muted/90 via-muted/70 to-muted/50",
@@ -61,9 +62,9 @@ function AppSidebarInner({ collapsed }: AppSidebarProps) {
             className={({ isActive }) =>
               cn(
                 "group/nav flex items-center rounded-lg py-2.5 text-sm font-medium outline-none transition-colors duration-100",
+                "focus:outline-none focus-visible:outline-none focus-visible:ring-0",
                 expanded ? "gap-3 px-3" : "justify-center px-0",
                 "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
-                "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-transparent",
                 isActive &&
                   "bg-primary/10 text-primary shadow-sm ring-1 ring-primary/15 dark:bg-primary/15 dark:ring-primary/25",
               )
@@ -73,7 +74,7 @@ function AppSidebarInner({ collapsed }: AppSidebarProps) {
               <>
                 <Icon
                   className={cn(
-                    "h-[18px] w-[18px] shrink-0 transition-transform duration-100",
+                    "pointer-events-none h-[18px] w-[18px] shrink-0 transition-transform duration-100",
                     "group-hover/nav:scale-105",
                     isActive && "text-primary",
                   )}

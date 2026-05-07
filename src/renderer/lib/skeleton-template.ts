@@ -100,15 +100,50 @@ export function normalizeSkeletonTemplateSpec(raw: unknown): SkeletonTemplateSpe
 }
 
 export function isPlainProjectTag(
-  t: { kind?: string; skeletonTemplate?: unknown },
+  t: { kind?: string; skeletonTemplate?: unknown } | null | undefined,
 ): t is { name: string; color: string; kind?: "plain" } {
-  return t.kind !== "skeleton"
+  return t != null && t.kind !== "skeleton"
 }
 
 export function isSkeletonProjectTag(
-  t: { kind?: string; skeletonTemplate?: unknown },
+  t: { kind?: string; skeletonTemplate?: unknown } | null | undefined,
 ): t is { name: string; color: string; kind: "skeleton"; skeletonTemplate: SkeletonTemplateSpec } {
-  return t.kind === "skeleton" && t.skeletonTemplate != null
+  return t != null && t.kind === "skeleton" && t.skeletonTemplate != null
+}
+
+/** 按类别名从项目标签解析骨架模板（画布渲染与绘制工具共用） */
+export function resolveSkeletonTemplateForClassName(
+  tags: Array<{ name: string; kind?: string; skeletonTemplate?: SkeletonTemplateSpec }> | undefined,
+  classLabel: string,
+): SkeletonTemplateSpec | null {
+  if (!tags?.length) return null
+  const t = tags.find((x) => x.name === classLabel)
+  if (!isSkeletonProjectTag(t)) return null
+  const spec = normalizeSkeletonTemplateSpec(t.skeletonTemplate)
+  if (spec.points.length < 1) return null
+  return spec
+}
+
+/** 将实例中与 shape.points 同序的 pointIds 映射为模板关节显示名（与模板编辑器一致） */
+export function skeletonJointDisplayLabelsFromTemplate(
+  template: SkeletonTemplateSpec,
+  pointIds: string[],
+  jointCount: number,
+): string[] {
+  const idToLabel = new Map(template.points.map((p) => [p.id, p.label] as const))
+  const out: string[] = []
+  for (let i = 0; i < jointCount; i++) {
+    const id = pointIds[i]
+    if (typeof id === "string" && id.trim()) {
+      const lbl = idToLabel.get(id.trim())
+      if (lbl) {
+        out.push(lbl)
+        continue
+      }
+    }
+    out.push(`p${i + 1}`)
+  }
+  return out
 }
 
 function sortedEdgesForKey(edges: SkeletonTemplateEdge[]): string {

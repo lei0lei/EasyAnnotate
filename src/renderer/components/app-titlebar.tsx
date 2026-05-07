@@ -37,7 +37,11 @@ export function AppTitlebar({ sidebarCollapsed, onToggleSidebar, onHeightChange 
   const sidebarToggleOffset = sidebarCollapsed ? "ml-3" : "ml-[15px]"
 
   return (
-    <header ref={headerRef} className="titlebar-drag flex h-9 shrink-0 items-center border-b border-border bg-muted/30 pr-2 pl-0">
+    <header
+      ref={headerRef}
+      data-ea-app-chrome
+      className="titlebar-drag flex h-9 shrink-0 items-center border-b border-border bg-muted/30 pr-2 pl-0"
+    >
       <span
         role="button"
         tabIndex={0}

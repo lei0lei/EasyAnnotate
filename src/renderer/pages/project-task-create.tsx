@@ -117,7 +117,7 @@ export default function ProjectTaskCreatePage() {
           return
         }
       }
-      const task = createTask(projectId, {
+      const task = await createTask(projectId, {
         id: taskId,
         name: name.trim(),
         subset: subset.trim(),

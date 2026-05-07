@@ -1,5 +1,5 @@
+import { getProjectExportVersionsFromDisk, saveProjectExportVersionsToDisk } from "@/lib/projects-api"
 import { STORAGE_KEYS } from "@/lib/storage/keys"
-import { readLocalJson, writeLocalJson } from "@/lib/storage/json-local"
 
 export type ExportFormat = "coco" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose" | "voc"
 
@@ -41,8 +41,17 @@ const DEFAULT_EXPORT_DOC: ExportVersionDoc = {
   items: [],
 }
 
-function projectExportKey(projectId: string): string {
+function legacyExportVersionsKey(projectId: string): string {
   return `${STORAGE_KEYS.exportVersionPrefix}:${projectId}`
+}
+
+/** 删除旧版 localStorage 中的导出版本键（迁移后或删除项目后） */
+export function removeLegacyExportVersionsStorageKey(projectId: string): void {
+  try {
+    localStorage.removeItem(legacyExportVersionsKey(projectId))
+  } catch {
+    // ignore
+  }
 }
 
 function isRecord(data: unknown): data is Record<string, unknown> {
@@ -124,16 +133,60 @@ function normalizeItem(item: ExportVersionItem): ExportVersionItem {
   }
 }
 
-export function loadProjectExportVersions(projectId: string): ExportVersionItem[] {
-  const doc = readLocalJson<ExportVersionDoc>(projectExportKey(projectId), isExportVersionDoc, DEFAULT_EXPORT_DOC)
-  return doc.items.map(normalizeItem)
+async function tryMigrateLegacyExportVersionsFromLocalStorage(projectId: string): Promise<string | null> {
+  let raw: string | null = null
+  try {
+    raw = localStorage.getItem(legacyExportVersionsKey(projectId))
+  } catch {
+    return null
+  }
+  if (!raw?.trim()) return null
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!isExportVersionDoc(parsed)) return null
+    const text = JSON.stringify(parsed)
+    const { errorMessage } = await saveProjectExportVersionsToDisk(projectId, text)
+    if (errorMessage) return null
+    removeLegacyExportVersionsStorageKey(projectId)
+    return text
+  } catch {
+    return null
+  }
 }
 
-export function saveProjectExportVersions(projectId: string, items: ExportVersionItem[]): void {
+export async function loadProjectExportVersions(projectId: string): Promise<ExportVersionItem[]> {
+  const fromDisk = await getProjectExportVersionsFromDisk(projectId)
+  if (fromDisk.errorMessage) {
+    return DEFAULT_EXPORT_DOC.items.map(normalizeItem)
+  }
+  let text = (fromDisk.jsonText || "").trim()
+  if (!text) {
+    const migrated = await tryMigrateLegacyExportVersionsFromLocalStorage(projectId)
+    if (migrated) {
+      text = migrated.trim()
+    }
+  }
+  if (!text) {
+    return DEFAULT_EXPORT_DOC.items.map(normalizeItem)
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (!isExportVersionDoc(parsed)) {
+      return DEFAULT_EXPORT_DOC.items.map(normalizeItem)
+    }
+    return parsed.items.map(normalizeItem)
+  } catch {
+    return DEFAULT_EXPORT_DOC.items.map(normalizeItem)
+  }
+}
+
+export async function saveProjectExportVersions(
+  projectId: string,
+  items: ExportVersionItem[],
+): Promise<{ errorMessage: string }> {
   const next: ExportVersionDoc = {
     version: 1,
     items: items.map(normalizeItem),
   }
-  writeLocalJson(projectExportKey(projectId), next)
+  return saveProjectExportVersionsToDisk(projectId, JSON.stringify(next))
 }
-

@@ -1,68 +1,44 @@
-export type TaskItem = {
-  id: string
-  name: string
-  subset: string
-  fileCount: number
-  createdAt: string
-  updatedAt: string
-  coverColor: string
-}
+import { listProjectTasks, saveProjectTasks, type ProjectTaskItem } from "@/lib/projects-api"
+
+export type TaskItem = ProjectTaskItem
 
 const TASK_COLORS = ["#334155", "#3f3f46", "#14532d", "#1e3a8a", "#78350f", "#4a044e"]
 
-function tasksStorageKey(projectId: string): string {
+function legacyTasksStorageKey(projectId: string): string {
   return `easyannotate:project:${projectId}:tasks`
 }
 
-export function readTasks(projectId: string): TaskItem[] {
+/** 仅清除旧版 localStorage 键（例如删除项目后） */
+export function removeLegacyTasksStorageKey(projectId: string): void {
   try {
-    const raw = localStorage.getItem(tasksStorageKey(projectId))
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) return []
-    return parsed
-      .filter((item): item is TaskItem => {
-        if (typeof item !== "object" || item === null) return false
-        const t = item as Partial<TaskItem>
-        return (
-          typeof t.id === "string" &&
-          typeof t.name === "string" &&
-          (typeof t.subset === "string" || typeof t.subset === "undefined") &&
-          (typeof t.fileCount === "number" || typeof t.fileCount === "undefined") &&
-          typeof t.createdAt === "string" &&
-          typeof t.updatedAt === "string" &&
-          typeof t.coverColor === "string"
-        )
-      })
-      .map((item) => ({
-        ...item,
-        name: item.name.trim(),
-        subset: typeof item.subset === "string" ? item.subset.trim() : "",
-        fileCount: typeof item.fileCount === "number" && Number.isFinite(item.fileCount) ? Math.max(0, Math.floor(item.fileCount)) : 0,
-      }))
-      .filter((item) => item.name.length > 0)
+    localStorage.removeItem(legacyTasksStorageKey(projectId))
   } catch {
-    return []
+    // ignore
   }
 }
 
-export function writeTasks(projectId: string, tasks: TaskItem[]): void {
-  try {
-    localStorage.setItem(tasksStorageKey(projectId), JSON.stringify(tasks))
-  } catch {
-    // Ignore localStorage write errors.
+/** 从磁盘（及一次性 localStorage 迁移）加载项目任务列表 */
+export async function loadTasks(projectId: string): Promise<TaskItem[]> {
+  return listProjectTasks(projectId)
+}
+
+export async function persistTasks(projectId: string, tasks: TaskItem[]): Promise<void> {
+  const { errorMessage } = await saveProjectTasks(projectId, tasks)
+  if (errorMessage) {
+    throw new Error(errorMessage)
   }
 }
 
-export function clearTasks(projectId: string): void {
+export async function clearTasks(projectId: string): Promise<void> {
+  await persistTasks(projectId, [])
   try {
-    localStorage.removeItem(tasksStorageKey(projectId))
+    localStorage.removeItem(legacyTasksStorageKey(projectId))
   } catch {
-    // Ignore localStorage remove errors.
+    // ignore
   }
 }
 
-export function createTask(
+export async function createTask(
   projectId: string,
   input: {
     id?: string
@@ -70,9 +46,9 @@ export function createTask(
     subset: string
     fileCount: number
   },
-): TaskItem {
+): Promise<TaskItem> {
   const now = new Date().toISOString()
-  const existing = readTasks(projectId)
+  const existing = await loadTasks(projectId)
   const id =
     input.id ??
     (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)
@@ -85,22 +61,22 @@ export function createTask(
     updatedAt: now,
     coverColor: TASK_COLORS[existing.length % TASK_COLORS.length],
   }
-  writeTasks(projectId, [task, ...existing])
+  await persistTasks(projectId, [task, ...existing])
   return task
 }
 
-export function deleteTask(projectId: string, taskId: string): void {
-  const tasks = readTasks(projectId)
-  writeTasks(
+export async function deleteTask(projectId: string, taskId: string): Promise<void> {
+  const tasks = await loadTasks(projectId)
+  await persistTasks(
     projectId,
     tasks.filter((task) => task.id !== taskId),
   )
 }
 
-export function appendTaskFileCount(projectId: string, taskId: string, addedCount: number): boolean {
+export async function appendTaskFileCount(projectId: string, taskId: string, addedCount: number): Promise<boolean> {
   if (!Number.isFinite(addedCount) || addedCount <= 0) return false
   const delta = Math.floor(addedCount)
-  const tasks = readTasks(projectId)
+  const tasks = await loadTasks(projectId)
   let changed = false
   const now = new Date().toISOString()
   const next = tasks.map((task) => {
@@ -113,7 +89,7 @@ export function appendTaskFileCount(projectId: string, taskId: string, addedCoun
     }
   })
   if (!changed) return false
-  writeTasks(projectId, next)
+  await persistTasks(projectId, next)
   return true
 }
 

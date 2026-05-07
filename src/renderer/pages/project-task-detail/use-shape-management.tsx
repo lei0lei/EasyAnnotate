@@ -15,7 +15,8 @@ import {
 } from "@/pages/project-task-detail/shape-ops"
 import { roundPointsToInt } from "@/pages/project-task-detail/utils"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
-import type { Dispatch, SetStateAction } from "react"
+import { writeMaskRleAttributes } from "@/lib/mask-raster-rle"
+import { useCallback, type Dispatch, type SetStateAction } from "react"
 import type { RawHighlightCorner } from "@/pages/project-task-detail/hook-shared"
 
 type UseShapeManagementParams = {
@@ -110,7 +111,7 @@ export function useShapeManagement(params: UseShapeManagementParams) {
     return nextDocForPersist
   }
 
-  const updateShapePoints = (shapeIndex: number, points: number[][]): XAnyLabelFile | null => {
+  const updateShapePoints = useCallback((shapeIndex: number, points: number[][]): XAnyLabelFile | null => {
     const roundedPoints = roundPointsToInt(points)
     let nextDocForPersist: XAnyLabelFile | null = null
     params.setAnnotationDoc((prev) => {
@@ -121,7 +122,30 @@ export function useShapeManagement(params: UseShapeManagementParams) {
       return nextDoc
     })
     return nextDocForPersist
-  }
+  }, [params.setAnnotationDoc])
+
+  const updateMaskShapeRle = useCallback(
+    (shapeIndex: number, payload: { counts: number[]; w: number; h: number; brushSize: number }): XAnyLabelFile | null => {
+      let nextDocForPersist: XAnyLabelFile | null = null
+      params.setAnnotationDoc((prev) => {
+        if (!prev) return prev
+        const nextShapes = prev.shapes.map((shape, index) =>
+          index === shapeIndex
+            ? {
+                ...shape,
+                points: [],
+                attributes: writeMaskRleAttributes(shape.attributes ?? {}, payload),
+              }
+            : shape,
+        )
+        const nextDoc = normalizeDocPointsToInt({ ...prev, shapes: nextShapes })
+        nextDocForPersist = nextDoc
+        return nextDoc
+      })
+      return nextDocForPersist
+    },
+    [params.setAnnotationDoc],
+  )
 
   const formatPosition = (point: number[] | undefined): string => formatPositionText(point)
 
@@ -155,6 +179,7 @@ export function useShapeManagement(params: UseShapeManagementParams) {
     toggleClassVisibility,
     reorderShapeLayer,
     updateShapePoints,
+    updateMaskShapeRle,
     formatPosition,
     renderPositionBox,
   }

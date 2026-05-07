@@ -1,0 +1,38 @@
+import { loadAppConfig } from "@/lib/app-config-storage"
+
+/** 应用级快捷键：设置页与画布等处共用 id / 默认键位 */
+export const APP_SHORTCUT_ROWS: { id: string; label: string; defaultBinding: string }[] = [
+  { id: "img-prev", label: "上一张图像", defaultBinding: "A 或 ←" },
+  { id: "img-next", label: "下一张图像", defaultBinding: "D 或 →" },
+  { id: "save", label: "保存标注", defaultBinding: "Ctrl + S" },
+  { id: "undo", label: "撤销", defaultBinding: "Ctrl + Z" },
+  { id: "redo", label: "重做", defaultBinding: "Ctrl + Y" },
+  { id: "select-tool", label: "切换选择模式", defaultBinding: "Escape" },
+  { id: "del", label: "删除选中标注", defaultBinding: "Delete" },
+  { id: "new-annotation", label: "新建标注", defaultBinding: "N" },
+  { id: "zoom-in", label: "放大画布", defaultBinding: "Ctrl + =" },
+  { id: "zoom-out", label: "缩小画布", defaultBinding: "Ctrl + -" },
+  { id: "open-settings", label: "打开设置", defaultBinding: "Ctrl + ," },
+]
+
+export function getDefaultShortcutBinding(id: string): string {
+  return APP_SHORTCUT_ROWS.find((r) => r.id === id)?.defaultBinding ?? ""
+}
+
+/** 用户覆盖优先，否则默认；与设置页「与默认相同则存空串」一致 */
+export function getEffectiveShortcutBinding(id: string): string {
+  const def = getDefaultShortcutBinding(id)
+  const custom = loadAppConfig().shortcuts[id]
+  if (typeof custom === "string" && custom.trim()) return custom.trim()
+  return def
+}
+
+/** 由设置页 draft 生成写入 app-config 的 shortcuts 补丁（与默认相同则空串） */
+export function buildShortcutsPersistPatch(draft: Record<string, string>): Record<string, string> {
+  const patch: Record<string, string> = {}
+  for (const row of APP_SHORTCUT_ROWS) {
+    const value = (draft[row.id] ?? "").trim()
+    patch[row.id] = value && value !== row.defaultBinding ? value : ""
+  }
+  return patch
+}

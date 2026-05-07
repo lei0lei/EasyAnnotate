@@ -49,6 +49,7 @@ export function useTaskDomainController(params: UseTaskDomainControllerParams) {
     setHoveredShape,
     clearSelection,
     applyShapePatch,
+    applyMaskRlePatch,
     createShape,
     replaceDoc,
     resetDoc,
@@ -92,6 +93,7 @@ export function useTaskDomainController(params: UseTaskDomainControllerParams) {
       setSelectedShape,
       setHoveredShape,
       applyShapePatch,
+      applyMaskRlePatch,
       createShape,
       replaceDoc,
       resetDoc,
@@ -107,6 +109,7 @@ export function useTaskDomainController(params: UseTaskDomainControllerParams) {
     }),
     [
       applyShapePatch,
+      applyMaskRlePatch,
       clearSelectedShape,
       deleteShape,
       handleEngineShapeCreated,

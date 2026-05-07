@@ -13,7 +13,11 @@ import {
   buildRenderedRectangles,
   buildRenderedRotationRects,
   buildRenderedSkeletons,
+  type DragLiveMaskRleOverride,
+  type DragLivePointsOverride,
+  type DragVertexLiveOverride,
 } from "@/pages/project-task-detail/rendered-shapes"
+import type { ProjectTag } from "@/lib/projects-api"
 import type { Point } from "@/pages/project-task-detail/types"
 import type { ImageGeometry } from "@/pages/project-task-detail/canvas-geometry"
 
@@ -24,10 +28,14 @@ type UseTaskRenderModelParams = {
   hiddenClassLabels: string[]
   selectedShapeId: string | null
   labelColorMap: Map<string, string>
+  projectTags?: ProjectTag[]
   imageGeometry: ImageGeometry | null
-  imageOffset: { x: number; y: number }
-  imageScale: number
-  imageToStage: (point: Point) => Point | null
+  /** 与画布 view 层一致：仅 fit，用户平移/缩放在 page-sections 外层 transform */
+  imageToStageBase: (point: Point) => Point | null
+  dragLivePoints: DragLivePointsOverride | null
+  /** 单顶点拖拽：与 dragLivePoints 互斥使用，且仅驱动 polygon / skeleton / cuboid 的 memo */
+  dragVertexLive: DragVertexLiveOverride | null
+  dragLiveMaskRle: DragLiveMaskRleOverride | null
 }
 
 export function useTaskRenderModel(params: UseTaskRenderModelParams) {
@@ -38,10 +46,12 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     hiddenClassLabels,
     selectedShapeId,
     labelColorMap,
+    projectTags,
     imageGeometry,
-    imageOffset,
-    imageScale,
-    imageToStage,
+    imageToStageBase,
+    dragLivePoints,
+    dragVertexLive,
+    dragLiveMaskRle,
   } = params
 
   const renderedRectangles = useMemo(() => {
@@ -50,11 +60,12 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
-      imageToStage: (point) => imageToStage(point),
+      imageToStage: (point) => imageToStageBase(point),
       stageWidth: imageGeometry?.stageWidth ?? 0,
       stageHeight: imageGeometry?.stageHeight ?? 0,
+      dragLivePoints,
     })
-  }, [annotationDoc, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageOffset.x, imageOffset.y, imageScale, imageToStage, labelColorMap])
+  }, [annotationDoc, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
 
   const renderedRotationRects = useMemo(() => {
     return buildRenderedRotationRects({
@@ -62,9 +73,10 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
-      imageToStage: (point) => imageToStage(point),
+      imageToStage: (point) => imageToStageBase(point),
+      dragLivePoints,
     })
-  }, [annotationDoc, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageOffset.x, imageOffset.y, imageScale, imageToStage, labelColorMap])
+  }, [annotationDoc, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
 
   const renderedPolygons = useMemo(() => {
     return buildRenderedPolygons({
@@ -72,9 +84,11 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
-      imageToStage: (point) => imageToStage(point),
+      imageToStage: (point) => imageToStageBase(point),
+      dragLivePoints,
+      dragVertexLive,
     })
-  }, [annotationDoc, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageOffset.x, imageOffset.y, imageScale, imageToStage, labelColorMap])
+  }, [annotationDoc, dragLivePoints, dragVertexLive, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
 
   const renderedMasks = useMemo(() => {
     return buildRenderedMasks({
@@ -82,10 +96,12 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
-      stageScale: imageScale,
-      imageToStage: (point) => imageToStage(point),
+      stageScale: 1,
+      imageToStage: (point) => imageToStageBase(point),
+      dragLiveMaskRle,
+      dragLivePoints,
     })
-  }, [annotationDoc, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageOffset.x, imageOffset.y, imageScale, imageToStage, labelColorMap])
+  }, [annotationDoc, dragLiveMaskRle, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
 
   const renderedCuboids2d = useMemo(() => {
     return buildRenderedCuboids2d({
@@ -93,9 +109,11 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
-      imageToStage: (point) => imageToStage(point),
+      imageToStage: (point) => imageToStageBase(point),
+      dragLivePoints,
+      dragVertexLive,
     })
-  }, [annotationDoc, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageOffset.x, imageOffset.y, imageScale, imageToStage, labelColorMap])
+  }, [annotationDoc, dragLivePoints, dragVertexLive, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
 
   const renderedPoints = useMemo(() => {
     return buildRenderedPoints({
@@ -103,9 +121,10 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
-      imageToStage: (point) => imageToStage(point),
+      imageToStage: (point) => imageToStageBase(point),
+      dragLivePoints,
     })
-  }, [annotationDoc, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageOffset.x, imageOffset.y, imageScale, imageToStage, labelColorMap])
+  }, [annotationDoc, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
 
   const renderedSkeletons = useMemo(() => {
     return buildRenderedSkeletons({
@@ -113,9 +132,12 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
-      imageToStage: (point) => imageToStage(point),
+      projectTags,
+      imageToStage: (point) => imageToStageBase(point),
+      dragLivePoints,
+      dragVertexLive,
     })
-  }, [annotationDoc, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageOffset.x, imageOffset.y, imageScale, imageToStage, labelColorMap])
+  }, [annotationDoc, dragLivePoints, dragVertexLive, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap, projectTags])
 
   const selectedRect = selectedShapeId === null ? null : renderedRectangles.find((item) => item.shapeId === selectedShapeId) ?? null
   const selectedRotationRect =

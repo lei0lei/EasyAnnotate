@@ -1,42 +1,18 @@
+import { ShortcutCaptureDialog } from "@/components/shortcut-capture-dialog"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { ipc } from "@/gen/ipc"
+import { APP_SHORTCUT_ROWS, buildShortcutsPersistPatch } from "@/lib/app-shortcut-registry"
 import { loadAppConfig, updateAppConfig } from "@/lib/app-config-storage"
-import { cn } from "@/lib/utils"
 import { CheckCircle2, FolderOpen, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react"
-
-const SHORTCUT_ROWS: { id: string; label: string; defaultBinding: string }[] = [
-  { id: "img-prev", label: "上一张图像", defaultBinding: "A 或 ←" },
-  { id: "img-next", label: "下一张图像", defaultBinding: "D 或 →" },
-  { id: "save", label: "保存标注", defaultBinding: "Ctrl + S" },
-  { id: "undo", label: "撤销", defaultBinding: "Ctrl + Z" },
-  { id: "redo", label: "重做", defaultBinding: "Ctrl + Y" },
-  { id: "del", label: "删除选中", defaultBinding: "Delete" },
-  { id: "zoom-in", label: "放大画布", defaultBinding: "Ctrl + =" },
-  { id: "zoom-out", label: "缩小画布", defaultBinding: "Ctrl + -" },
-  { id: "open-settings", label: "打开设置", defaultBinding: "Ctrl + ," },
-]
-
-function Kbd({ children }: { children: string }) {
-  return (
-    <kbd
-      className={cn(
-        "rounded border border-border bg-muted/80 px-2 py-0.5 font-mono text-[11px] font-medium text-foreground/90",
-        "shadow-sm",
-      )}
-    >
-      {children}
-    </kbd>
-  )
-}
 
 const DEFAULT_BACKEND = { host: "127.0.0.1", port: "8080" } as const
 
 function defaultShortcutMap(): Record<string, string> {
-  return Object.fromEntries(SHORTCUT_ROWS.map((row) => [row.id, row.defaultBinding]))
+  return Object.fromEntries(APP_SHORTCUT_ROWS.map((row) => [row.id, row.defaultBinding]))
 }
 
 function savedShortcutMap(): Record<string, string> {
@@ -153,6 +129,7 @@ export default function SettingsPage() {
     ...defaultShortcutMap(),
     ...savedShortcutMap(),
   }))
+  const [shortcutCaptureRowId, setShortcutCaptureRowId] = useState<string | null>(null)
 
   useEffect(() => {
     void ipc.app
@@ -166,32 +143,12 @@ export default function SettingsPage() {
       })
   }, [])
 
-  const persistConfigToDisk = useCallback((globalConfigDirOverride?: string) => {
-    const nextConfig = loadAppConfig()
-    const persistedGlobalConfigDir = (globalConfigDirOverride ?? nextConfig.storagePaths.globalConfigDir).trim() || defaultGlobalConfigDir
-    const payload = {
-      ...nextConfig,
-      storagePaths: {
-        ...nextConfig.storagePaths,
-        globalConfigDir: persistedGlobalConfigDir,
-      },
-    }
-    void ipc.app.SaveAppConfigToDisk({
-      globalConfigDir: persistedGlobalConfigDir,
-      appConfigJson: JSON.stringify(payload, null, 2),
-    }).catch((error) => {
-      const message = error instanceof Error && error.message ? error.message : "未知错误"
-      window.alert(`无法写入配置文件：${message}\n请检查“全局配置存储路径”是否可访问。`)
-    })
-  }, [defaultGlobalConfigDir])
-
   const handleApplyBackend = useCallback(() => {
     updateAppConfig({
       backend: { host: host.trim() || DEFAULT_BACKEND.host, port: port.trim() || DEFAULT_BACKEND.port },
     })
     setBackendStatus("applied")
-    persistConfigToDisk()
-  }, [host, persistConfigToDisk, port])
+  }, [host, port])
 
   const handleApplyStoragePaths = useCallback(() => {
     const resolvedGlobalConfigDir = globalConfigDir.trim() || defaultGlobalConfigDir
@@ -204,8 +161,7 @@ export default function SettingsPage() {
     })
     setGlobalConfigDir(resolvedGlobalConfigDir)
     setStorageStatus("applied")
-    persistConfigToDisk(resolvedGlobalConfigDir)
-  }, [defaultGlobalConfigDir, globalConfigDir, persistConfigToDisk])
+  }, [defaultGlobalConfigDir, globalConfigDir])
 
   const handleStorageDefaults = useCallback(() => {
     const resolvedGlobalConfigDir = defaultGlobalConfigDir
@@ -218,37 +174,36 @@ export default function SettingsPage() {
       },
     })
     setStorageStatus("reset")
-    persistConfigToDisk(resolvedGlobalConfigDir)
-  }, [defaultGlobalConfigDir, persistConfigToDisk])
+  }, [defaultGlobalConfigDir])
 
-  const handleApplyShortcuts = useCallback(() => {
-    const patch: Record<string, string> = {}
-    for (const row of SHORTCUT_ROWS) {
-      const value = (shortcutDraft[row.id] ?? "").trim()
-      patch[row.id] = value && value !== row.defaultBinding ? value : ""
-    }
-    updateAppConfig({ shortcuts: patch })
+  const handleShortcutRowSave = useCallback((rowId: string, binding: string) => {
+    setShortcutDraft((prev) => {
+      const next = { ...prev, [rowId]: binding }
+      updateAppConfig({ shortcuts: buildShortcutsPersistPatch(next) })
+      return next
+    })
     setShortcutStatus("applied")
-    persistConfigToDisk()
-  }, [persistConfigToDisk, shortcutDraft])
+  }, [])
 
   const handleShortcutDefaults = useCallback(() => {
     const defaults = defaultShortcutMap()
     setShortcutDraft(defaults)
     updateAppConfig({
-      shortcuts: Object.fromEntries(SHORTCUT_ROWS.map((row) => [row.id, ""])),
+      shortcuts: Object.fromEntries(APP_SHORTCUT_ROWS.map((row) => [row.id, ""])),
     })
     setShortcutStatus("reset")
-    persistConfigToDisk()
-  }, [persistConfigToDisk])
+  }, [])
 
   const handleBackendDefaults = useCallback(() => {
     updateAppConfig({ backend: { ...DEFAULT_BACKEND } })
     setHost(DEFAULT_BACKEND.host)
     setPort(DEFAULT_BACKEND.port)
     setBackendStatus("reset")
-    persistConfigToDisk()
-  }, [persistConfigToDisk])
+  }, [])
+
+  const shortcutCaptureRow = shortcutCaptureRowId
+    ? (APP_SHORTCUT_ROWS.find((r) => r.id === shortcutCaptureRowId) ?? null)
+    : null
 
   return (
     <div className="min-h-full bg-background">
@@ -261,8 +216,10 @@ export default function SettingsPage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight text-foreground">设置</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                应用级偏好见下方「后端」等；与 Workflows、Monitor 等业务数据分 key 存于本机。详细约定见{" "}
-                <code className="rounded bg-muted px-1 font-mono text-xs">lib/storage/keys.ts</code> 注释。
+                后端地址、全局配置目录、快捷键等写入全局配置目录下的{" "}
+                <code className="rounded bg-muted px-1 font-mono text-xs">app-config.json</code>
+                ；Workflows / Monitor 等仍使用各自 localStorage key（见{" "}
+                <code className="rounded bg-muted px-1 font-mono text-xs">lib/storage/keys.ts</code>）。
               </p>
             </div>
           </div>
@@ -317,7 +274,7 @@ export default function SettingsPage() {
               </div>
               <p className="text-xs text-muted-foreground">
                 将用于拼接如 <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">http://{host || "…"}:{port || "…"}</code>
-                ；点「应用」后写入 <span className="font-mono">ea-app-config</span>。
+                ；点「应用」后写入全局目录中的 <span className="font-mono">app-config.json</span>。
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button type="button" size="sm" onClick={handleApplyBackend}>
@@ -379,40 +336,50 @@ export default function SettingsPage() {
                 </div>
                 <div>
                   <CardTitle className="text-base">键位</CardTitle>
-                  <CardDescription className="text-xs">展示默认键位；已保存的覆盖存在应用配置中（录制与改键 UI 可后续接）</CardDescription>
+                  <CardDescription className="text-xs">
+                    点击「点击设置」在弹出窗口中改键；右侧为当前生效的快捷键。
+                  </CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <ul className="divide-y divide-border/60 rounded-lg border border-border/60">
-                {SHORTCUT_ROWS.map((row) => (
+                {APP_SHORTCUT_ROWS.map((row) => (
                   <li
                     key={row.id}
                     className="flex flex-wrap items-center justify-between gap-3 gap-y-2 px-3 py-2.5 first:rounded-t-[inherit] last:rounded-b-[inherit] sm:px-4"
                   >
                     <span className="text-sm text-foreground">{row.label}</span>
-                    <div className="flex flex-1 flex-wrap items-center justify-end gap-2 sm:min-w-[14rem]">
-                      <Input
-                        value={shortcutDraft[row.id] ?? row.defaultBinding}
-                        onChange={(e) =>
-                          setShortcutDraft((current) => ({
-                            ...current,
-                            [row.id]: e.target.value,
-                          }))
-                        }
-                        aria-label={`${row.label}快捷键`}
-                        className="h-8 w-36 font-mono text-xs"
-                        spellCheck={false}
-                      />
-                      <Kbd>{row.defaultBinding}</Kbd>
+                    <div className="flex flex-1 flex-wrap items-center justify-end gap-2 sm:min-w-[12rem]">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 shrink-0"
+                        onClick={() => setShortcutCaptureRowId(row.id)}
+                      >
+                        点击设置
+                      </Button>
+                      <span
+                        className="inline-flex min-h-8 min-w-[6.5rem] items-center justify-end rounded-md border border-border/80 bg-muted/20 px-2 py-1.5 font-mono text-xs text-foreground"
+                        aria-label={`${row.label}当前快捷键`}
+                      >
+                        {shortcutDraft[row.id] ?? row.defaultBinding}
+                      </span>
                     </div>
                   </li>
                 ))}
               </ul>
+              {shortcutCaptureRow ? (
+                <ShortcutCaptureDialog
+                  open
+                  title={shortcutCaptureRow.label}
+                  initialBinding={shortcutDraft[shortcutCaptureRow.id] ?? shortcutCaptureRow.defaultBinding}
+                  onClose={() => setShortcutCaptureRowId(null)}
+                  onSave={(binding) => handleShortcutRowSave(shortcutCaptureRow.id, binding)}
+                />
+              ) : null}
               <div className="flex flex-wrap gap-2">
-                <Button type="button" size="sm" onClick={handleApplyShortcuts}>
-                  应用
-                </Button>
                 <Button type="button" size="sm" variant="outline" onClick={handleShortcutDefaults}>
                   使用默认
                 </Button>

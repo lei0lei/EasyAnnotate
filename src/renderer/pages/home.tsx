@@ -1,8 +1,14 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
-import { readTasks } from "@/lib/project-tasks-storage"
-import { listExportJobs, listProjects, type ExportJobItem, type ProjectItem } from "@/lib/projects-api"
+import {
+  listExportJobs,
+  listProjectTasks,
+  listProjects,
+  type ExportJobItem,
+  type ProjectItem,
+  type ProjectTaskItem,
+} from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import {
   Activity,
@@ -46,18 +52,6 @@ function projectSubtitle(p: ProjectItem): string {
   return "本地项目"
 }
 
-function aggregateTaskStats(projects: ProjectItem[]): { total: number; withImages: number } {
-  let total = 0
-  let withImages = 0
-  for (const p of projects) {
-    for (const t of readTasks(p.id)) {
-      total += 1
-      if (t.fileCount > 0) withImages += 1
-    }
-  }
-  return { total, withImages }
-}
-
 function exportJobActivityLines(jobs: ExportJobItem[]): { icon: typeof Upload; text: string; time: string }[] {
   const sorted = [...jobs].sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt))
   return sorted.slice(0, 6).map((job) => {
@@ -74,6 +68,7 @@ function exportJobActivityLines(jobs: ExportJobItem[]): { icon: typeof Upload; t
 
 export default function HomePage() {
   const [projects, setProjects] = useState<ProjectItem[]>([])
+  const [tasksByProjectId, setTasksByProjectId] = useState<Record<string, ProjectTaskItem[]>>({})
   const [exportJobs, setExportJobs] = useState<ExportJobItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -83,10 +78,13 @@ export default function HomePage() {
     setLoading(true)
     setError(null)
     void Promise.all([listProjects(), listExportJobs()])
-      .then(([projList, jobs]) => {
+      .then(async ([projList, jobs]) => {
         if (!alive) return
         setProjects(projList)
         setExportJobs(jobs)
+        const entries = await Promise.all(projList.map(async (p) => [p.id, await listProjectTasks(p.id)] as const))
+        if (!alive) return
+        setTasksByProjectId(Object.fromEntries(entries))
       })
       .catch((e) => {
         if (!alive) return
@@ -105,7 +103,14 @@ export default function HomePage() {
   }, [projects])
 
   const { projectCount, taskTotal, taskWithImages, imageTaskPercent } = useMemo(() => {
-    const { total, withImages } = aggregateTaskStats(projects)
+    let total = 0
+    let withImages = 0
+    for (const p of projects) {
+      for (const t of tasksByProjectId[p.id] ?? []) {
+        total += 1
+        if (t.fileCount > 0) withImages += 1
+      }
+    }
     const pct = total > 0 ? Math.round((withImages / total) * 100) : 0
     return {
       projectCount: projects.length,
@@ -113,18 +118,18 @@ export default function HomePage() {
       taskWithImages: withImages,
       imageTaskPercent: pct,
     }
-  }, [projects])
+  }, [projects, tasksByProjectId])
 
   const resumeHref = useMemo(() => {
     for (const p of recentProjects) {
-      const tasks = readTasks(p.id)
+      const tasks = tasksByProjectId[p.id] ?? []
       if (tasks[0]) return `/projects/${p.id}/tasks/${tasks[0].id}`
     }
     for (const p of recentProjects) {
       return `/projects/${p.id}`
     }
     return "/projects/mine"
-  }, [recentProjects])
+  }, [recentProjects, tasksByProjectId])
 
   const activityLines = useMemo(() => exportJobActivityLines(exportJobs), [exportJobs])
 

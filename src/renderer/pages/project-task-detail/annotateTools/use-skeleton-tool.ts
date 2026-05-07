@@ -3,7 +3,7 @@
  * 职责：骨架：选标签后首次单击按项目模板摆好关节，可再拖点调整；数据为 `shape_type: "skeleton"`。
  */
 import type { ProjectTag } from "@/lib/projects-api"
-import { buildSkeletonInstanceAttributes, isSkeletonProjectTag, placeSkeletonImagePoints } from "@/lib/skeleton-template"
+import { buildSkeletonInstanceAttributes, placeSkeletonImagePoints, resolveSkeletonTemplateForClassName } from "@/lib/skeleton-template"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import type { ImageGeometry } from "@/pages/project-task-detail/canvas-geometry"
 import type { CanvasShapeCreatedEvent } from "@/pages/project-task-detail/use-task-canvas-engine"
@@ -46,17 +46,9 @@ function clientEventToImagePoint(
   return toImage({ x: event.clientX - rect.left, y: event.clientY - rect.top }, geometry)
 }
 
-function resolveSkeletonTemplateForLabel(tags: ProjectTag[] | undefined, label: string) {
-  if (!tags?.length) return null
-  const t = tags.find((x) => x.name === label)
-  if (!t || !isSkeletonProjectTag(t)) return null
-  if (t.skeletonTemplate.points.length < 1) return null
-  return t.skeletonTemplate
-}
-
 export function useSkeletonTool(params: UseSkeletonToolParams) {
   const template = useMemo(
-    () => resolveSkeletonTemplateForLabel(params.projectTags, params.rectPendingLabel),
+    () => resolveSkeletonTemplateForClassName(params.projectTags, params.rectPendingLabel),
     [params.projectTags, params.rectPendingLabel],
   )
 

@@ -8,7 +8,8 @@ import {
   removedTagNamesSince,
 } from "@/lib/project-tag-annotation-cleanup"
 import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
-import { clearTasks, deleteTask, formatTaskTime, readTasks, type TaskItem, writeTasks } from "@/lib/project-tasks-storage"
+import { removeLegacyExportVersionsStorageKey } from "@/lib/project-export-storage"
+import { deleteTask, formatTaskTime, loadTasks, persistTasks, removeLegacyTasksStorageKey, type TaskItem } from "@/lib/project-tasks-storage"
 import { deleteProject, deleteTaskData, getProject, listTaskFiles, readImageFile, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
@@ -147,31 +148,39 @@ export default function ProjectDetailPage() {
       setTasks([])
       return
     }
-    const localTasks = readTasks(projectId)
-    setTasks(localTasks)
-
     let alive = true
-    void Promise.all(
-      localTasks.map(async (task) => {
-        const result = await listTaskFiles({ projectId, taskId: task.id })
-        if (result.errorMessage) return task
-        return {
-          ...task,
-          fileCount: result.files.length,
-        }
-      }),
-    )
-      .then((recountedTasks) => {
+    void loadTasks(projectId)
+      .then((localTasks) => {
         if (!alive) return
-        const changed =
-          recountedTasks.length !== localTasks.length ||
-          recountedTasks.some((task, index) => task.fileCount !== localTasks[index]?.fileCount)
-        if (!changed) return
-        setTasks(recountedTasks)
-        writeTasks(projectId, recountedTasks)
+        setTasks(localTasks)
+        void Promise.all(
+          localTasks.map(async (task) => {
+            const result = await listTaskFiles({ projectId, taskId: task.id })
+            if (result.errorMessage) return task
+            return {
+              ...task,
+              fileCount: result.files.length,
+            }
+          }),
+        )
+          .then((recountedTasks) => {
+            if (!alive) return
+            const changed =
+              recountedTasks.length !== localTasks.length ||
+              recountedTasks.some((task, index) => task.fileCount !== localTasks[index]?.fileCount)
+            if (!changed) return
+            setTasks(recountedTasks)
+            void persistTasks(projectId, recountedTasks).catch(() => {
+              // Ignore recount persist failures and keep UI counts.
+            })
+          })
+          .catch(() => {
+            // Ignore recount failures.
+          })
       })
       .catch(() => {
-        // Ignore recount failures and keep local values.
+        if (!alive) return
+        setTasks([])
       })
 
     return () => {
@@ -368,7 +377,8 @@ export default function ProjectDetailPage() {
         flashSaveStatus("error")
         return
       }
-      clearTasks(projectId)
+      removeLegacyTasksStorageKey(projectId)
+      removeLegacyExportVersionsStorageKey(projectId)
       navigate("/projects/mine", { replace: true })
     } catch {
       flashSaveStatus("error")
@@ -380,7 +390,9 @@ export default function ProjectDetailPage() {
   function updateTasks(next: TaskItem[]) {
     setTasks(next)
     if (projectId) {
-      writeTasks(projectId, next)
+      void persistTasks(projectId, next).catch(() => {
+        flashSaveStatus("error")
+      })
     }
   }
 
@@ -391,8 +403,8 @@ export default function ProjectDetailPage() {
       flashSaveStatus("error")
       return
     }
-    deleteTask(projectId, taskDeleteTarget.id)
-    updateTasks(readTasks(projectId))
+    await deleteTask(projectId, taskDeleteTarget.id)
+    setTasks(await loadTasks(projectId))
     setTaskDeleteTarget(null)
   }
 

@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { appendTaskFileCount, readTasks } from "@/lib/project-tasks-storage"
+import { appendTaskFileCount, loadTasks, type TaskItem } from "@/lib/project-tasks-storage"
 import { getProject, saveTaskFiles, type ProjectItem } from "@/lib/projects-api"
 import { ArrowLeft, Upload } from "lucide-react"
 import { DragEvent, useEffect, useMemo, useRef, useState } from "react"
@@ -30,9 +30,21 @@ export default function ProjectTaskAppendImagesPage() {
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
-  const task = useMemo(() => {
-    if (!projectId || !taskId) return undefined
-    return readTasks(projectId).find((item) => item.id === taskId)
+  const [task, setTask] = useState<TaskItem | undefined>(undefined)
+
+  useEffect(() => {
+    if (!projectId || !taskId) {
+      setTask(undefined)
+      return
+    }
+    let alive = true
+    void loadTasks(projectId).then((tasks) => {
+      if (!alive) return
+      setTask(tasks.find((item) => item.id === taskId))
+    })
+    return () => {
+      alive = false
+    }
   }, [projectId, taskId])
 
   useEffect(() => {
@@ -113,7 +125,7 @@ export default function ProjectTaskAppendImagesPage() {
         setErrorMessage(`上传文件失败：${result.errorMessage}`)
         return
       }
-      appendTaskFileCount(projectId, taskId, files.length)
+      await appendTaskFileCount(projectId, taskId, files.length)
       navigate(`/projects/${projectId}/tasks/${taskId}`, { replace: true })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

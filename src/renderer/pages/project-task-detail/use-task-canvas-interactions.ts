@@ -6,6 +6,7 @@
 import { useCallback } from "react"
 import type { MouseEvent as ReactMouseEvent } from "react"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
+import { readMaskRle } from "@/lib/mask-raster-rle"
 import { computeRotationCenterAndStartAngle } from "@/pages/project-task-detail/interaction-ops"
 import type {
   Point,
@@ -267,7 +268,11 @@ export function useTaskCanvasInteractions(params: UseTaskCanvasInteractionsParam
       if (!point) return
       const currentDoc = annotationDocRef.current
       const shape = currentDoc?.shapes[shapeIndex]
-      if (!shape || shape.shape_type !== "mask" || shape.points.length < 1) return
+      if (!shape || shape.shape_type !== "mask") return
+      const rle = readMaskRle(shape.attributes)
+      const hasRle =
+        !!currentDoc && rle !== null && rle.w === currentDoc.imageWidth && rle.h === currentDoc.imageHeight
+      if (!hasRle && shape.points.length < 1) return
       setShapeDragAction({
         kind: "move",
         shapeIndex,

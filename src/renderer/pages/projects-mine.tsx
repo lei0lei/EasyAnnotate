@@ -1,6 +1,5 @@
 import { Button } from "@/components/ui/button"
-import { readTasks } from "@/lib/project-tasks-storage"
-import { listProjects, listTaskFiles, readImageFile, type ProjectItem } from "@/lib/projects-api"
+import { listProjects, listProjectTasks, listTaskFiles, readImageFile, type ProjectItem } from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import { ArrowLeft, ArrowRight, Clock, FolderKanban } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -64,7 +63,7 @@ export default function ProjectsMinePage() {
     const targetProjects = pagedProjects
     void Promise.all(
       targetProjects.map(async (project) => {
-        const firstTask = readTasks(project.id)[0]
+        const firstTask = (await listProjectTasks(project.id))[0]
         if (!firstTask) return { projectId: project.id, coverUrl: "" }
         const fileResult = await listTaskFiles({ projectId: project.id, taskId: firstTask.id })
         const firstFilePath = fileResult.files[0]?.filePath?.trim()

@@ -1,6 +1,8 @@
 import fs from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { contourForYoloExport, minimumAreaBoundingBoxCornersFromPoints, obbCornersFromMaskBinary } from "../renderer/lib/mask-contour"
+import { decodeRowMajorRleToBinary, foregroundBBoxInclusive, readMaskRle } from "../renderer/lib/mask-raster-rle"
 import type { ProjectRecord } from "./project-storage"
 
 type ExportFormat = "coco" | "voc" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose"
@@ -38,6 +40,7 @@ type XAnyShape = {
   label?: string
   shape_type?: string
   points?: number[][]
+  attributes?: Record<string, unknown>
 }
 
 type XAnyDoc = {
@@ -177,7 +180,26 @@ function shapePoints(shape: XAnyShape): number[][] {
   return shape.points.filter((pt): pt is number[] => Array.isArray(pt) && pt.length >= 2).map((pt) => [Number(pt[0]), Number(pt[1])])
 }
 
-function bboxFromShape(shape: XAnyShape): { x: number; y: number; w: number; h: number } | undefined {
+function bboxFromShape(
+  shape: XAnyShape,
+  imageWidth: number,
+  imageHeight: number,
+): { x: number; y: number; w: number; h: number } | undefined {
+  if (shape.shape_type === "mask" && shape.attributes) {
+    const rle = readMaskRle(shape.attributes)
+    if (rle && rle.w === imageWidth && rle.h === imageHeight) {
+      const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
+      const bb = foregroundBBoxInclusive(bin, rle.w, rle.h)
+      if (bb) {
+        return {
+          x: bb.minX,
+          y: bb.minY,
+          w: Math.max(0, bb.maxX - bb.minX + 1),
+          h: Math.max(0, bb.maxY - bb.minY + 1),
+        }
+      }
+    }
+  }
   const points = shapePoints(shape)
   if (points.length === 0) return undefined
   if (shape.shape_type === "circle" && points.length >= 2) {
@@ -200,6 +222,10 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
 
+function isMaskShape(shape: XAnyShape): boolean {
+  return (shape.shape_type || "").trim() === "mask"
+}
+
 function shouldExportAsYoloDetect(shape: XAnyShape): boolean {
   const type = (shape.shape_type || "").trim()
   return (
@@ -214,7 +240,8 @@ function shouldExportAsYoloDetect(shape: XAnyShape): boolean {
 
 function toYoloDetectLine(shape: XAnyShape, classId: number, width: number, height: number): string | undefined {
   if (!shouldExportAsYoloDetect(shape)) return undefined
-  const bbox = bboxFromShape(shape)
+  /** mask：最小水平外接矩形（轴对齐、紧包前景） */
+  const bbox = bboxFromShape(shape, width, height)
   if (!bbox) return undefined
   const x = clamp01((bbox.x + bbox.w / 2) / width)
   const y = clamp01((bbox.y + bbox.h / 2) / height)
@@ -223,17 +250,38 @@ function toYoloDetectLine(shape: XAnyShape, classId: number, width: number, heig
   return `${classId} ${x.toFixed(6)} ${y.toFixed(6)} ${w.toFixed(6)} ${h.toFixed(6)}`
 }
 
-/** YOLO OBB：仅水平框与旋转框；其余 shape 不导出 */
+/** YOLO OBB：水平框、旋转框、mask（最小面积外接矩形） */
 function shouldExportAsYoloObb(shape: XAnyShape): boolean {
   const type = (shape.shape_type || "").trim()
-  return type === "rectangle" || type === "rotation"
+  return type === "rectangle" || type === "rotation" || type === "mask"
 }
 
 function toYoloObbLine(shape: XAnyShape, classId: number, width: number, height: number): string | undefined {
   if (!shouldExportAsYoloObb(shape)) return undefined
+  if (isMaskShape(shape) && shape.attributes) {
+    const rle = readMaskRle(shape.attributes)
+    if (rle && rle.w === width && rle.h === height) {
+      const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
+      const corners = obbCornersFromMaskBinary(bin, rle.w, rle.h)
+      if (corners && corners.length === 4) {
+        const coords = corners
+          .flatMap((pt) => [clamp01(pt[0]! / width).toFixed(6), clamp01(pt[1]! / height).toFixed(6)])
+          .join(" ")
+        return `${classId} ${coords}`
+      }
+    }
+    const pts = shapePoints(shape).map(([x, y]) => ({ x, y }))
+    const obb = minimumAreaBoundingBoxCornersFromPoints(pts)
+    if (obb && obb.length === 4) {
+      const coords = obb
+        .flatMap((pt) => [clamp01(pt[0]! / width).toFixed(6), clamp01(pt[1]! / height).toFixed(6)])
+        .join(" ")
+      return `${classId} ${coords}`
+    }
+  }
   const points = shapePoints(shape)
   const used = points.length >= 4 ? points.slice(0, 4) : undefined
-  const bbox = bboxFromShape(shape)
+  const bbox = bboxFromShape(shape, width, height)
   if (!used && !bbox) return undefined
   const corners = used ?? [
     [bbox!.x, bbox!.y],
@@ -254,9 +302,22 @@ function shouldExportAsYoloSegment(shape: XAnyShape): boolean {
 
 function toYoloSegmentLine(shape: XAnyShape, classId: number, width: number, height: number): string | undefined {
   if (!shouldExportAsYoloSegment(shape)) return undefined
+  if ((shape.shape_type || "").trim() === "mask" && shape.attributes) {
+    const rle = readMaskRle(shape.attributes)
+    if (rle && rle.w === width && rle.h === height) {
+      const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
+      const contour = contourForYoloExport(bin, rle.w, rle.h)
+      if (contour.length >= 3) {
+        const coords = contour
+          .flatMap((pt) => [clamp01(pt[0]! / width).toFixed(6), clamp01(pt[1]! / height).toFixed(6)])
+          .join(" ")
+        return `${classId} ${coords}`
+      }
+    }
+  }
   const points = shapePoints(shape)
   const poly = points.length >= 3 ? points : undefined
-  const bbox = bboxFromShape(shape)
+  const bbox = bboxFromShape(shape, width, height)
   if (!poly && !bbox) return undefined
   const output = poly ?? [
     [bbox!.x, bbox!.y],
@@ -594,8 +655,9 @@ function exportAsVoc(images: ExportImageItem[], outputDir: string, keepProjectSt
     const height = Math.max(1, Number(doc.imageHeight || 1))
     const objects: Array<{ label: string; bbox: { x: number; y: number; w: number; h: number } }> = []
     for (const shape of doc.shapes ?? []) {
+      if (isMaskShape(shape)) continue
       const label = typeof shape.label === "string" ? shape.label.trim() : ""
-      const bbox = bboxFromShape(shape)
+      const bbox = bboxFromShape(shape, width, height)
       if (!label || !bbox) continue
       objects.push({ label, bbox })
     }
@@ -653,18 +715,20 @@ function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: 
         height,
       })
       for (const shape of doc.shapes ?? []) {
+        if (isMaskShape(shape)) continue
         const label = typeof shape.label === "string" ? shape.label.trim() : ""
         const categoryId = classNames.indexOf(label) + 1
-        const bbox = bboxFromShape(shape)
+        const bbox = bboxFromShape(shape, width, height)
         if (!label || categoryId <= 0 || !bbox) continue
         const points = shapePoints(shape)
-        const seg = points.length >= 3 ? [points.flatMap((pt) => [pt[0], pt[1]])] : []
+        const seg: number[][] = points.length >= 3 ? [points.flatMap((pt) => [pt[0], pt[1]])] : []
+        const area = Math.max(0, bbox.w * bbox.h)
         annotationRows.push({
           id: annotationId,
           image_id: currentImageId,
           category_id: categoryId,
           bbox: [bbox.x, bbox.y, bbox.w, bbox.h],
-          area: Math.max(0, bbox.w * bbox.h),
+          area,
           iscrowd: 0,
           segmentation: seg,
         })
