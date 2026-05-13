@@ -1051,4 +1051,13 @@ ipc.registerService(AppService({
   async StartLocalBackend(request) {
     return await startEmbeddedPythonBackend(request.backendDirectory)
   },
+  async StopLocalBackend(_request) {
+    const stopped = stopEmbeddedPythonBackend()
+    return {
+      stopped,
+      message: stopped
+        ? ""
+        : "当前没有由本应用拉起的本地后端进程。若接口仍可用，可能是手动启动或其它程序占用端口。",
+    }
+  },
 }))

@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import type { ProjectTaskCanvasSectionProps } from "@/pages/project-task-detail/page-sections"
 
-type CanvasSectionBaseProps = Omit<ProjectTaskCanvasSectionProps, "toolPaletteProps" | "drawHintProps">
+type CanvasSectionBaseProps = Omit<ProjectTaskCanvasSectionProps, "toolPaletteProps" | "drawHintProps" | "aiToolPaletteProps">
 
 type UseCanvasSectionPropsParams = {
   stageRef: CanvasSectionBaseProps["stageRef"]

@@ -72,6 +72,9 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const [currentIndex, setCurrentIndex] = useState(0)
   const [leftPanelMode, setLeftPanelMode] = useState<LeftPanelMode>("labels")
   const [labelsTab, setLabelsTab] = useState<LabelsTab>("layers")
+  const [sam2DialogOpen, setSam2DialogOpen] = useState(false)
+  const [sam2SelectedLabel, setSam2SelectedLabel] = useState("")
+  const [sam2OutputFormat, setSam2OutputFormat] = useState<"box" | "mask">("mask")
   const {
     imageObjectUrl,
     setImageObjectUrl,
@@ -605,6 +608,12 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     () => (drawShapeType === "skeleton" ? annotationLabelOptionsSkeleton : annotationLabelOptionsPlain),
     [annotationLabelOptionsPlain, annotationLabelOptionsSkeleton, drawShapeType],
   )
+  useEffect(() => {
+    const plain = annotationLabelOptionsPlain
+    if (!plain.includes(sam2SelectedLabel)) {
+      setSam2SelectedLabel(plain[0] ?? "")
+    }
+  }, [annotationLabelOptionsPlain, sam2SelectedLabel])
   const pendingRectColor = labelColorMap.get((maskDrawingSessionLabel ?? "").trim() || rectPendingLabel) ?? "#f59e0b"
   const resolveShapeIndexById = useCallback(
     (shapeId: string | null) => findShapeIndexByStableId(annotationDocRef.current, shapeId),
@@ -917,6 +926,15 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     onRectPickerCancel: handleRectPickerCancelWrapped,
     onRectPickerConfirm: handleRectPickerConfirmWrapped,
     box3dAwaitingSecondClick,
+    aiToolPaletteProps: {
+      plainAnnotationLabels: annotationLabelOptionsPlain,
+      sam2DialogOpen,
+      onSam2DialogOpenChange: setSam2DialogOpen,
+      sam2SelectedLabel,
+      onSam2SelectedLabelChange: setSam2SelectedLabel,
+      sam2OutputFormat,
+      onSam2OutputFormatChange: setSam2OutputFormat,
+    },
   })
 
   const sidebarProps = useTaskSidebarProps({

@@ -8,6 +8,7 @@ import HomePage from "@/pages/home"
 import ModelsAutoPage from "@/pages/models-auto"
 import ModelsHubPage from "@/pages/models-hub"
 import { ModelsOutlet } from "@/pages/models-outlet"
+import ModelsBackendPage from "@/pages/models-backend"
 import ModelsTrainingPage from "@/pages/models-training"
 import ProjectDetailPage from "@/pages/project-detail"
 import ProjectExportPage from "@/pages/project-export"
@@ -69,6 +70,7 @@ export default function App() {
           </Route>
           <Route path="models" element={<ModelsOutlet />}>
             <Route index element={<ModelsHubPage />} />
+            <Route path="backend" element={<ModelsBackendPage />} />
             <Route path="auto" element={<ModelsAutoPage />} />
             <Route path="training" element={<ModelsTrainingPage />} />
           </Route>

@@ -5,6 +5,7 @@
  */
 import { RectangleOverlayItem, TaskCanvasLayer, TaskDrawHint, TaskLeftPanelContent, TaskLeftSidebarLayer } from "@/pages/project-task-detail/components"
 import { TaskToolPalette } from "@/pages/project-task-detail/annotateTools"
+import { TaskAiToolPalette } from "@/pages/project-task-detail/annotateTools/aiTools"
 import type {
   RenderedCuboid2d,
   RenderedMask,
@@ -16,6 +17,7 @@ import type {
 } from "@/pages/project-task-detail/types"
 import type { LeftPanelMode, Point } from "@/pages/project-task-detail/types"
 import type { TaskToolPaletteProps } from "@/pages/project-task-detail/annotateTools/types"
+import type { TaskAiToolPaletteProps } from "@/pages/project-task-detail/annotateTools/aiTools/types"
 import {
   cuboidBackVerticalEdgeHandleMarkers,
   cuboidFrontEdgeMidMarkers,
@@ -145,6 +147,7 @@ export type ProjectTaskCanvasSectionProps = {
   box3dDraftBaseStagePoints: Point[]
   box3dPreviewTopStagePoints: Point[]
   toolPaletteProps: TaskToolPaletteProps
+  aiToolPaletteProps: TaskAiToolPaletteProps
   drawHintProps: TaskDrawHintProps
 }
 
@@ -978,6 +981,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
           )}
         </div>
       )}
+      <TaskAiToolPalette {...props.aiToolPaletteProps} />
       <TaskToolPalette {...props.toolPaletteProps} />
       <TaskDrawHint {...props.drawHintProps} />
     </TaskCanvasLayer>

@@ -10,7 +10,7 @@ import { loadAppConfig, updateAppConfig } from "@/lib/app-config-storage"
 import { CheckCircle2, FolderOpen, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
 import { useCallback, useEffect, useId, useState } from "react"
 
-const DEFAULT_BACKEND = { host: "127.0.0.1", port: "8080" } as const
+const DEFAULT_BACKEND = { host: "127.0.0.1", port: "8000" } as const
 
 function defaultShortcutMap(): Record<string, string> {
   return Object.fromEntries(APP_SHORTCUT_ROWS.map((row) => [row.id, row.defaultBinding]))

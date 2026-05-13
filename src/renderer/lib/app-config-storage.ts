@@ -11,7 +11,7 @@ export type AppConfig = {
   backend: {
     host: string
     port: string
-    /** 便携 Python backend 根目录（含 start.bat）；空表示自动查找 */
+    /** 便携 Python backend 根目录（含 start.ps1）；空表示自动查找 */
     localBackendDir: string
   }
   storagePaths: {
@@ -39,7 +39,8 @@ export type AppConfig = {
 
 const DEFAULT: AppConfig = {
   version: APP_CONFIG_VERSION,
-  backend: { host: "127.0.0.1", port: "8080", localBackendDir: "" },
+  /** 与 backend/start.ps1 中 uvicorn --port 8000 对齐 */
+  backend: { host: "127.0.0.1", port: "8000", localBackendDir: "" },
   storagePaths: { databaseDir: "", assetsDir: "", globalConfigDir: "" },
   pageFlow: {
     workflow: { openEditorOnCreate: true },
@@ -124,8 +125,17 @@ function isAppConfigAnyVersion(d: unknown): d is AppConfigAnyVersion {
 }
 
 function normalizeAnyToV2(raw: AppConfigAnyVersion): AppConfig {
+  const applyLegacyPort = (cfg: AppConfig): AppConfig => {
+    const h = cfg.backend.host.trim()
+    const p = cfg.backend.port.trim()
+    if ((h === "127.0.0.1" || h === "localhost") && p === "8080") {
+      return { ...cfg, backend: { ...cfg.backend, port: "8000" } }
+    }
+    return cfg
+  }
+
   if (raw.version === APP_CONFIG_VERSION) {
-    return {
+    const merged: AppConfig = {
       version: APP_CONFIG_VERSION,
       backend: { ...DEFAULT.backend, ...raw.backend },
       storagePaths: { ...DEFAULT.storagePaths, ...raw.storagePaths },
@@ -145,13 +155,14 @@ function normalizeAnyToV2(raw: AppConfigAnyVersion): AppConfig {
       },
       shortcuts: { ...DEFAULT.shortcuts, ...raw.shortcuts },
     }
+    return applyLegacyPort(merged)
   }
 
   const legacyStoragePaths = (raw.storagePaths ?? {}) as Partial<AppConfig["storagePaths"]> & {
     imagesDir?: string
     annotationsDir?: string
   }
-  return {
+  const merged: AppConfig = {
     version: APP_CONFIG_VERSION,
     backend: { ...DEFAULT.backend, ...raw.backend },
     storagePaths: {
@@ -163,6 +174,7 @@ function normalizeAnyToV2(raw: AppConfigAnyVersion): AppConfig {
     pageFlow: { ...DEFAULT.pageFlow },
     shortcuts: { ...DEFAULT.shortcuts, ...raw.shortcuts },
   }
+  return applyLegacyPort(merged)
 }
 
 function parseAppConfigJson(jsonText: string): AppConfig | null {

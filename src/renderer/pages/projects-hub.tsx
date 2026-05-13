@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { FolderKanban, Import, Plus } from "lucide-react"
 import { Link } from "react-router-dom"
 
@@ -18,10 +18,9 @@ export default function ProjectsHubPage() {
               <Plus className="h-5 w-5" aria-hidden />
             </div>
             <CardTitle className="text-lg">创建项目</CardTitle>
-            <CardDescription>新建标注工程与目录结构</CardDescription>
           </CardHeader>
           <CardContent>
-            <Button asChild className="w-full sm:w-auto">
+            <Button asChild variant="outline" className="w-full sm:w-auto">
               <Link to="/projects/new">进入</Link>
             </Button>
           </CardContent>
@@ -33,7 +32,6 @@ export default function ProjectsHubPage() {
               <FolderKanban className="h-5 w-5" aria-hidden />
             </div>
             <CardTitle className="text-lg">我的项目</CardTitle>
-            <CardDescription>查看并打开所有本地项目</CardDescription>
           </CardHeader>
           <CardContent>
             <Button asChild variant="outline" className="w-full sm:w-auto">
@@ -48,7 +46,6 @@ export default function ProjectsHubPage() {
               <Import className="h-5 w-5" aria-hidden />
             </div>
             <CardTitle className="text-lg">导入项目</CardTitle>
-            <CardDescription>导入已有项目目录或配置文件</CardDescription>
           </CardHeader>
           <CardContent>
             <Button asChild variant="outline" className="w-full sm:w-auto">

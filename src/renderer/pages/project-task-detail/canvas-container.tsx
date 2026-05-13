@@ -7,11 +7,12 @@ import { ProjectTaskCanvasSection } from "@/pages/project-task-detail/page-secti
 import type { Point, RightToolMode } from "@/pages/project-task-detail/types"
 import type { DrawShapeWithPolygon } from "@/pages/project-task-detail/tool-state"
 import type { TaskToolPaletteProps } from "@/pages/project-task-detail/annotateTools/types"
+import type { TaskAiToolPaletteProps } from "@/pages/project-task-detail/annotateTools/aiTools/types"
 import type { TaskDrawHintProps } from "@/pages/project-task-detail/components"
 import type { ComponentProps } from "react"
 
 export type TaskCanvasContainerProps = {
-  sectionProps: Omit<ComponentProps<typeof ProjectTaskCanvasSection>, "toolPaletteProps" | "drawHintProps">
+  sectionProps: Omit<ComponentProps<typeof ProjectTaskCanvasSection>, "toolPaletteProps" | "drawHintProps" | "aiToolPaletteProps">
   rightToolMode: RightToolMode
   drawShapeType: DrawShapeWithPolygon
   rectDrawingEnabled: boolean
@@ -37,6 +38,7 @@ export type TaskCanvasContainerProps = {
   onRectPickerCancel: () => void
   onRectPickerConfirm: () => void
   box3dAwaitingSecondClick: boolean
+  aiToolPaletteProps: TaskAiToolPaletteProps
 }
 
 export function TaskCanvasContainer({
@@ -66,6 +68,7 @@ export function TaskCanvasContainer({
   onRectPickerCancel,
   onRectPickerConfirm,
   box3dAwaitingSecondClick,
+  aiToolPaletteProps,
 }: TaskCanvasContainerProps) {
   const toolPaletteProps: TaskToolPaletteProps = {
     rightToolMode,
@@ -103,5 +106,12 @@ export function TaskCanvasContainer({
     box3dAwaitingSecondClick,
   }
 
-  return <ProjectTaskCanvasSection {...sectionProps} toolPaletteProps={toolPaletteProps} drawHintProps={drawHintProps} />
+  return (
+    <ProjectTaskCanvasSection
+      {...sectionProps}
+      toolPaletteProps={toolPaletteProps}
+      aiToolPaletteProps={aiToolPaletteProps}
+      drawHintProps={drawHintProps}
+    />
+  )
 }

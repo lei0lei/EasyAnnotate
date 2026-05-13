@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ipc } from "@/gen/ipc"
 import { loadAppConfig, updateAppConfig } from "@/lib/app-config-storage"
 import { cn } from "@/lib/utils"
-import { FolderOpen, Loader2, Server } from "lucide-react"
+import { FolderOpen, Server } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 
 const LOCAL_BACKEND_START_TIMEOUT_MS = 60_000
@@ -11,7 +11,6 @@ const LOCAL_BACKEND_START_TIMEOUT_MS = 60_000
 export function LocalBackendBoard() {
   const [backendDir, setBackendDir] = useState(() => loadAppConfig().backend.localBackendDir ?? "")
   const [reachable, setReachable] = useState<boolean | null>(null)
-  const [starting, setStarting] = useState(false)
   const [picking, setPicking] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
   const [pendingStartSince, setPendingStartSince] = useState<number | null>(null)
@@ -43,7 +42,7 @@ export function LocalBackendBoard() {
     const delay = Math.max(0, pendingStartSince + LOCAL_BACKEND_START_TIMEOUT_MS - Date.now())
     const id = window.setTimeout(() => {
       setStartupTimedOut(true)
-      setHint("1 分钟内未能启动本地 API 服务，请检查 backend 目录、start.bat 与端口占用。")
+      setHint("1 分钟内未能启动本地 API 服务，请检查 backend 目录、start.ps1 与端口占用。")
       setPendingStartSince(null)
     }, delay)
 
@@ -55,7 +54,7 @@ export function LocalBackendBoard() {
     setHint(null)
     try {
       const result = await ipc.app.SelectDirectory({
-        title: "选择 backend 目录（需包含 start.bat）",
+        title: "选择 backend 目录（需包含 start.ps1）",
         defaultPath: backendDir.trim(),
       })
       if (result.errorMessage) {
@@ -82,7 +81,6 @@ export function LocalBackendBoard() {
   const startBackend = useCallback(async () => {
     setHint(null)
     setStartupTimedOut(false)
-    setStarting(true)
     try {
       const result = await ipc.app.StartLocalBackend({
         backendDirectory: backendDir.trim(),
@@ -100,10 +98,21 @@ export function LocalBackendBoard() {
     } catch (e) {
       setPendingStartSince(null)
       setHint(e instanceof Error ? e.message : String(e))
-    } finally {
-      setStarting(false)
     }
   }, [backendDir, refreshStatus])
+
+  const stopBackend = useCallback(async () => {
+    setHint(null)
+    try {
+      const result = await ipc.app.StopLocalBackend({})
+      if (!result.stopped && result.message?.trim()) {
+        setHint(result.message.trim())
+      }
+      refreshStatus()
+    } catch (e) {
+      setHint(e instanceof Error ? e.message : String(e))
+    }
+  }, [refreshStatus])
 
   const dirLabel = backendDir.trim() ? backendDir.trim() : "未设置（将自动查找项目内的 backend）"
 
@@ -159,25 +168,27 @@ export function LocalBackendBoard() {
           </button>
         </div>
 
-        <div className="flex items-center gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon"
-            className="shrink-0"
-            disabled={starting}
-            onClick={() => void startBackend()}
-            aria-label="启动后端"
-          >
-            {starting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Server className="h-4 w-4" aria-hidden />}
-          </Button>
-          <button
-            type="button"
-            className="min-w-0 flex-1 text-left text-sm font-medium text-foreground underline-offset-4 hover:underline"
-            onClick={() => void startBackend()}
-          >
-            启动
-          </button>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 w-[6.75rem]"
+              onClick={() => void startBackend()}
+            >
+              启动
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 w-[6.75rem]"
+              onClick={() => void stopBackend()}
+            >
+              停止
+            </Button>
+          </div>
           <span
             className={cn(
               "h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background",

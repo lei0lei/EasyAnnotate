@@ -4,7 +4,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { app } from "@mobrowser/api"
 
-/** 与 backend/start.bat 中 uvicorn 端口一致 */
+/** 与 backend/start.ps1 中 uvicorn 端口一致 */
 const LOCAL_BACKEND_HEALTH_URL = "http://127.0.0.1:8000/health"
 
 const LOCK_FILE = "ea-local-backend.lock.json"
@@ -178,9 +178,9 @@ function withStartMutex<T>(fn: () => Promise<T>): Promise<T> {
  * 退出应用时结束由本应用拉起的本地 Python 后端（含子进程树）。
  * 若后端是用户手动开的或检测为已在运行而未 spawn，则不会杀进程。
  */
-export function stopEmbeddedPythonBackend(): void {
+export function stopEmbeddedPythonBackend(): boolean {
   const child = backendChild
-  if (!child) return
+  if (!child) return false
   backendChild = null
   const pid = child.pid
   try {
@@ -188,7 +188,7 @@ export function stopEmbeddedPythonBackend(): void {
   } catch {
     /* ignore */
   }
-  if (pid == null) return
+  if (pid == null) return false
   try {
     if (process.platform === "win32") {
       execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
@@ -207,6 +207,7 @@ export function stopEmbeddedPythonBackend(): void {
   } finally {
     clearLockIfBackendPid(pid)
   }
+  return true
 }
 
 export async function probeLocalBackendHealth(): Promise<boolean> {
@@ -219,11 +220,11 @@ export async function probeLocalBackendHealth(): Promise<boolean> {
 }
 
 function isBackendRoot(dir: string): boolean {
-  return fs.existsSync(path.join(dir, "start.bat"))
+  return fs.existsSync(path.join(dir, "start.ps1")) || fs.existsSync(path.join(dir, "start.bat"))
 }
 
 /**
- * 自动解析 `backend` 目录（需含 start.bat）。
+ * 自动解析 `backend` 目录（需含 start.ps1，或旧版 start.bat）。
  * 顺序：cwd、主进程 bundle 相对路径、打包资源目录。
  */
 export function resolveAutoBackendDirectory(): string | null {
@@ -265,7 +266,7 @@ async function startEmbeddedPythonBackendBody(userBackendDirectory?: string): Pr
   if (process.platform !== "win32") {
     return {
       ok: false,
-      errorMessage: "应用内启动本地后端目前仅支持 Windows（需要 backend/start.bat）。",
+      errorMessage: "应用内启动本地后端目前仅支持 Windows（需要 backend 下 python-embed 与 start.ps1）。",
       alreadyRunning: false,
     }
   }
@@ -298,7 +299,7 @@ async function startEmbeddedPythonBackendBody(userBackendDirectory?: string): Pr
       releaseOurClaimLock()
       return {
         ok: false,
-        errorMessage: "所选目录中未找到 start.bat，请选择包含便携后端的根目录。",
+        errorMessage: "所选目录中未找到 start.ps1（或旧版 start.bat），请选择包含便携后端的根目录。",
         alreadyRunning: false,
       }
     }
@@ -308,7 +309,7 @@ async function startEmbeddedPythonBackendBody(userBackendDirectory?: string): Pr
       releaseOurClaimLock()
       return {
         ok: false,
-        errorMessage: "未找到 backend 目录。请在上方选择目录，或保持项目内存在含 start.bat 的 backend 文件夹。",
+        errorMessage: "未找到 backend 目录。请在上方选择目录，或保持项目内存在含 start.ps1 的 backend 文件夹。",
         alreadyRunning: false,
       }
     }
