@@ -2,12 +2,27 @@
  * 模块：project-task-detail/use-task-shortcuts
  * 职责：标注页快捷键；上一张/下一张、切换选择模式、删除、撤销/重做、新建标注均走 app-config。
  * 使用 capture 阶段并 stopPropagation；首张/末张仍消费翻页键；在带 data-ea-app-chrome 的顶栏/侧栏内额外吞掉未处理的单字符键，避免 D/F 等触发列表 typeahead。
- * 「新建标注」在尚未从工具栏完成过一次标签确认前不响应快捷键。
+ * 「新建标注」在尚未从工具栏完成过一次标签确认前不响应快捷键（SAM2 用 N 续标除外，见 tryResumeSam2AfterCommit）。
+ * AI 工具（SAM2）：与「切换选择模式」同键（默认 Escape）时，若本轮有点/预览则先撤销本轮；否则再收起 AI 并进入选择。新建标注键（默认 N）在 SAM2 态下用于确认当前预览 mask 并开始下一轮。
+ * 标签类 `<select>` 不视为「输入框」：焦点在其上时仍响应上一张/下一张等全局快捷键。
  */
 import { useEffect } from "react"
 import { getEffectiveShortcutBinding } from "@/lib/app-shortcut-registry"
-import { bindingMatchesEvent, isEditableKeyboardTarget } from "@/lib/keyboard-shortcut-match"
+import { bindingMatchesEvent } from "@/lib/keyboard-shortcut-match"
 import type { RightToolMode } from "@/pages/project-task-detail/types"
+
+/**
+ * 仅在「真·文本输入」控件上让出全局快捷键（INPUT/TEXTAREA/contenteditable）。
+ * SAM2 面板的 `<select>` 不算：否则焦点在标签下拉上时整段 return，翻页等快捷键永远不触发。
+ */
+function shouldDeferGlobalShortcutsToNativeControl(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  if (tag === "TEXTAREA") return true
+  if (tag === "INPUT") return true
+  return false
+}
 
 /** 拦截默认行为并阻止向下传递，避免焦点在标题栏等控件上时被 Radix/Chromium 当作 typeahead 选中按钮 */
 function consumeShortcutEvent(event: KeyboardEvent) {
@@ -51,6 +66,16 @@ type UseTaskShortcutsParams = {
   goNextImage: () => void
   canRepeatNewAnnotation: boolean
   repeatNewAnnotation: () => void
+  /** 与 select-tool 同键按下时先执行：关闭 SAM2 面板、退出 SAM2 标注态等 */
+  dismissAiToolUi?: () => void
+  /** SAM2 标注态：Escape 优先撤销本轮（点/预览），不退出工具 */
+  sam2AnnotatingActive?: boolean
+  sam2HasCancelableRound?: boolean
+  cancelSam2Round?: () => void
+  /** SAM2 标注态：N（new-annotation）确认当前预览 mask 并开始下一轮 */
+  commitSam2DraftAndNew?: () => void
+  /** SAM2：上次用 N 提交并进入选择后，再按 N 可回到 SAM2 标注并沿用面板中的各项设置 */
+  tryResumeSam2AfterCommit?: () => boolean
 }
 
 export function useTaskShortcuts({
@@ -75,10 +100,21 @@ export function useTaskShortcuts({
   goNextImage,
   canRepeatNewAnnotation,
   repeatNewAnnotation,
+  dismissAiToolUi,
+  sam2AnnotatingActive,
+  sam2HasCancelableRound,
+  cancelSam2Round,
+  commitSam2DraftAndNew,
+  tryResumeSam2AfterCommit,
 }: UseTaskShortcutsParams) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isEditableKeyboardTarget(event.target)) return
+      const selectBinding = getEffectiveShortcutBinding("select-tool")
+      const matchesSelectTool = bindingMatchesEvent(selectBinding, event)
+      const inSam2PickerPanel =
+        event.target instanceof Node &&
+        Boolean(document.querySelector("[data-ea-sam2-picker-panel]")?.contains(event.target))
+      if (shouldDeferGlobalShortcutsToNativeControl(event.target) && !(matchesSelectTool && inSam2PickerPanel)) return
 
       const focusInAppChrome = isInsideAppLayoutChrome(document.activeElement)
 
@@ -110,6 +146,15 @@ export function useTaskShortcuts({
 
       const newAnnBinding = getEffectiveShortcutBinding("new-annotation")
       if (bindingMatchesEvent(newAnnBinding, event)) {
+        if (sam2AnnotatingActive && commitSam2DraftAndNew) {
+          consumeShortcutEvent(event)
+          commitSam2DraftAndNew()
+          return
+        }
+        if (tryResumeSam2AfterCommit?.()) {
+          consumeShortcutEvent(event)
+          return
+        }
         if (canRepeatNewAnnotation) {
           consumeShortcutEvent(event)
           repeatNewAnnotation()
@@ -117,8 +162,13 @@ export function useTaskShortcuts({
         return
       }
 
-      const selectBinding = getEffectiveShortcutBinding("select-tool")
-      if (bindingMatchesEvent(selectBinding, event)) {
+      if (matchesSelectTool) {
+        if (sam2AnnotatingActive && sam2HasCancelableRound && cancelSam2Round) {
+          consumeShortcutEvent(event)
+          cancelSam2Round()
+          return
+        }
+        dismissAiToolUi?.()
         if (rightToolMode === "polygon" && polygonDraftPointCount > 0) {
           consumeShortcutEvent(event)
           clearPolygonDraft()
@@ -160,8 +210,14 @@ export function useTaskShortcuts({
     window.addEventListener("keydown", onKeyDown, true)
     return () => window.removeEventListener("keydown", onKeyDown, true)
   }, [
+    dismissAiToolUi,
+    sam2AnnotatingActive,
+    sam2HasCancelableRound,
+    cancelSam2Round,
     clearMaskTransientState,
     clearPolygonDraft,
+    commitSam2DraftAndNew,
+    tryResumeSam2AfterCommit,
     canGoNextImage,
     canGoPrevImage,
     canRedo,

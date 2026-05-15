@@ -37,6 +37,13 @@ type AnnotationStore = {
 
 const storeCache = new Map<string, AnnotationStore>()
 
+/** 与主进程 `sanitizeSegment` 一致：任务目录名与 `image_path` 中的 `/data/tasks/<segment>/` 对齐 */
+function sanitizeTaskSegment(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return "default"
+  return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+}
+
 function resolveStoreFile(databaseDir: string): string {
   const baseDir = databaseDir.trim() ? databaseDir.trim() : path.resolve(process.cwd(), "data")
   fs.mkdirSync(baseDir, { recursive: true })
@@ -199,10 +206,23 @@ export async function listTaskFilesByTask(
     .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.file_path.localeCompare(b.file_path))
 }
 
+/** 仅移除索引库中属于该任务（按图片路径）的标注记录，不删任务文件表、不删磁盘 JSON */
+export async function deleteAnnotationsForTask(databaseDir: string, projectId: string, taskId: string): Promise<void> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  const taskMarker = `/data/tasks/${sanitizeTaskSegment(taskId)}/`
+  store.annotations = store.annotations.filter((item) => {
+    if (item.project_id !== projectId) return true
+    const normalizedPath = item.image_path.replace(/\\/g, "/")
+    return !normalizedPath.includes(taskMarker)
+  })
+  writeStore(filePath, store)
+}
+
 export async function deleteTaskArtifacts(databaseDir: string, projectId: string, taskId: string): Promise<void> {
   const filePath = resolveStoreFile(databaseDir)
   const store = readStore(filePath)
-  const taskMarker = `/data/tasks/${taskId}/`
+  const taskMarker = `/data/tasks/${sanitizeTaskSegment(taskId)}/`
   store.taskFiles = store.taskFiles.filter((item) => !(item.project_id === projectId && item.task_id === taskId))
   store.annotations = store.annotations.filter((item) => {
     if (item.project_id !== projectId) return true

@@ -25,7 +25,13 @@ import {
 } from "@/pages/project-task-detail/annotateTools/cuboid2d-geometry"
 import { MaskRasterOverlay } from "@/pages/project-task-detail/mask-raster-overlay"
 import type { TaskDrawHintProps, TaskLeftPanelContentProps } from "@/pages/project-task-detail/components"
-import type { MouseEvent as ReactMouseEvent, MutableRefObject, SyntheticEvent, WheelEventHandler, MouseEventHandler } from "react"
+import type {
+  MouseEvent as ReactMouseEvent,
+  MouseEventHandler,
+  MutableRefObject,
+  SyntheticEvent,
+  WheelEventHandler,
+} from "react"
 
 /** 纯平移拖拽时在 stage 像素空间叠加的位移，避免每帧重建 rendered* 与写回文档 */
 export type DragStageNudge = { shapeId: string; dx: number; dy: number }
@@ -33,6 +39,42 @@ export type DragStageNudge = { shapeId: string; dx: number; dy: number }
 function dragNudgeSvgTransform(nudge: DragStageNudge | null | undefined, shapeId: string): string | undefined {
   if (!nudge || nudge.shapeId !== shapeId) return undefined
   return `translate(${nudge.dx} ${nudge.dy})`
+}
+
+/** 自动 prompt：中心十字 + 四角直角线（无半透明矩形） */
+type Sam2AutoPreviewRectModel = {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+function Sam2AutoPromptGuides({ rect, stroke }: { rect: Sam2AutoPreviewRectModel; stroke: string }) {
+  const { left, top, width, height } = rect
+  if (width < 1 || height < 1) return null
+  const base = Math.min(width, height)
+  const arm = Math.max(6, Math.min(18, base * 0.14))
+  const halfCross = Math.max(5, Math.min(14, base * 0.09))
+  const minHalf = Math.min(width, height) / 2 - 0.5
+  const L = Math.min(arm, Math.max(4, minHalf))
+  const cx = left + width / 2
+  const cy = top + height / 2
+  const crossH = Math.min(halfCross, Math.max(4, width / 2 - 0.5))
+  const crossV = Math.min(halfCross, Math.max(4, height / 2 - 0.5))
+  const r = left + width
+  const b = top + height
+  const d = [
+    `M ${left} ${top + L} L ${left} ${top} L ${left + L} ${top}`,
+    `M ${r - L} ${top} L ${r} ${top} L ${r} ${top + L}`,
+    `M ${r} ${b - L} L ${r} ${b} L ${r - L} ${b}`,
+    `M ${left + L} ${b} L ${left} ${b} L ${left} ${b - L}`,
+    `M ${cx - crossH} ${cy} L ${cx + crossH} ${cy} M ${cx} ${cy - crossV} L ${cx} ${cy + crossV}`,
+  ].join(" ")
+  return (
+    <g fill="none" stroke={stroke} strokeWidth={2} strokeLinecap="square" strokeLinejoin="miter" opacity={0.92}>
+      <path d={d} />
+    </g>
+  )
 }
 
 type ProjectTaskSidebarSectionProps = {
@@ -149,6 +191,37 @@ export type ProjectTaskCanvasSectionProps = {
   toolPaletteProps: TaskToolPaletteProps
   aiToolPaletteProps: TaskAiToolPaletteProps
   drawHintProps: TaskDrawHintProps
+  sam2OverlayActive: boolean
+  sam2StagePoints: { id: string; stageX: number; stageY: number; label: 1 | 0 }[]
+  sam2PointPositiveColor: string
+  sam2PointNegativeColor: string
+  sam2PreviewRect: {
+    left: number
+    top: number
+    width: number
+    height: number
+    clippedLeft: boolean
+    clippedTop: boolean
+    clippedRight: boolean
+    clippedBottom: boolean
+  } | null
+  /** 自动 prompt（矩形框模式）：物体框在画布上的投影，十字 + 四角直角线 */
+  sam2AutoPreviewRect: {
+    left: number
+    top: number
+    width: number
+    height: number
+    clippedLeft: boolean
+    clippedTop: boolean
+    clippedRight: boolean
+    clippedBottom: boolean
+  } | null
+  onSam2OverlayClick: MouseEventHandler<HTMLDivElement>
+  onSam2OverlayContextMenu: MouseEventHandler<HTMLDivElement>
+  onSam2OverlayMouseMove: MouseEventHandler<HTMLDivElement>
+  onSam2OverlayMouseLeave: MouseEventHandler<HTMLDivElement>
+  sam2Toast: { kind: "ok" | "err"; text: string } | null
+  onSam2ToastDismiss: () => void
 }
 
 export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
@@ -177,7 +250,9 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
             <div
               className="flex h-full w-full items-center justify-center overflow-hidden"
               style={{
-                cursor: props.canPanAndZoom
+                cursor: props.sam2OverlayActive
+                  ? "crosshair"
+                  : props.canPanAndZoom
                   ? props.isPanning
                     ? "grabbing"
                     : "grab"
@@ -973,12 +1048,78 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                       onDoubleClick={props.canDrawMask ? undefined : props.canDrawPolygon ? props.onHandlePolygonDrawDoubleClick : undefined}
                     />
                   ) : null}
+                  {props.sam2OverlayActive ? (
+                    <>
+                      <div
+                        className="absolute inset-0 z-[22] cursor-crosshair"
+                        role="presentation"
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onClick={props.onSam2OverlayClick}
+                        onContextMenu={props.onSam2OverlayContextMenu}
+                        onMouseMove={props.onSam2OverlayMouseMove}
+                        onMouseLeave={props.onSam2OverlayMouseLeave}
+                      />
+                      <svg className="pointer-events-none absolute inset-0 z-[23] h-full w-full overflow-visible">
+                        {props.sam2StagePoints.map((p) => (
+                          <circle
+                            key={p.id}
+                            cx={p.stageX}
+                            cy={p.stageY}
+                            r={6}
+                            fill={p.label === 1 ? props.sam2PointPositiveColor : props.sam2PointNegativeColor}
+                            stroke={p.label === 1 ? "#ffffff" : "#64748b"}
+                            strokeWidth={1.5}
+                          />
+                        ))}
+                        {props.sam2AutoPreviewRect ? (
+                          <Sam2AutoPromptGuides rect={props.sam2AutoPreviewRect} stroke="#22d3ee" />
+                        ) : null}
+                      </svg>
+                      {props.sam2PreviewRect ? (
+                        <div
+                          className="pointer-events-none absolute z-[23] border-2 border-dashed"
+                          style={{
+                            left: props.sam2PreviewRect.left,
+                            top: props.sam2PreviewRect.top,
+                            width: props.sam2PreviewRect.width,
+                            height: props.sam2PreviewRect.height,
+                            borderColor: props.sam2PointPositiveColor,
+                            borderLeftWidth: props.sam2PreviewRect.clippedLeft ? 0 : 2,
+                            borderTopWidth: props.sam2PreviewRect.clippedTop ? 0 : 2,
+                            borderRightWidth: props.sam2PreviewRect.clippedRight ? 0 : 2,
+                            borderBottomWidth: props.sam2PreviewRect.clippedBottom ? 0 : 2,
+                            backgroundColor: `${props.sam2PointPositiveColor}33`,
+                          }}
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
                 </div>
               </div>
             </div>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">图片加载失败或不存在</div>
           )}
+          {props.sam2Toast ? (
+            <div className="pointer-events-none absolute bottom-4 left-1/2 z-[120] -translate-x-1/2 px-2">
+              <div
+                className={
+                  props.sam2Toast.kind === "ok"
+                    ? "pointer-events-auto flex max-w-lg items-start gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 shadow-md dark:text-emerald-100"
+                    : "pointer-events-auto flex max-w-lg items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-900 shadow-md dark:text-red-100"
+                }
+              >
+                <button
+                  type="button"
+                  className="shrink-0 text-xs underline opacity-80 hover:opacity-100"
+                  onClick={props.onSam2ToastDismiss}
+                >
+                  关闭
+                </button>
+                <span className="min-w-0 flex-1 break-words">{props.sam2Toast.text}</span>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
       <TaskAiToolPalette {...props.aiToolPaletteProps} />

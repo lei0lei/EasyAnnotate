@@ -318,6 +318,19 @@ export async function deleteImageAnnotation(imagePath: string): Promise<{ errorM
   return { errorMessage: response.errorMessage || "" }
 }
 
+export async function deleteTaskAnnotations(payload: {
+  projectId: string
+  taskId: string
+}): Promise<{ errorMessage: string }> {
+  const response = await ipc.app.DeleteTaskAnnotations({
+    globalConfigDir: globalConfigDir(),
+    databaseDir: "",
+    projectId: payload.projectId,
+    taskId: payload.taskId,
+  })
+  return { errorMessage: response.errorMessage || "" }
+}
+
 export async function getImageFileInfo(path: string): Promise<{
   exists: boolean
   sizeBytes: number

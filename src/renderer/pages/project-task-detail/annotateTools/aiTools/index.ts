@@ -4,4 +4,8 @@
  */
 export { TaskAiToolPalette } from "./task-ai-tool-palette"
 export { Sam2SegmentAnchorPanel } from "./sam2-segment-anchor-panel"
-export type { Sam2AutoAnnotationFormat, TaskAiToolPaletteProps } from "./types"
+export type {
+  Sam2AutoAnnotationFormat,
+  Sam2PromptMode,
+  TaskAiToolPaletteProps,
+} from "./types"

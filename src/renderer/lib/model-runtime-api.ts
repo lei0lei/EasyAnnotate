@@ -1,4 +1,4 @@
-import { loadAppConfig } from "@/lib/app-config-storage"
+import { apiV1Root, encodeUrlPathSegments, readFetchError } from "@/lib/backend-http"
 
 export type InferenceInfo = {
   method: string
@@ -30,12 +30,8 @@ export type RuntimeCatalogResponse = {
   categories: RuntimeCategoryRow[]
 }
 
-export function backendHttpOrigin(): string {
-  const { host, port } = loadAppConfig().backend
-  const h = host.trim() || "127.0.0.1"
-  const p = (port.trim() || "8000").replace(/^:/, "")
-  return `http://${h}:${p}`
-}
+/** 从 `@/lib/backend-http` 再导出，便于只依赖 model 层的调用方取 origin。 */
+export { backendHttpOrigin } from "@/lib/backend-http"
 
 /** 无 registry 文件名时的兜底（一般不触发） */
 export function formatBackendModelDisplayName(modelId: string): string {
@@ -44,12 +40,7 @@ export function formatBackendModelDisplayName(modelId: string): string {
 }
 
 function catalogUrl(): string {
-  return `${backendHttpOrigin()}/api/v1/model-runtime/catalog`
-}
-
-async function readFetchError(res: Response): Promise<string> {
-  const text = await res.text().catch(() => "")
-  return text || res.statusText || "unknown"
+  return `${apiV1Root()}/model-runtime/catalog`
 }
 
 export async function fetchModelRuntimeCatalog(): Promise<RuntimeCatalogResponse> {
@@ -77,7 +68,7 @@ export async function startModelRuntime(
   modelId: string,
   useGpu: boolean = true,
 ): Promise<unknown> {
-  const url = `${backendHttpOrigin()}/api/v1/model-runtime/${categoryId}/start`
+  const url = `${apiV1Root()}/model-runtime/${encodeURIComponent(categoryId)}/start`
   let res: Response
   try {
     res = await fetch(url, {
@@ -96,7 +87,7 @@ export async function startModelRuntime(
 }
 
 export async function stopModelRuntime(categoryId: string): Promise<unknown> {
-  const url = `${backendHttpOrigin()}/api/v1/model-runtime/${categoryId}/stop`
+  const url = `${apiV1Root()}/model-runtime/${encodeURIComponent(categoryId)}/stop`
   let res: Response
   try {
     res = await fetch(url, {
@@ -114,8 +105,8 @@ export async function stopModelRuntime(categoryId: string): Promise<unknown> {
 }
 
 export function predictUrlForModel(modelId: string): string {
-  const o = backendHttpOrigin()
-  return `${o}/api/v1/models/${modelId}/predict`
+  const tail = encodeUrlPathSegments(modelId)
+  return `${apiV1Root()}/models/${tail}/predict`
 }
 
 /** 后端从公网拉取的样例图（各模型 `payload.source` 均支持 HTTPS URL）。 */

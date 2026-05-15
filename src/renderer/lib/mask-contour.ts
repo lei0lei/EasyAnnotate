@@ -251,13 +251,27 @@ export function simplifyPolygonRdp(points: number[][], epsilon: number): number[
 
 const MAX_YOLO_SEGMENT_POINTS = 320
 
+export type ContourForYoloExportOptions = {
+  /** Douglas–Peucker 容差（像素）；越大顶点越少 */
+  rdpEpsilon?: number
+  /** 超过则均匀抽稀，硬上限顶点数 */
+  maxPoints?: number
+}
+
 /** 供导出：轮廓点过多时先 RDP 再均匀抽稀 */
-export function contourForYoloExport(data: Uint8Array, w: number, h: number): number[][] {
+export function contourForYoloExport(
+  data: Uint8Array,
+  w: number,
+  h: number,
+  options?: ContourForYoloExportOptions,
+): number[][] {
+  const rdpEpsilon = options?.rdpEpsilon ?? 1.2
+  const maxPoints = options?.maxPoints ?? MAX_YOLO_SEGMENT_POINTS
   let poly = binaryMaskOuterContour(data, w, h)
   if (poly.length < 3) return poly
-  poly = simplifyPolygonRdp(poly, 1.2)
-  if (poly.length > MAX_YOLO_SEGMENT_POINTS) {
-    const step = Math.ceil(poly.length / MAX_YOLO_SEGMENT_POINTS)
+  poly = simplifyPolygonRdp(poly, rdpEpsilon)
+  if (poly.length > maxPoints) {
+    const step = Math.ceil(poly.length / maxPoints)
     const dec: number[][] = []
     for (let i = 0; i < poly.length; i += step) {
       const p = poly[i]

@@ -86,6 +86,8 @@ type UseTaskCanvasEngineParams = {
   onSelectionChanged: (shapeId: string | null) => void
   onHoveredShapeChanged: (shapeId: string | null | ((prev: string | null) => string | null)) => void
   onViewportChanged?: (viewport: ViewportChangeEvent) => void
+  /** 为 true 时禁用画布平移/滚轮（SAM2 等覆盖层） */
+  blockViewPanAndWheel?: boolean
 }
 
 export function useTaskCanvasEngine(params: UseTaskCanvasEngineParams) {
@@ -195,6 +197,7 @@ export function useTaskCanvasEngine(params: UseTaskCanvasEngineParams) {
     setSelectedShapeIndex: setSelectedShapeWithEvent,
     setHoveredShapeIndex: setHoveredShapeWithEvent,
     setRawHighlightCorner: params.setRawHighlightCorner,
+    blockViewPanAndWheel: params.blockViewPanAndWheel,
   })
 
   const handleRectangleMouseDownById = useCallback(

@@ -17,6 +17,8 @@ import {
   GetImageFileInfoResponse,
   DeleteImageAnnotationRequest,
   DeleteImageAnnotationResponse,
+  DeleteTaskAnnotationsRequest,
+  DeleteTaskAnnotationsResponse,
   ListTaskFilesRequest,
   ListTaskFilesResponse,
   ListProjectTasksRequest,
@@ -62,6 +64,7 @@ import {
 import { GreetService, AppService } from './gen/ipc_service';
 import { installApplicationMenu } from "./app-menu";
 import {
+  deleteAnnotationsForTask,
   deleteTaskArtifacts,
   deleteAnnotation,
   deleteAnnotationProject,
@@ -786,6 +789,34 @@ ipc.registerService(AppService({
       }
       const jsonPath = resolveAnnotationJsonPath(imagePath)
       fs.rmSync(jsonPath, { force: true })
+      return { errorMessage: "" }
+    } catch (error) {
+      return { errorMessage: error instanceof Error ? error.message : String(error) }
+    }
+  },
+  async DeleteTaskAnnotations(request: DeleteTaskAnnotationsRequest): Promise<DeleteTaskAnnotationsResponse> {
+    try {
+      const projectId = (request.projectId || "").trim()
+      const taskId = (request.taskId || "").trim()
+      if (!projectId || !taskId) {
+        return { errorMessage: "项目或任务标识为空。" }
+      }
+      const project = getProject(request.globalConfigDir, projectId)
+      if (!project) {
+        return { errorMessage: "项目不存在。" }
+      }
+      const baseRoot =
+        project.storageType === "local" && project.localPath
+          ? project.localPath
+          : path.dirname(project.configFilePath)
+      const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(taskId))
+      const files = collectTaskFiles(taskRootDir)
+      for (const item of files) {
+        const jsonPath = resolveAnnotationJsonPath(item.filePath)
+        fs.rmSync(jsonPath, { force: true })
+      }
+      const databaseDir = (request.databaseDir || "").trim()
+      await deleteAnnotationsForTask(databaseDir, projectId, taskId)
       return { errorMessage: "" }
     } catch (error) {
       return { errorMessage: error instanceof Error ? error.message : String(error) }

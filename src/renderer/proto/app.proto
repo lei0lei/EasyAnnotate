@@ -351,6 +351,17 @@ message DeleteImageAnnotationResponse {
   string error_message = 1;
 }
 
+message DeleteTaskAnnotationsRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string database_dir = 4;
+}
+
+message DeleteTaskAnnotationsResponse {
+  string error_message = 1;
+}
+
 message GetImageFileInfoRequest {
   string path = 1;
 }
@@ -476,6 +487,7 @@ service AppService {
   rpc ReadImageAnnotation(ReadImageAnnotationRequest) returns (ReadImageAnnotationResponse);
   rpc WriteImageAnnotation(WriteImageAnnotationRequest) returns (WriteImageAnnotationResponse);
   rpc DeleteImageAnnotation(DeleteImageAnnotationRequest) returns (DeleteImageAnnotationResponse);
+  rpc DeleteTaskAnnotations(DeleteTaskAnnotationsRequest) returns (DeleteTaskAnnotationsResponse);
   rpc GetImageFileInfo(GetImageFileInfoRequest) returns (GetImageFileInfoResponse);
   rpc DeleteTaskImage(DeleteTaskImageRequest) returns (DeleteTaskImageResponse);
   rpc DownloadTaskImage(DownloadTaskImageRequest) returns (DownloadTaskImageResponse);

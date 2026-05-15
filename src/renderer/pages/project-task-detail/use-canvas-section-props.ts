@@ -84,6 +84,18 @@ type UseCanvasSectionPropsParams = {
   selectedRect: CanvasSectionBaseProps["selectedRect"]
   rawHighlightCorner: CanvasSectionBaseProps["rawHighlightCorner"]
   dragStageNudge: CanvasSectionBaseProps["dragStageNudge"]
+  sam2OverlayActive: CanvasSectionBaseProps["sam2OverlayActive"]
+  sam2StagePoints: CanvasSectionBaseProps["sam2StagePoints"]
+  sam2PointPositiveColor: CanvasSectionBaseProps["sam2PointPositiveColor"]
+  sam2PointNegativeColor: CanvasSectionBaseProps["sam2PointNegativeColor"]
+  sam2PreviewRect: CanvasSectionBaseProps["sam2PreviewRect"]
+  sam2AutoPreviewRect: CanvasSectionBaseProps["sam2AutoPreviewRect"]
+  onSam2OverlayClick: CanvasSectionBaseProps["onSam2OverlayClick"]
+  onSam2OverlayContextMenu: CanvasSectionBaseProps["onSam2OverlayContextMenu"]
+  onSam2OverlayMouseMove: CanvasSectionBaseProps["onSam2OverlayMouseMove"]
+  onSam2OverlayMouseLeave: CanvasSectionBaseProps["onSam2OverlayMouseLeave"]
+  sam2Toast: CanvasSectionBaseProps["sam2Toast"]
+  onSam2ToastDismiss: CanvasSectionBaseProps["onSam2ToastDismiss"]
 }
 
 export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
@@ -168,6 +180,18 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     selectedRect,
     rawHighlightCorner,
     dragStageNudge,
+    sam2OverlayActive,
+    sam2StagePoints,
+    sam2PointPositiveColor,
+    sam2PointNegativeColor,
+    sam2PreviewRect,
+    sam2AutoPreviewRect,
+    onSam2OverlayClick,
+    onSam2OverlayContextMenu,
+    onSam2OverlayMouseMove,
+    onSam2OverlayMouseLeave,
+    sam2Toast,
+    onSam2ToastDismiss,
   } = params
 
   const canvasSectionHandlerProps = useMemo(
@@ -219,6 +243,12 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       onHandleSkeletonDrawClick: handleSkeletonDrawClick,
       box3dDraftBaseStagePoints,
       box3dPreviewTopStagePoints,
+      onSam2OverlayClick,
+      onSam2OverlayContextMenu,
+      onSam2OverlayMouseMove,
+      onSam2OverlayMouseLeave,
+      sam2Toast,
+      onSam2ToastDismiss,
     }),
     [
       appendMaskDraftPoint,
@@ -267,6 +297,12 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       setRawHighlightCorner,
       setSelectedShape,
       stageRef,
+      onSam2OverlayClick,
+      onSam2OverlayContextMenu,
+      onSam2OverlayMouseMove,
+      onSam2OverlayMouseLeave,
+      sam2Toast,
+      onSam2ToastDismiss,
     ],
   )
 
@@ -313,6 +349,13 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       maskCursorStagePoint,
       maskBrushSize,
       maskDrawMode,
+      sam2OverlayActive,
+      sam2StagePoints,
+      sam2PointPositiveColor,
+      sam2PointNegativeColor,
+      sam2PreviewRect,
+      sam2AutoPreviewRect,
+      sam2Toast,
     }),
     [
       canDrawBox3d,
@@ -356,6 +399,13 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       selectedRect,
       selectedRotationRect,
       selectedShapeIndex,
+      sam2AutoPreviewRect,
+      sam2OverlayActive,
+      sam2PointNegativeColor,
+      sam2PointPositiveColor,
+      sam2PreviewRect,
+      sam2StagePoints,
+      sam2Toast,
     ],
   )
 

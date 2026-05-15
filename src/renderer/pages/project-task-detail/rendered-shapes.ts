@@ -39,6 +39,9 @@ export type DragVertexLiveOverride = { shapeIndex: number; vertexIndex: number; 
 /** 拖拽中覆盖 RLE 栅格 mask 的展示数据 */
 export type DragLiveMaskRleOverride = { shapeIndex: number; counts: number[]; w: number; h: number; brushSize: number }
 
+/** SAM2 会话中尚未按 N 提交的整图 RLE 预览（非文档内形状） */
+export type Sam2DraftMaskRle = { counts: number[]; w: number; h: number; label: string; color: string }
+
 type RenderShapeContext = {
   annotationDoc: XAnyLabelFile | null
   hiddenShapeIndexes: number[]
@@ -49,6 +52,8 @@ type RenderShapeContext = {
   projectTags?: ProjectTag[]
   dragLivePoints?: DragLivePointsOverride | null
   dragLiveMaskRle?: DragLiveMaskRleOverride | null
+  /** SAM2：当前轮次 ONNX 预览 mask，叠在文档 mask 之上 */
+  sam2DraftMaskRle?: Sam2DraftMaskRle | null
 }
 
 function shapePointsWithLiveOverride(
@@ -310,14 +315,15 @@ export function buildRenderedPoints(context: RenderShapeContext): RenderedPoint[
 }
 
 export function buildRenderedMasks(context: RenderShapeContext & { stageScale: number }): RenderedMask[] {
-  const { annotationDoc, hiddenShapeIndexes, hiddenClassLabels, labelColorMap, imageToStage, dragLiveMaskRle, dragLivePoints } = context
+  const { annotationDoc, hiddenShapeIndexes, hiddenClassLabels, labelColorMap, imageToStage, dragLiveMaskRle, dragLivePoints, sam2DraftMaskRle } =
+    context
   if (!annotationDoc) return []
   const hiddenSet = new Set(hiddenShapeIndexes)
   const hiddenClassSet = new Set(hiddenClassLabels)
   const docIw = annotationDoc.imageWidth
   const docIh = annotationDoc.imageHeight
-  return annotationDoc.shapes
-    .map((shape, index) => {
+  const list = annotationDoc.shapes
+    .map((shape, index): RenderedMask | null => {
       if (hiddenSet.has(index)) return null
       if (hiddenClassSet.has(shape.label)) return null
       if (shape.shape_type !== "mask") return null
@@ -442,6 +448,58 @@ export function buildRenderedMasks(context: RenderShapeContext & { stageScale: n
       }
     })
     .filter((item): item is RenderedMask => !!item)
+
+  if (!sam2DraftMaskRle || sam2DraftMaskRle.w !== docIw || sam2DraftMaskRle.h !== docIh) return list
+
+  const total = docIw * docIh
+  const bin = decodeRowMajorRleToBinary(sam2DraftMaskRle.counts, total)
+  if (!maskBinaryHasForeground(bin)) return list
+  const bbox = foregroundBBoxInclusive(bin, docIw, docIh)
+  if (!bbox) return list
+  const tightCorners: Point[] = [
+    { x: bbox.minX, y: bbox.minY },
+    { x: bbox.maxX + 1, y: bbox.minY },
+    { x: bbox.maxX + 1, y: bbox.maxY + 1 },
+    { x: bbox.minX, y: bbox.maxY + 1 },
+  ]
+  const stageTight = tightCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
+  if (stageTight.length < 1) return list
+  const xs = stageTight.map((item) => item.x)
+  const ys = stageTight.map((item) => item.y)
+  const left = Math.min(...xs)
+  const top = Math.min(...ys)
+  const right = Math.max(...xs)
+  const bottom = Math.max(...ys)
+  const imageCorners: Point[] = [
+    { x: 0, y: 0 },
+    { x: docIw, y: 0 },
+    { x: docIw, y: docIh },
+    { x: 0, y: docIh },
+  ]
+  const stageImg = imageCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
+  if (stageImg.length < 4) return list
+  const ixs = stageImg.map((p) => p.x)
+  const iys = stageImg.map((p) => p.y)
+  const sil = Math.min(...ixs)
+  const sit = Math.min(...iys)
+  const siw = Math.max(...ixs) - sil
+  const sih = Math.max(...iys) - sit
+  const draftMask: RenderedMask = {
+    index: -1,
+    shapeId: "__eaSam2Draft",
+    label: sam2DraftMaskRle.label,
+    color: sam2DraftMaskRle.color,
+    stagePoints: [],
+    stageSegments: [],
+    brushSize: 1,
+    left,
+    top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+    raster: { counts: sam2DraftMaskRle.counts, imageWidth: docIw, imageHeight: docIh },
+    stageImageRect: { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) },
+  }
+  return [...list, draftMask]
 }
 
 function readCuboid2dHeightPx(shape: { attributes?: Record<string, unknown> }): number {

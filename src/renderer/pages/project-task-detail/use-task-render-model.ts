@@ -16,6 +16,7 @@ import {
   type DragLiveMaskRleOverride,
   type DragLivePointsOverride,
   type DragVertexLiveOverride,
+  type Sam2DraftMaskRle,
 } from "@/pages/project-task-detail/rendered-shapes"
 import type { ProjectTag } from "@/lib/projects-api"
 import type { Point } from "@/pages/project-task-detail/types"
@@ -38,6 +39,8 @@ type UseTaskRenderModelParams = {
   /** 单顶点拖拽：与 dragLivePoints 互斥使用，且仅驱动 polygon / skeleton / cuboid 的 memo */
   dragVertexLive: DragVertexLiveOverride | null
   dragLiveMaskRle: DragLiveMaskRleOverride | null
+  /** SAM2 当前轮次预览（未按 N 写入文档） */
+  sam2DraftMaskRle: Sam2DraftMaskRle | null
 }
 
 export function useTaskRenderModel(params: UseTaskRenderModelParams) {
@@ -55,6 +58,7 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     dragCuboidLivePoints,
     dragVertexLive,
     dragLiveMaskRle,
+    sam2DraftMaskRle,
   } = params
 
   const renderedRectangles = useMemo(() => {
@@ -103,8 +107,9 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       imageToStage: (point) => imageToStageBase(point),
       dragLiveMaskRle,
       dragLivePoints,
+      sam2DraftMaskRle,
     })
-  }, [annotationDoc, dragLiveMaskRle, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
+  }, [annotationDoc, dragLiveMaskRle, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap, sam2DraftMaskRle])
 
   const renderedCuboids2d = useMemo(() => {
     return buildRenderedCuboids2d({

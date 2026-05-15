@@ -5,9 +5,9 @@
 import { cn } from "@/lib/utils"
 import { createPortal } from "react-dom"
 import { useLayoutEffect, useState, type CSSProperties } from "react"
-import type { Sam2AutoAnnotationFormat } from "./types"
+import type { Sam2AutoAnnotationFormat, Sam2PromptMode } from "./types"
 
-const SAM2_PANEL_WIDTH_PX = 208
+const SAM2_PANEL_WIDTH_PX = 288
 
 function getFallbackSam2PickerFixedPos(): { top: number; left: number } {
   if (typeof window === "undefined") return { top: 0, left: 0 }
@@ -38,8 +38,24 @@ export type Sam2SegmentAnchorPanelProps = {
   labels: string[]
   selectedLabel: string
   onSelectedLabelChange: (label: string) => void
+  promptMode: Sam2PromptMode
+  onPromptModeChange: (mode: Sam2PromptMode) => void
   outputFormat: Sam2AutoAnnotationFormat
   onOutputFormatChange: (format: Sam2AutoAnnotationFormat) => void
+  polygonVertexBias: number
+  onPolygonVertexBiasChange: (value: number) => void
+  autoPromptEnabled: boolean
+  onAutoPromptEnabledChange: (enabled: boolean) => void
+  autoObjectBoxW: number
+  onAutoObjectBoxWChange: (value: number) => void
+  autoObjectBoxH: number
+  onAutoObjectBoxHChange: (value: number) => void
+  autoIouThreshold: number
+  onAutoIouThresholdChange: (value: number) => void
+  autoHoverFactor: number
+  onAutoHoverFactorChange: (value: number) => void
+  inferScale: number
+  onInferScaleChange: (value: number) => void
   onCancel: () => void
   onConfirm: () => void
   getAnchor: () => HTMLElement | null
@@ -50,8 +66,24 @@ export function Sam2SegmentAnchorPanel({
   labels,
   selectedLabel,
   onSelectedLabelChange,
+  promptMode,
+  onPromptModeChange,
   outputFormat,
   onOutputFormatChange,
+  polygonVertexBias,
+  onPolygonVertexBiasChange,
+  autoPromptEnabled,
+  onAutoPromptEnabledChange,
+  autoObjectBoxW,
+  onAutoObjectBoxWChange,
+  autoObjectBoxH,
+  onAutoObjectBoxHChange,
+  autoIouThreshold,
+  onAutoIouThresholdChange,
+  autoHoverFactor,
+  onAutoHoverFactorChange,
+  inferScale,
+  onInferScaleChange,
   onCancel,
   onConfirm,
   getAnchor,
@@ -99,12 +131,11 @@ export function Sam2SegmentAnchorPanel({
   const panel = (
     <div
       role="dialog"
-      aria-label="SAM2 分割选项"
-      className="fixed z-[200] w-52 rounded-md border border-border bg-background/95 p-3 shadow-md"
+      aria-label="SAM2 自动标注选项"
+      className="fixed z-[200] w-72 rounded-md border border-border bg-background/95 p-3 shadow-md"
       style={positionStyle}
       data-ea-sam2-picker-panel=""
     >
-      <p className="mb-2 text-xs text-muted-foreground">SAM2 分割</p>
       {labels.length > 0 ? (
         <select
           className="h-8 w-full rounded border border-border bg-background px-2 text-sm"
@@ -118,39 +149,210 @@ export function Sam2SegmentAnchorPanel({
           ))}
         </select>
       ) : (
-        <p className="rounded border border-dashed border-border/80 bg-muted/30 px-2 py-2 text-xs text-muted-foreground">
-          请先在项目详情中添加普通类标签。
-        </p>
+        <div
+          className="h-8 rounded border border-dashed border-border/80 bg-muted/30"
+          aria-label="暂无可用标签"
+        />
       )}
 
       <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
-        <div className="text-[11px] text-muted-foreground">输出格式</div>
+        <div className="text-[11px] text-muted-foreground">Prompt 类型</div>
         <div className="grid grid-cols-2 gap-1">
           <button
             type="button"
             className={cn(
-              "inline-flex h-7 items-center justify-center rounded border text-xs",
-              outputFormat === "box"
+              "inline-flex h-7 items-center justify-center rounded border px-1 text-xs",
+              promptMode === "point"
                 ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
                 : "border-border text-muted-foreground hover:bg-accent",
             )}
-            onClick={() => onOutputFormatChange("box")}
+            onClick={() => onPromptModeChange("point")}
           >
-            框
+            点
           </button>
           <button
             type="button"
             className={cn(
-              "inline-flex h-7 items-center justify-center rounded border text-xs",
+              "inline-flex h-7 items-center justify-center rounded border px-1 text-xs",
+              promptMode === "bbox"
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                : "border-border text-muted-foreground hover:bg-accent",
+            )}
+            onClick={() => onPromptModeChange("bbox")}
+          >
+            矩形框
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
+        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          <span>推理图像缩放</span>
+          <span className="tabular-nums text-foreground/85">{inferScale.toFixed(2)}×</span>
+        </div>
+        <input
+          type="range"
+          min={30}
+          max={100}
+          step={5}
+          value={Math.round(inferScale * 100)}
+          onChange={(e) => onInferScaleChange(Number(e.target.value) / 100)}
+          className="h-2 w-full cursor-pointer accent-emerald-600"
+          aria-label="SAM2 编码与解码使用的相对原图边长倍率，约 0.3 到 1"
+        />
+      </div>
+
+      <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[11px] text-muted-foreground">自动 prompt（悬停）</div>
+          <button
+            type="button"
+            aria-pressed={autoPromptEnabled}
+            className={cn(
+              "inline-flex h-7 min-w-[3rem] items-center justify-center rounded border px-2 text-xs",
+              autoPromptEnabled
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                : "border-border text-muted-foreground hover:bg-accent",
+            )}
+            onClick={() => onAutoPromptEnabledChange(!autoPromptEnabled)}
+          >
+            {autoPromptEnabled ? "开" : "关"}
+          </button>
+        </div>
+        {autoPromptEnabled ? (
+          <div className="space-y-2.5">
+            {promptMode === "bbox" && autoPromptEnabled ? (
+              <>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span>物体框宽（px）</span>
+                    <span className="tabular-nums text-foreground/85">{autoObjectBoxW}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={16}
+                    max={512}
+                    step={2}
+                    value={autoObjectBoxW}
+                    onChange={(e) => onAutoObjectBoxWChange(Number(e.target.value))}
+                    className="h-2 w-full cursor-pointer accent-emerald-600"
+                    aria-label="自动 prompt 物体框宽度"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span>物体框高（px）</span>
+                    <span className="tabular-nums text-foreground/85">{autoObjectBoxH}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={16}
+                    max={512}
+                    step={2}
+                    value={autoObjectBoxH}
+                    onChange={(e) => onAutoObjectBoxHChange(Number(e.target.value))}
+                    className="h-2 w-full cursor-pointer accent-emerald-600"
+                    aria-label="自动 prompt 物体框高度"
+                  />
+                </div>
+              </>
+            ) : null}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span>预测 IoU 下限</span>
+                <span className="tabular-nums text-foreground/85">{autoIouThreshold.toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round(autoIouThreshold * 100)}
+                onChange={(e) => onAutoIouThresholdChange(Number(e.target.value) / 100)}
+                className="h-2 w-full cursor-pointer accent-emerald-600"
+                aria-label="低于该预测 IoU 则视为无目标（decoder 未导出 IoU 时不生效）"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span>悬停时间倍率</span>
+                <span className="tabular-nums text-foreground/85">{autoHoverFactor.toFixed(2)}×</span>
+              </div>
+              <input
+                type="range"
+                min={30}
+                max={150}
+                step={5}
+                value={Math.round(autoHoverFactor * 100)}
+                onChange={(e) => onAutoHoverFactorChange(Number(e.target.value) / 100)}
+                className="h-2 w-full cursor-pointer accent-emerald-600"
+                aria-label="悬停触发时间倍率，约 0.3 到 1.5"
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
+        <div className="text-[11px] text-muted-foreground">输出类型</div>
+        <div className="grid grid-cols-3 gap-1">
+          <button
+            type="button"
+            className={cn(
+              "inline-flex min-h-7 items-center justify-center rounded border px-0.5 py-1 text-[11px] leading-tight",
+              outputFormat === "polygon"
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                : "border-border text-muted-foreground hover:bg-accent",
+            )}
+            onClick={() => onOutputFormatChange("polygon")}
+          >
+            <span>多边形</span>
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "inline-flex min-h-7 items-center justify-center rounded border px-0.5 py-1 text-[11px] leading-tight",
               outputFormat === "mask"
                 ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
                 : "border-border text-muted-foreground hover:bg-accent",
             )}
             onClick={() => onOutputFormatChange("mask")}
           >
-            掩码
+            <span>掩码</span>
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "inline-flex min-h-7 items-center justify-center rounded border px-0.5 py-1 text-[11px] leading-tight",
+              outputFormat === "box"
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                : "border-border text-muted-foreground hover:bg-accent",
+            )}
+            onClick={() => onOutputFormatChange("box")}
+          >
+            Bbox
           </button>
         </div>
+        {outputFormat === "polygon" ? (
+          <div className="mt-2 space-y-1.5">
+            <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+              <span>顶点密度</span>
+              <span className="tabular-nums text-foreground/85" aria-live="polite">
+                {polygonVertexBias}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={polygonVertexBias}
+              onChange={(e) => onPolygonVertexBiasChange(Number(e.target.value))}
+              className="h-2 w-full cursor-pointer accent-emerald-600"
+              aria-label="多边形顶点：左侧较少，右侧较多"
+            />
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-3 flex justify-end gap-2">

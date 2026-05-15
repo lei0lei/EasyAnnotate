@@ -35,6 +35,8 @@ type UseCanvasViewStateParams = {
   setSelectedShapeIndex: (value: number | null) => void
   setHoveredShapeIndex: (value: number | null) => void
   setRawHighlightCorner: (value: RawHighlightCorner) => void
+  /** 为 true 时禁用画布平移/滚轮缩放（如 SAM2 交互层） */
+  blockViewPanAndWheel?: boolean
 }
 
 export function canPanAndZoomFromState(args: {
@@ -47,7 +49,10 @@ export function canPanAndZoomFromState(args: {
   polygonVertexDragAction: PolygonVertexDragAction | null
   rotationDragAction: RotationDragAction | null
   rotationTransformAction: RotationTransformAction | null
+  /** SAM2 等全屏交互层：为 true 时禁用画布平移/缩放手势 */
+  blockViewPanAndWheel?: boolean
 }): boolean {
+  if (args.blockViewPanAndWheel) return false
   return (
     args.rightToolMode === "select" &&
     !!args.imageObjectUrl &&
@@ -107,6 +112,7 @@ export function useCanvasViewState(params: UseCanvasViewStateParams) {
         polygonVertexDragAction: params.polygonVertexDragAction,
         rotationDragAction: params.rotationDragAction,
         rotationTransformAction: params.rotationTransformAction,
+        blockViewPanAndWheel: params.blockViewPanAndWheel,
       }),
     [
       params.imageLoadError,
@@ -118,6 +124,7 @@ export function useCanvasViewState(params: UseCanvasViewStateParams) {
       params.rotationDragAction,
       params.rotationTransformAction,
       params.shapeDragAction,
+      params.blockViewPanAndWheel,
     ],
   )
 

@@ -10,7 +10,7 @@ import {
 import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
 import { removeLegacyExportVersionsStorageKey } from "@/lib/project-export-storage"
 import { deleteTask, formatTaskTime, loadTasks, persistTasks, removeLegacyTasksStorageKey, type TaskItem } from "@/lib/project-tasks-storage"
-import { deleteProject, deleteTaskData, getProject, listTaskFiles, readImageFile, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
+import { deleteProject, deleteTaskAnnotations, deleteTaskData, getProject, listTaskFiles, readImageFile, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import { ArrowLeft, ArrowRight, ArrowUpDown, Check, Clock3, Download, FolderOpen, MoreHorizontal, Pencil, Plus, Save, Trash2, Upload, X } from "lucide-react"
@@ -102,6 +102,9 @@ export default function ProjectDetailPage() {
   const [taskPage, setTaskPage] = useState(0)
   const [taskSortMode, setTaskSortMode] = useState<TaskSortMode>("time")
   const [taskDeleteTarget, setTaskDeleteTarget] = useState<TaskItem | null>(null)
+  const [taskClearAnnotationsTarget, setTaskClearAnnotationsTarget] = useState<TaskItem | null>(null)
+  const [clearingTaskAnnotations, setClearingTaskAnnotations] = useState(false)
+  const [annotationStatsTick, setAnnotationStatsTick] = useState(0)
   const [annotatedCountByTaskId, setAnnotatedCountByTaskId] = useState<Record<string, number>>({})
   const [editingTaskNameId, setEditingTaskNameId] = useState<string | null>(null)
   const [editingTaskNameValue, setEditingTaskNameValue] = useState("")
@@ -218,7 +221,7 @@ export default function ProjectDetailPage() {
     return () => {
       alive = false
     }
-  }, [projectId])
+  }, [projectId, annotationStatsTick])
 
   useEffect(() => {
     taskCoverByIdRef.current = taskCoverById
@@ -406,6 +409,25 @@ export default function ProjectDetailPage() {
     await deleteTask(projectId, taskDeleteTarget.id)
     setTasks(await loadTasks(projectId))
     setTaskDeleteTarget(null)
+  }
+
+  async function handleClearTaskAnnotations() {
+    if (!taskClearAnnotationsTarget || !projectId) return
+    setClearingTaskAnnotations(true)
+    try {
+      const result = await deleteTaskAnnotations({ projectId, taskId: taskClearAnnotationsTarget.id })
+      if (result.errorMessage) {
+        flashSaveStatus("error")
+        return
+      }
+      setTaskClearAnnotationsTarget(null)
+      setAnnotationStatsTick((tick) => tick + 1)
+      flashSaveStatus("success")
+    } catch {
+      flashSaveStatus("error")
+    } finally {
+      setClearingTaskAnnotations(false)
+    }
   }
 
   function updateTaskFields(taskId: string, patch: Partial<Pick<TaskItem, "name" | "subset">>) {
@@ -816,7 +838,10 @@ export default function ProjectDetailPage() {
                                 <Download className="h-3.5 w-3.5" aria-hidden />
                                 导出标注
                               </DropdownMenu.Item>
-                              <DropdownMenu.Item className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-highlighted:bg-accent">
+                              <DropdownMenu.Item
+                                className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 text-destructive outline-hidden data-highlighted:bg-destructive/10"
+                                onSelect={() => setTaskClearAnnotationsTarget(task)}
+                              >
                                 <Trash2 className="h-3.5 w-3.5" aria-hidden />
                                 删除标注
                               </DropdownMenu.Item>
@@ -923,6 +948,37 @@ export default function ProjectDetailPage() {
               </Button>
               <Button type="button" variant="destructive" onClick={() => void handleDeleteTask()}>
                 确认删除
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+
+      {taskClearAnnotationsTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <Card className="w-full max-w-md border-border">
+            <CardHeader>
+              <CardTitle className="text-base">删除任务标注</CardTitle>
+              <CardDescription>
+                将清除任务 “{taskClearAnnotationsTarget.name}” 下所有图片的标注文件（JSON）与索引中的标注记录，图片文件不会被删除。该操作不可撤销。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setTaskClearAnnotationsTarget(null)}
+                disabled={clearingTaskAnnotations}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => void handleClearTaskAnnotations()}
+                disabled={clearingTaskAnnotations}
+              >
+                {clearingTaskAnnotations ? "清除中..." : "确认清除"}
               </Button>
             </CardContent>
           </Card>

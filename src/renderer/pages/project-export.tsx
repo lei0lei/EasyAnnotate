@@ -141,7 +141,7 @@ function createExportVersion(scope: ExportVersionItem["scope"], orderIndex: numb
 export default function ProjectExportPage() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>()
   const location = useLocation()
-  const [projectName, setProjectName] = useState("")
+  const [, setProjectName] = useState("")
   const [taskName, setTaskName] = useState("")
   const [sourceStats, setSourceStats] = useState<SourceStats>({ imageCount: 0, classCount: 0, annotationFileCount: 0 })
   const [sourceRefreshTick, setSourceRefreshTick] = useState(0)
@@ -164,7 +164,6 @@ export default function ProjectExportPage() {
 
   const minGap = 5
   const backHref = projectId ? `/projects/${projectId}` : "/projects/mine"
-  const isProjectExport = !taskId
   const pageTitle = formatTypeLabel(taskId)
 
   const scope = useMemo<ExportVersionItem["scope"]>(() => {

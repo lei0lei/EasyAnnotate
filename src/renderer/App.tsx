@@ -9,6 +9,8 @@ import ModelsAutoPage from "@/pages/models-auto"
 import ModelsHubPage from "@/pages/models-hub"
 import { ModelsOutlet } from "@/pages/models-outlet"
 import ModelsBackendPage from "@/pages/models-backend"
+import ModelsPlaceholderAnnotationPage from "@/pages/models-placeholder-annotation-page"
+import ModelsSam2AnnotationPage from "@/pages/models-sam2-annotation"
 import ModelsTrainingPage from "@/pages/models-training"
 import ProjectDetailPage from "@/pages/project-detail"
 import ProjectExportPage from "@/pages/project-export"
@@ -72,6 +74,11 @@ export default function App() {
             <Route index element={<ModelsHubPage />} />
             <Route path="backend" element={<ModelsBackendPage />} />
             <Route path="auto" element={<ModelsAutoPage />} />
+            <Route path="annotation/sam2" element={<ModelsSam2AnnotationPage />} />
+            <Route path="annotation/generative" element={<Navigate to="/models/annotation/diffusion" replace />} />
+            <Route path="annotation/edge-cpu" element={<Navigate to="/models/annotation/tracking" replace />} />
+            <Route path="annotation/detection" element={<Navigate to="/models/auto" replace />} />
+            <Route path="annotation/:placeholderSlug" element={<ModelsPlaceholderAnnotationPage />} />
             <Route path="training" element={<ModelsTrainingPage />} />
           </Route>
           <Route path="monitor" element={<MonitorOutlet />}>

@@ -69,7 +69,7 @@ export function MaskRasterOverlay({ shapeId, stageImageRect, counts, imageWidth,
       height={height}
       pointerEvents="none"
     >
-      <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%", margin: 0, padding: 0 }}>
+      <div style={{ width: "100%", height: "100%", margin: 0, padding: 0 }}>
         <canvas
           ref={canvasRef}
           style={{ display: "block", width: "100%", height: "100%", imageRendering: "pixelated" }}
