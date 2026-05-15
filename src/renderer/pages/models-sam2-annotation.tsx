@@ -235,7 +235,7 @@ export default function ModelsSam2AnnotationPage() {
         </div>
       ) : !hasAnySamCategory ? (
         <p className="text-sm text-muted-foreground">
-          目录中未找到 SAM 2.1 / MobileSAM / EfficientSAM 分类，请检查后端 registry 与资源是否已下载。
+          目录中未找到 SAM 2.1 / MobileSAM 分类，请检查后端 registry 与资源是否已下载。
         </p>
       ) : (
         <section className="space-y-6">
@@ -344,11 +344,6 @@ export default function ModelsSam2AnnotationPage() {
                 </option>
               ))}
             </select>
-            {selectedFamily === "efficient_sam" ? (
-              <p className="text-xs text-muted-foreground">
-                EfficientSAM 可在本页启动与测试；任务页浏览器解码尚未接入，标注请使用 SAM 2.1 或 MobileSAM。
-              </p>
-            ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

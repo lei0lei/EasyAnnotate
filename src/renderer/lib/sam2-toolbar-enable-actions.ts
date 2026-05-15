@@ -3,7 +3,7 @@ import { stopAllSamAnnotationRuntimes } from "@/lib/sam-annotation-runtime"
 
 /**
  * 设置「任务页是否显示 SAM 标注」。
- * 关闭时会先停止全部 SAM 标注 runtime（sam2 / mobile_sam / efficient_sam），再写入本地开关。
+ * 关闭时会先停止全部 SAM 标注 runtime（sam2 / mobile_sam），再写入本地开关。
  */
 export async function applySam2AiToolbarEnabled(next: boolean): Promise<{ ok: boolean; error?: string }> {
   if (!next) {

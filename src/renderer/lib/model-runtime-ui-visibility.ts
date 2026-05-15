@@ -13,7 +13,7 @@ export const RUNTIME_CATEGORY_IDS_HIDDEN_FROM_BACKEND_PAGE = new Set<string>([
 ])
 
 /** 在「自动标注 → SAM2 标注」页中的展示顺序（同页多块平铺） */
-export const RUNTIME_CATEGORY_ORDER_ON_SAM2_ANNOTATION_PAGE = ["sam2", "mobile_sam", "efficient_sam"] as const
+export const RUNTIME_CATEGORY_ORDER_ON_SAM2_ANNOTATION_PAGE = ["sam2", "mobile_sam"] as const
 
 export type RuntimeCategoryIdOnSam2AnnotationPage =
   (typeof RUNTIME_CATEGORY_ORDER_ON_SAM2_ANNOTATION_PAGE)[number]

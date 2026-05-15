@@ -20,7 +20,7 @@ export type Sam2EncodeImageResponse = {
   image_embed: Sam2TensorPayload
   /** SAM 2.1 专用；MobileSAM 仅返回 image_embed */
   high_res_feats?: Sam2TensorPayload[]
-  /** `sam2.1_cvat_decoder_onnx_v1` | `mobile_sam_cvat_decoder_onnx_v1` */
+  /** `sam2.1_cvat_decoder_onnx_v1` | `mobile_sam_cvat_decoder_onnx_v1`（后端若返回其它 layout，前端可能仅部分支持） */
   feature_layout?: string
   model_input_size?: number
   multimask_decoder?: boolean
@@ -30,10 +30,17 @@ export type Sam2EncodeImageResponse = {
 
 export type Sam2EmbedCache = { imagePath: string; inferScale: number; response: Sam2EncodeImageResponse }
 
+/**
+ * 与 CVAT decoder ONNX 文件同步递增：避免浏览器 / ORT 复用旧图或旧 InferenceSession。
+ * 更换任意族的 `*.decoder.onnx` 后应 +1 并发布。
+ */
+export const SAM_DECODER_ONNX_REVISION = "cv5"
+
 /** SAM2 decoder ONNX（与权重同目录的 `.decoder.onnx`）下载 URL；`assetId` 通常等于 `model_id`。 */
 export function decoderOnnxUrlForAsset(assetId: string): string {
   const tail = encodeUrlPathSegments(assetId)
-  return `${apiV1Root()}/model-assets/${tail}/decoder-onnx`
+  const r = encodeURIComponent(SAM_DECODER_ONNX_REVISION)
+  return `${apiV1Root()}/model-assets/${tail}/decoder-onnx?r=${r}`
 }
 
 /** Path segment for model_id that may contain slashes (e.g. sam2/sam2.1_hiera_tiny). */
@@ -44,7 +51,7 @@ export function encodeImageUrlForModel(modelId: string): string {
 
 /**
  * POST encode-image：后端 encoder 特征（float32），供浏览器 `decoder.onnx` 解码。
- * 支持 sam2/* 与 mobile_sam/*；需已启动对应 model_id 的 runtime。
+ * 支持 sam2/*、mobile_sam/*；需已启动对应 model_id 的 runtime。
  */
 export type FetchSamImageEmbeddingsOptions = {
   /** 相对原图的编码边长倍率，后端将等比缩小后再跑 encoder；默认 1 */

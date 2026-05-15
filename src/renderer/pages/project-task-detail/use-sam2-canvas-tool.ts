@@ -299,6 +299,13 @@ export function useSam2CanvasTool(params: Params) {
           const response = await fetchSamImageEmbeddings(mid, path, { inferScale: scaleAtStart })
           if (activeImagePathRef.current.trim() !== path) return
           if (sam2InferScaleRef.current !== scaleAtStart) return
+          if (response.feature_layout === "efficient_sam_cvat_decoder_onnx_v1") {
+            onEncodeToast(
+              false,
+              "EfficientSAM 已不在本应用前端支持；请在「模型 → 自动标注 → SAM 标注」中启动 SAM 2.1 或 MobileSAM 后再标注。",
+            )
+            return
+          }
           onEmbeddingsCached({ imagePath: path, inferScale: scaleAtStart, response })
           onEncodeToast(true, "SAM2 图像编码完成，已缓存 embeddings")
         } catch (e) {

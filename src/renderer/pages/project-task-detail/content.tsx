@@ -11,7 +11,12 @@ import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import { fetchModelRuntimeCatalog } from "@/lib/model-runtime-api"
 import { writeMaskRleAttributes, decodeRowMajorRleToBinary, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
 import { contourForYoloExport } from "@/lib/mask-contour"
-import { isSamCvatsFeatureLayout, loadSamDecoderSession, runSamCvatsDecoder } from "@/lib/sam2-cvat-onnx"
+import {
+  formatOrtWebInferError,
+  isSamCvatsFeatureLayout,
+  loadSamDecoderSession,
+  runSamCvatsDecoder,
+} from "@/lib/sam2-cvat-onnx"
 import { mapFullImageSam2PromptToEncode, upscaleSam2DecoderRleToFullImageIfNeeded } from "@/lib/sam2-infer-scale"
 import type { Sam2EmbedCache } from "@/lib/sam2-encode-api"
 import {
@@ -735,13 +740,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
           })
           return
         }
-        if (active.family === "efficient_sam") {
-          setSam2Toast({
-            kind: "err",
-            text: "EfficientSAM 的任务页浏览器解码尚未接入，请改用 SAM 2.1 或 MobileSAM",
-          })
-          return
-        }
         persistSamAnnotationSelection(active.family, active.modelId)
         sam2EncodeModelIdRef.current = active.modelId
         setActiveSamRuntime({
@@ -824,7 +822,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
         setSam2DraftRle({ counts: fullRle.counts, w: fullRle.w, h: fullRle.h })
       } catch (e) {
         if (gen !== sam2DecodeGenRef.current) return
-        const msg = e instanceof Error ? e.message : String(e)
+        const msg = formatOrtWebInferError(e)
         setSam2Toast({ kind: "err", text: `SAM ONNX 解码失败：${msg}` })
       }
     },

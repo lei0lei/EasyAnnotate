@@ -3,6 +3,7 @@
  */
 import {
   decoderOnnxUrlForAsset,
+  SAM_DECODER_ONNX_REVISION,
   type Sam2EncodeImageResponse,
   type Sam2TensorPayload,
 } from "@/lib/sam2-encode-api"
@@ -10,7 +11,37 @@ import { encodeBinaryToRowMajorRle, maskBinaryHasForeground } from "@/lib/mask-r
 
 type OrtModule = typeof import("onnxruntime-web")
 
-let ortPromise: Promise<OrtModule> | null = null
+let ortPromise: Promise<OrtModule> | undefined
+
+/**
+ * onnxruntime-web 在 WASM 中失败时，有时抛出裸 `number`（指针/内部码），而非 Error。
+ * @see https://github.com/microsoft/onnxruntime/issues/19913
+ */
+export function formatOrtWebInferError(reason: unknown): string {
+  if (reason instanceof Error) {
+    const m = reason.message?.trim()
+    return m || reason.name || "Error"
+  }
+  if (typeof reason === "number" && Number.isFinite(reason)) {
+    return `浏览器 ONNX Runtime（WASM）内部异常（内部码 ${reason}），通常无详细文案。可尝试：硬刷新页面、略降低「推理图像缩放」后重新编码、或换用 SAM 2.1 / MobileSAM 再试。`
+  }
+  const s = String(reason).trim()
+  if (/^\d{6,}$/.test(s)) {
+    return `浏览器 ONNX Runtime（WASM）内部异常（内部码 ${s}），通常无详细文案。可尝试：硬刷新页面、略降低「推理图像缩放」后重新编码、或换用 SAM 2.1 / MobileSAM 再试。`
+  }
+  return s || "未知错误"
+}
+
+async function runOrtSession(
+  session: import("onnxruntime-web").InferenceSession,
+  feeds: Record<string, InstanceType<OrtModule["Tensor"]>>,
+): Promise<Record<string, import("onnxruntime-web").Tensor>> {
+  try {
+    return (await session.run(feeds)) as Record<string, import("onnxruntime-web").Tensor>
+  } catch (e) {
+    throw new Error(formatOrtWebInferError(e))
+  }
+}
 
 async function getOrt(): Promise<OrtModule> {
   if (!ortPromise) {
@@ -18,6 +49,8 @@ async function getOrt(): Promise<OrtModule> {
       if (!ort.env.wasm.wasmPaths) {
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/"
       }
+      // 嵌入宿主（如 MōBrowser）下多线程 WASM 易触发无文本的裸数值异常；单线程更稳。
+      ort.env.wasm.numThreads = 1
       return ort
     })
   }
@@ -29,16 +62,21 @@ const sessionByModelId = new Map<string, Promise<import("onnxruntime-web").Infer
 /** WASM EP 上同一 session 并发 `run()` 会抛 “session already started”；所有解码串行排队。 */
 const decoderRunTailByModelId = new Map<string, Promise<unknown>>()
 
+function decoderSessionKey(modelId: string): string {
+  return `${modelId}@${SAM_DECODER_ONNX_REVISION}`
+}
+
 export function clearSam2DecoderSessions(): void {
   sessionByModelId.clear()
   decoderRunTailByModelId.clear()
 }
 
 function enqueueSam2DecoderRun<T>(modelId: string, work: () => Promise<T>): Promise<T> {
-  const prev = decoderRunTailByModelId.get(modelId) ?? Promise.resolve()
+  const key = decoderSessionKey(modelId)
+  const prev = decoderRunTailByModelId.get(key) ?? Promise.resolve()
   const current = prev.then(work)
   decoderRunTailByModelId.set(
-    modelId,
+    key,
     current.then(
       () => undefined,
       () => undefined,
@@ -143,14 +181,15 @@ function stitchCroppedMask(
 }
 
 export async function loadSam2DecoderSession(modelId: string): Promise<import("onnxruntime-web").InferenceSession> {
-  const hit = sessionByModelId.get(modelId)
+  const key = decoderSessionKey(modelId)
+  const hit = sessionByModelId.get(key)
   if (hit) return hit
   const p = (async () => {
     const ort = await getOrt()
     const url = decoderOnnxUrlForAsset(modelId)
     return ort.InferenceSession.create(url, { executionProviders: ["wasm"] })
   })()
-  sessionByModelId.set(modelId, p)
+  sessionByModelId.set(key, p)
   return p
 }
 
@@ -253,11 +292,17 @@ function masksTensorToRleInEncodeSpace(
   if (md instanceof Uint8Array) {
     crop = new Uint8Array(md.length)
     for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
+  } else if (md instanceof Int8Array || md instanceof Uint8ClampedArray) {
+    crop = new Uint8Array(md.length)
+    for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
   } else if (md instanceof Float32Array) {
+    crop = new Uint8Array(md.length)
+    for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0.5 ? 1 : 0
+  } else if (md instanceof Int32Array) {
     crop = new Uint8Array(md.length)
     for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
   } else {
-    throw new Error(`unexpected masks dtype ${masksTensor.type}`)
+    throw new Error(`unexpected masks dtype/buffer ${masksTensor.type} ${md?.constructor?.name ?? typeof md}`)
   }
 
   let cropH = 1
@@ -320,7 +365,7 @@ export async function runSam2CvatsDecoder(
       has_mask_input: promptTensors.hasMaskInput,
     }
 
-    const out = await session.run(feeds)
+    const out = await runOrtSession(session, feeds)
     return masksTensorToRleInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
   })
 }
@@ -352,18 +397,23 @@ export async function runMobileSamCvatsDecoder(
       has_mask_input: promptTensors.hasMaskInput,
     }
 
-    const out = await session.run(feeds)
+    const out = await runOrtSession(session, feeds)
     return masksTensorToRleInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
   })
 }
 
-/** 按 encode.feature_layout 分发到 SAM2.1 或 MobileSAM decoder。 */
+/** 按 encode.feature_layout 分发到 SAM2.1 / MobileSAM decoder。 */
 export async function runSamCvatsDecoder(
   encode: Sam2EncodeImageResponse,
   prompt: Sam2CvatsPrompt,
   options?: Sam2CvatsDecodeOptions,
 ): Promise<{ counts: number[]; w: number; h: number } | null> {
   const layout = encode.feature_layout
+  if (layout === "efficient_sam_cvat_decoder_onnx_v1") {
+    throw new Error(
+      "EfficientSAM 已不在本应用前端支持；请在「模型 → 自动标注 → SAM 标注」中改用 SAM 2.1 或 MobileSAM，并重新触发图像编码后再试。",
+    )
+  }
   if (layout === "sam2.1_cvat_decoder_onnx_v1") {
     return runSam2CvatsDecoder(encode, prompt, options)
   }

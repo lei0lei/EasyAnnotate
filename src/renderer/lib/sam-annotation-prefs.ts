@@ -1,6 +1,6 @@
 /** 任务页 SAM 标注：模型族 + 各族权重（与配置页、encode-image 的 model_id 一致）。 */
 
-export type SamAnnotationFamily = "sam2" | "mobile_sam" | "efficient_sam"
+export type SamAnnotationFamily = "sam2" | "mobile_sam"
 
 const LEGACY_SAM2_MODEL_KEY = "ea-sam2-annotation-backend-model-id"
 const FAMILY_KEY = "ea-sam-annotation-family"
@@ -9,14 +9,12 @@ const MODEL_BY_FAMILY_KEY = "ea-sam-annotation-model-by-family"
 export const SAM_ANNOTATION_FAMILY_LABELS: Record<SamAnnotationFamily, string> = {
   sam2: "SAM 2.1",
   mobile_sam: "MobileSAM",
-  efficient_sam: "EfficientSAM",
 }
 
 export function modelIdToSamFamily(modelId: string): SamAnnotationFamily | null {
   const id = modelId.trim()
   if (id.startsWith("sam2/")) return "sam2"
   if (id.startsWith("mobile_sam/")) return "mobile_sam"
-  if (id.startsWith("efficient_sam/")) return "efficient_sam"
   return null
 }
 
@@ -47,7 +45,8 @@ function writeModelByFamily(map: Record<string, string>): void {
 export function getSamAnnotationFamily(): SamAnnotationFamily {
   try {
     const v = localStorage.getItem(FAMILY_KEY)?.trim()
-    if (v === "sam2" || v === "mobile_sam" || v === "efficient_sam") return v
+    if (v === "sam2" || v === "mobile_sam") return v
+    if (v === "efficient_sam") return "sam2"
   } catch {
     // ignore
   }
@@ -107,7 +106,6 @@ export function setSam2AnnotationBackendModelId(modelId: string): void {
 
 export function defaultModelIdForFamily(family: SamAnnotationFamily): string {
   if (family === "mobile_sam") return "mobile_sam/vit_t"
-  if (family === "efficient_sam") return "efficient_sam/vitt"
   return "sam2/sam2.1_hiera_tiny"
 }
 
