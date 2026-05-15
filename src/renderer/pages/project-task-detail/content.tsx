@@ -11,10 +11,14 @@ import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import { fetchModelRuntimeCatalog } from "@/lib/model-runtime-api"
 import { writeMaskRleAttributes, decodeRowMajorRleToBinary, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
 import { contourForYoloExport } from "@/lib/mask-contour"
-import { loadSam2DecoderSession, runSam2CvatsDecoder } from "@/lib/sam2-cvat-onnx"
+import { isSamCvatsFeatureLayout, loadSamDecoderSession, runSamCvatsDecoder } from "@/lib/sam2-cvat-onnx"
 import { mapFullImageSam2PromptToEncode, upscaleSam2DecoderRleToFullImageIfNeeded } from "@/lib/sam2-infer-scale"
 import type { Sam2EmbedCache } from "@/lib/sam2-encode-api"
-import { getSam2AnnotationBackendModelId, setSam2AnnotationBackendModelId } from "@/lib/sam2-annotation-prefs"
+import {
+  formatActiveSamAnnotationLabel,
+  persistSamAnnotationSelection,
+  resolveActiveSamFromCatalog,
+} from "@/lib/sam-annotation-runtime"
 import {
   getSam2AiToolbarEnabledSnapshot,
   subscribeSam2AiToolbarEnabled,
@@ -129,12 +133,34 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const sam2EncodeModelIdRef = useRef("sam2/sam2.1_hiera_tiny")
   const sam2EmbedCacheRef = useRef<Sam2EmbedCache | null>(null)
   const sam2DecodeGenRef = useRef(0)
+  const [activeSamRuntime, setActiveSamRuntime] = useState<{ label: string; running: boolean } | null>(null)
   /** 上次用 N 成功提交 SAM2 并已切到选择工具后，再按 N 可回到 SAM2 标注（沿用面板中的标签/输出类型等） */
   const sam2ResumeAfterNCommitRef = useRef(false)
-  useEffect(() => {
-    const saved = getSam2AnnotationBackendModelId()
-    if (saved) sam2EncodeModelIdRef.current = saved
+
+  const refreshActiveSamRuntime = useCallback(() => {
+    void fetchModelRuntimeCatalog()
+      .then((cat) => {
+        const active = resolveActiveSamFromCatalog(cat.categories)
+        if (!active) {
+          setActiveSamRuntime({ label: "", running: false })
+          return
+        }
+        setActiveSamRuntime({
+          label: formatActiveSamAnnotationLabel(active, cat.categories),
+          running: true,
+        })
+        sam2EncodeModelIdRef.current = active.modelId
+        persistSamAnnotationSelection(active.family, active.modelId)
+      })
+      .catch(() => {
+        setActiveSamRuntime(null)
+      })
   }, [])
+
+  useEffect(() => {
+    if (!sam2DialogOpen) return
+    refreshActiveSamRuntime()
+  }, [sam2DialogOpen, refreshActiveSamRuntime])
   const {
     imageObjectUrl,
     setImageObjectUrl,
@@ -693,42 +719,49 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setSam2SessionNonce((n) => n + 1)
   }, [sam2InferScale])
 
+  const [sam2Toast, setSam2Toast] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
+
   const handleSam2Confirm = useCallback(() => {
     sam2ResumeAfterNCommitRef.current = false
     setSam2DraftRle(null)
     setSam2SessionNonce((n) => n + 1)
-    setSam2AnnotatingActive(true)
     void fetchModelRuntimeCatalog()
       .then((cat) => {
-        const row = cat.categories.find((c) => c.id === "sam2")
-        const variants = row?.variants ?? []
-        const validIds = new Set(variants.map((v) => v.model_id))
-        const saved = getSam2AnnotationBackendModelId()?.trim()
-        let mid = ""
-        if (saved && validIds.has(saved)) {
-          mid = saved
-        } else if (row?.running && row.active_model_id && validIds.has(row.active_model_id)) {
-          mid = row.active_model_id
-        } else {
-          mid = variants[0]?.model_id?.trim() || "sam2/sam2.1_hiera_tiny"
+        const active = resolveActiveSamFromCatalog(cat.categories)
+        if (!active) {
+          setSam2Toast({
+            kind: "err",
+            text: "请先在「模型 → 自动标注 → SAM 标注」中启动 SAM 推理实例",
+          })
+          return
         }
-        sam2EncodeModelIdRef.current = mid
-        if (mid !== saved) setSam2AnnotationBackendModelId(mid)
+        if (active.family === "efficient_sam") {
+          setSam2Toast({
+            kind: "err",
+            text: "EfficientSAM 的任务页浏览器解码尚未接入，请改用 SAM 2.1 或 MobileSAM",
+          })
+          return
+        }
+        persistSamAnnotationSelection(active.family, active.modelId)
+        sam2EncodeModelIdRef.current = active.modelId
+        setActiveSamRuntime({
+          label: formatActiveSamAnnotationLabel(active, cat.categories),
+          running: true,
+        })
+        setSam2AnnotatingActive(true)
       })
       .catch(() => {
-        const saved = getSam2AnnotationBackendModelId()?.trim()
-        sam2EncodeModelIdRef.current = saved || "sam2/sam2.1_hiera_tiny"
+        setSam2Toast({ kind: "err", text: "无法连接后端，请检查 SAM 推理实例状态" })
       })
   }, [])
 
   const handleSam2EmbeddingsCached = useCallback((cache: Sam2EmbedCache) => {
     sam2EmbedCacheRef.current = cache
-    if (cache.response.feature_layout === "sam2.1_cvat_decoder_onnx_v1") {
-      void loadSam2DecoderSession(cache.response.model_id).catch(() => {})
+    if (isSamCvatsFeatureLayout(cache.response.feature_layout)) {
+      void loadSamDecoderSession(cache.response.model_id).catch(() => {})
     }
   }, [])
 
-  const [sam2Toast, setSam2Toast] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
   const sam2AiToolbarEnabled = useSyncExternalStore(
     subscribeSam2AiToolbarEnabled,
     getSam2AiToolbarEnabledSnapshot,
@@ -759,7 +792,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       const cache = sam2EmbedCacheRef.current
       if (!cache || cache.imagePath !== ctx.imagePath) return
       const enc = cache.response
-      if (enc.feature_layout !== "sam2.1_cvat_decoder_onnx_v1") return
+      if (!isSamCvatsFeatureLayout(enc.feature_layout)) return
 
       const label = sam2SelectedLabelRef.current.trim()
       if (!label) return
@@ -775,24 +808,24 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       try {
         const decodeOpts =
           ctx.minPredIou !== undefined && ctx.minPredIou > 0 ? { minPredIou: ctx.minPredIou } : undefined
-        const rle = await runSam2CvatsDecoder(enc, prompt, decodeOpts)
+        const rle = await runSamCvatsDecoder(enc, prompt, decodeOpts)
         if (gen !== sam2DecodeGenRef.current) return
         if (!rle) {
           setSam2DraftRle(null)
-          setSam2Toast({ kind: "ok", text: "SAM2 未分割出前景（可调整点/框后重试）" })
+          setSam2Toast({ kind: "ok", text: "SAM 未分割出前景（可调整点/框后重试）" })
           return
         }
         const fullRle = upscaleSam2DecoderRleToFullImageIfNeeded(rle, enc)
         if (!fullRle) {
           setSam2DraftRle(null)
-          setSam2Toast({ kind: "ok", text: "SAM2 未分割出前景（可调整点/框后重试）" })
+          setSam2Toast({ kind: "ok", text: "SAM 未分割出前景（可调整点/框后重试）" })
           return
         }
         setSam2DraftRle({ counts: fullRle.counts, w: fullRle.w, h: fullRle.h })
       } catch (e) {
         if (gen !== sam2DecodeGenRef.current) return
         const msg = e instanceof Error ? e.message : String(e)
-        setSam2Toast({ kind: "err", text: `SAM2 ONNX 解码失败：${msg}` })
+        setSam2Toast({ kind: "err", text: `SAM ONNX 解码失败：${msg}` })
       }
     },
     [],
@@ -1388,6 +1421,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       onSam2AutoHoverFactorChange: setSam2AutoHoverFactor,
       sam2InferScale,
       onSam2InferScaleChange: setSam2InferScale,
+      activeSamRuntime,
       onSam2Confirm: handleSam2Confirm,
     },
   })

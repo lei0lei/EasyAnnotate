@@ -18,8 +18,9 @@ export type Sam2EncodeImageResponse = {
   full_image_width?: number
   full_image_height?: number
   image_embed: Sam2TensorPayload
-  high_res_feats: Sam2TensorPayload[]
-  /** 与 `export_sam21_cvat_decoder.py` / 浏览器 ORT 解码一致时为 `sam2.1_cvat_decoder_onnx_v1` */
+  /** SAM 2.1 专用；MobileSAM 仅返回 image_embed */
+  high_res_feats?: Sam2TensorPayload[]
+  /** `sam2.1_cvat_decoder_onnx_v1` | `mobile_sam_cvat_decoder_onnx_v1` */
   feature_layout?: string
   model_input_size?: number
   multimask_decoder?: boolean
@@ -42,18 +43,21 @@ export function encodeImageUrlForModel(modelId: string): string {
 }
 
 /**
- * POST SAM2 encode-image：后端 CVAT/hashJoe 对齐的 encoder 特征（float32），供浏览器加载 `decoder.onnx` 解码。
- * 需已启动对应 `model_id` 的 runtime，且 `source` 为后端可读路径或 URL。
+ * POST encode-image：后端 encoder 特征（float32），供浏览器 `decoder.onnx` 解码。
+ * 支持 sam2/* 与 mobile_sam/*；需已启动对应 model_id 的 runtime。
  */
-export type FetchSam2ImageEmbeddingsOptions = {
+export type FetchSamImageEmbeddingsOptions = {
   /** 相对原图的编码边长倍率，后端将等比缩小后再跑 encoder；默认 1 */
   inferScale?: number
 }
 
-export async function fetchSam2ImageEmbeddings(
+/** @deprecated 使用 fetchSamImageEmbeddings */
+export type FetchSam2ImageEmbeddingsOptions = FetchSamImageEmbeddingsOptions
+
+export async function fetchSamImageEmbeddings(
   modelId: string,
   source: string,
-  options?: FetchSam2ImageEmbeddingsOptions,
+  options?: FetchSamImageEmbeddingsOptions,
 ): Promise<Sam2EncodeImageResponse> {
   const url = encodeImageUrlForModel(modelId)
   const inferScale = options?.inferScale
@@ -76,4 +80,12 @@ export async function fetchSam2ImageEmbeddings(
     throw new Error(`encode-image ${res.status}: ${await readFetchError(res)}`)
   }
   return res.json() as Promise<Sam2EncodeImageResponse>
+}
+
+export async function fetchSam2ImageEmbeddings(
+  modelId: string,
+  source: string,
+  options?: FetchSamImageEmbeddingsOptions,
+): Promise<Sam2EncodeImageResponse> {
+  return fetchSamImageEmbeddings(modelId, source, options)
 }

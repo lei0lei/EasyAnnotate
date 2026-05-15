@@ -2,7 +2,7 @@
  * 模块：use-sam2-canvas-tool
  * 职责：SAM2 标注态下点/框交互；仅在当前图尚无缓存时向后端请求 encode-image（首张 prompt 或框确认前），解码前 await 保证与首点无竞态。
  */
-import { fetchSam2ImageEmbeddings } from "@/lib/sam2-encode-api"
+import { fetchSamImageEmbeddings } from "@/lib/sam2-encode-api"
 import type { Sam2EmbedCache } from "@/lib/sam2-encode-api"
 import type { ImageGeometry } from "@/pages/project-task-detail/canvas-geometry"
 import type { Sam2PromptMode } from "@/pages/project-task-detail/annotateTools/aiTools/types"
@@ -296,7 +296,7 @@ export function useSam2CanvasTool(params: Params) {
       holder.flight = (async () => {
         const scaleAtStart = sam2InferScaleRef.current
         try {
-          const response = await fetchSam2ImageEmbeddings(mid, path, { inferScale: scaleAtStart })
+          const response = await fetchSamImageEmbeddings(mid, path, { inferScale: scaleAtStart })
           if (activeImagePathRef.current.trim() !== path) return
           if (sam2InferScaleRef.current !== scaleAtStart) return
           onEmbeddingsCached({ imagePath: path, inferScale: scaleAtStart, response })

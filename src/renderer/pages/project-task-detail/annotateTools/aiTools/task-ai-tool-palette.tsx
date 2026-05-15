@@ -56,6 +56,7 @@ export function TaskAiToolPalette(props: TaskAiToolPaletteProps) {
     onSam2AutoHoverFactorChange,
     sam2InferScale,
     onSam2InferScaleChange,
+    activeSamRuntime,
     onSam2Confirm,
   } = props
 
@@ -198,6 +199,7 @@ export function TaskAiToolPalette(props: TaskAiToolPaletteProps) {
         onAutoHoverFactorChange={onSam2AutoHoverFactorChange}
         inferScale={sam2InferScale}
         onInferScaleChange={onSam2InferScaleChange}
+        activeSamRuntime={activeSamRuntime}
         onCancel={() => onSam2DialogOpenChange(false)}
         onConfirm={() => {
           onSam2Confirm()

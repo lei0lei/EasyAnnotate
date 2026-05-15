@@ -72,6 +72,28 @@ function toModelSpace(x: number, y: number, iw: number, ih: number, res: number)
   return [(x / iw) * res, (y / ih) * res]
 }
 
+/** MobileSAM：最长边缩放到 res 后 pad 成正方形；prompt 须在缩放后（未 pad）像素坐标。 */
+function toMobileSamModelSpace(x: number, y: number, iw: number, ih: number, res: number): [number, number] {
+  const scale = res / Math.max(ih, iw, 1)
+  const newW = Math.round(iw * scale)
+  const newH = Math.round(ih * scale)
+  return [(x / iw) * newW, (y / ih) * newH]
+}
+
+function promptToModelSpace(
+  x: number,
+  y: number,
+  iw: number,
+  ih: number,
+  res: number,
+  featureLayout: string | undefined,
+): [number, number] {
+  if (featureLayout === "mobile_sam_cvat_decoder_onnx_v1") {
+    return toMobileSamModelSpace(x, y, iw, ih, res)
+  }
+  return toModelSpace(x, y, iw, ih, res)
+}
+
 function scalarOutputToInt(t: import("onnxruntime-web").Tensor): number {
   const d = t.data
   if (d instanceof BigInt64Array) return Number(d[0] ?? 0n)
@@ -141,6 +163,127 @@ export type Sam2CvatsDecodeOptions = {
   minPredIou?: number
 }
 
+function buildCvatsPromptTensors(
+  ort: OrtModule,
+  encode: Sam2EncodeImageResponse,
+  prompt: Sam2CvatsPrompt,
+): {
+  pointCoords: InstanceType<OrtModule["Tensor"]>
+  pointLabels: InstanceType<OrtModule["Tensor"]>
+  maskInput: InstanceType<OrtModule["Tensor"]>
+  hasMaskInput: InstanceType<OrtModule["Tensor"]>
+  origIm: InstanceType<OrtModule["Tensor"]>
+} {
+  const iw = encode.image_width
+  const ih = encode.image_height
+  const res = encode.model_input_size ?? 1024
+  const mh = encode.mask_input_height ?? 256
+  const mw = encode.mask_input_width ?? 256
+  const layout = encode.feature_layout
+  const toSpace = (x: number, y: number) => promptToModelSpace(x, y, iw, ih, res, layout)
+
+  const coordsFlat: number[] = []
+  const labelsFlat: number[] = []
+
+  if (prompt.mode === "bbox") {
+    const { x1, y1, x2, y2 } = prompt.bbox
+    const a = toSpace(x1, y1)
+    const b = toSpace(x2, y2)
+    coordsFlat.push(a[0], a[1], b[0], b[1], 0, 0)
+    labelsFlat.push(2, 3, -1)
+  } else {
+    for (const p of prompt.points) {
+      const m = toSpace(p.x, p.y)
+      coordsFlat.push(m[0], m[1])
+      labelsFlat.push(p.label)
+    }
+    coordsFlat.push(0, 0)
+    labelsFlat.push(-1)
+  }
+
+  const n = labelsFlat.length
+  const pointCoordsArr = new Float32Array(n * 2)
+  for (let i = 0; i < n; i += 1) {
+    pointCoordsArr[i * 2] = coordsFlat[i * 2]!
+    pointCoordsArr[i * 2 + 1] = coordsFlat[i * 2 + 1]!
+  }
+  const pointLabelsArr = new Float32Array(labelsFlat.map((x) => Number(x)))
+  const maskInputArr = new Float32Array(1 * 1 * mh * mw)
+  const hasMaskInputArr = new Float32Array([0])
+  const origImArr = new Int32Array([ih, iw])
+
+  return {
+    pointCoords: new ort.Tensor("float32", pointCoordsArr, [1, n, 2]),
+    pointLabels: new ort.Tensor("float32", pointLabelsArr, [1, n]),
+    maskInput: new ort.Tensor("float32", maskInputArr, [1, 1, mh, mw]),
+    hasMaskInput: new ort.Tensor("float32", hasMaskInputArr, [1]),
+    origIm: new ort.Tensor("int32", origImArr, [2]),
+  }
+}
+
+function masksTensorToRleInEncodeSpace(
+  out: Record<string, import("onnxruntime-web").Tensor>,
+  iw: number,
+  ih: number,
+  options?: Sam2CvatsDecodeOptions,
+): { counts: number[]; w: number; h: number } | null {
+  const masksTensor = out.masks
+  const xtlT = out.xtl
+  const ytlT = out.ytl
+  const xbrT = out.xbr
+  const ybrT = out.ybr
+  if (!masksTensor || !xtlT || !ytlT || !xbrT || !ybrT) {
+    throw new Error("decoder ONNX 输出缺少 masks/xtl/ytl/xbr/ybr")
+  }
+
+  const predIou = extractPredIouFromDecoderOutputs(out)
+  const minIou = options?.minPredIou
+  if (predIou !== null && minIou !== undefined && minIou > 0 && predIou < minIou) {
+    return null
+  }
+
+  const xtl = scalarOutputToInt(xtlT)
+  const ytl = scalarOutputToInt(ytlT)
+  void scalarOutputToInt(xbrT)
+  void scalarOutputToInt(ybrT)
+
+  const md = masksTensor.data
+  let crop: Uint8Array
+  const dims = masksTensor.dims.map((d) => Math.floor(Number(d)))
+  if (md instanceof Uint8Array) {
+    crop = new Uint8Array(md.length)
+    for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
+  } else if (md instanceof Float32Array) {
+    crop = new Uint8Array(md.length)
+    for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
+  } else {
+    throw new Error(`unexpected masks dtype ${masksTensor.type}`)
+  }
+
+  let cropH = 1
+  let cropW = 1
+  if (dims.length >= 2) {
+    cropH = Math.max(1, dims[dims.length - 2] ?? 1)
+    cropW = Math.max(1, dims[dims.length - 1] ?? 1)
+  }
+  if (cropH * cropW !== crop.length) {
+    cropH = Math.max(1, dims[dims.length - 2] ?? 1)
+    cropW = Math.max(1, Math.floor(crop.length / cropH))
+  }
+  if (cropH * cropW !== crop.length) {
+    throw new Error(`masks tensor size mismatch dims=${dims.join("x")} len=${crop.length}`)
+  }
+
+  const full = stitchCroppedMask(crop, cropW, cropH, xtl, ytl, iw, ih)
+  if (!maskBinaryHasForeground(full)) return null
+
+  return {
+    counts: encodeBinaryToRowMajorRle(full),
+    w: iw,
+    h: ih,
+  }
+}
+
 export async function runSam2CvatsDecoder(
   encode: Sam2EncodeImageResponse,
   prompt: Sam2CvatsPrompt,
@@ -156,112 +299,84 @@ export async function runSam2CvatsDecoder(
 
     const iw = encode.image_width
     const ih = encode.image_height
-    const res = encode.model_input_size ?? 1024
-    const mh = encode.mask_input_height ?? 256
-    const mw = encode.mask_input_width ?? 256
+    const hr = encode.high_res_feats
+    if (!hr || hr.length < 2) {
+      throw new Error("SAM 2.1 编码缺少 high_res_feats，请重新编码")
+    }
 
     const image_embed = decodeLeRawFloat32Payload(encode.image_embed, ort)
-    const hr0 = decodeLeRawFloat32Payload(encode.high_res_feats[0]!, ort)
-    const hr1 = decodeLeRawFloat32Payload(encode.high_res_feats[1]!, ort)
-
-    const coordsFlat: number[] = []
-    const labelsFlat: number[] = []
-
-    if (prompt.mode === "bbox") {
-      const { x1, y1, x2, y2 } = prompt.bbox
-      const a = toModelSpace(x1, y1, iw, ih, res)
-      const b = toModelSpace(x2, y2, iw, ih, res)
-      coordsFlat.push(a[0], a[1], b[0], b[1], 0, 0)
-      labelsFlat.push(2, 3, -1)
-    } else {
-      for (const p of prompt.points) {
-        const m = toModelSpace(p.x, p.y, iw, ih, res)
-        coordsFlat.push(m[0], m[1])
-        labelsFlat.push(p.label)
-      }
-      coordsFlat.push(0, 0)
-      labelsFlat.push(-1)
-    }
-
-    const n = labelsFlat.length
-    const pointCoords = new Float32Array(n * 2)
-    for (let i = 0; i < n; i += 1) {
-      pointCoords[i * 2] = coordsFlat[i * 2]!
-      pointCoords[i * 2 + 1] = coordsFlat[i * 2 + 1]!
-    }
-    const pointLabels = new Float32Array(labelsFlat.map((x) => Number(x)))
-
-    const maskInput = new Float32Array(1 * 1 * mh * mw)
-    const hasMaskInput = new Float32Array([0])
-    const origIm = new Int32Array([ih, iw])
+    const hr0 = decodeLeRawFloat32Payload(hr[0]!, ort)
+    const hr1 = decodeLeRawFloat32Payload(hr[1]!, ort)
+    const promptTensors = buildCvatsPromptTensors(ort, encode, prompt)
 
     const feeds: Record<string, InstanceType<OrtModule["Tensor"]>> = {
       image_embed,
       high_res_feats_0: hr0,
       high_res_feats_1: hr1,
-      point_coords: new ort.Tensor("float32", pointCoords, [1, n, 2]),
-      point_labels: new ort.Tensor("float32", pointLabels, [1, n]),
-      orig_im_size: new ort.Tensor("int32", origIm, [2]),
-      mask_input: new ort.Tensor("float32", maskInput, [1, 1, mh, mw]),
-      has_mask_input: new ort.Tensor("float32", hasMaskInput, [1]),
+      point_coords: promptTensors.pointCoords,
+      point_labels: promptTensors.pointLabels,
+      orig_im_size: promptTensors.origIm,
+      mask_input: promptTensors.maskInput,
+      has_mask_input: promptTensors.hasMaskInput,
     }
 
     const out = await session.run(feeds)
-    const outRec = out as Record<string, import("onnxruntime-web").Tensor>
-    const masksTensor = out.masks
-    const xtlT = out.xtl
-    const ytlT = out.ytl
-    const xbrT = out.xbr
-    const ybrT = out.ybr
-    if (!masksTensor || !xtlT || !ytlT || !xbrT || !ybrT) {
-      throw new Error("decoder ONNX 输出缺少 masks/xtl/ytl/xbr/ybr")
-    }
-
-    const predIou = extractPredIouFromDecoderOutputs(outRec)
-    const minIou = options?.minPredIou
-    if (predIou !== null && minIou !== undefined && minIou > 0 && predIou < minIou) {
-      return null
-    }
-
-    const xtl = scalarOutputToInt(xtlT)
-    const ytl = scalarOutputToInt(ytlT)
-    void scalarOutputToInt(xbrT)
-    void scalarOutputToInt(ybrT)
-
-    const md = masksTensor.data
-    let crop: Uint8Array
-    const dims = masksTensor.dims.map((d) => Math.floor(Number(d)))
-    if (md instanceof Uint8Array) {
-      crop = new Uint8Array(md.length)
-      for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
-    } else if (md instanceof Float32Array) {
-      crop = new Uint8Array(md.length)
-      for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
-    } else {
-      throw new Error(`unexpected masks dtype ${masksTensor.type}`)
-    }
-
-    let cropH = 1
-    let cropW = 1
-    if (dims.length >= 2) {
-      cropH = Math.max(1, dims[dims.length - 2] ?? 1)
-      cropW = Math.max(1, dims[dims.length - 1] ?? 1)
-    }
-    if (cropH * cropW !== crop.length) {
-      cropH = Math.max(1, dims[dims.length - 2] ?? 1)
-      cropW = Math.max(1, Math.floor(crop.length / cropH))
-    }
-    if (cropH * cropW !== crop.length) {
-      throw new Error(`masks tensor size mismatch dims=${dims.join("x")} len=${crop.length}`)
-    }
-
-    const full = stitchCroppedMask(crop, cropW, cropH, xtl, ytl, iw, ih)
-    if (!maskBinaryHasForeground(full)) return null
-
-    return {
-      counts: encodeBinaryToRowMajorRle(full),
-      w: iw,
-      h: ih,
-    }
+    return masksTensorToRleInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
   })
+}
+
+export async function runMobileSamCvatsDecoder(
+  encode: Sam2EncodeImageResponse,
+  prompt: Sam2CvatsPrompt,
+  options?: Sam2CvatsDecodeOptions,
+): Promise<{ counts: number[]; w: number; h: number } | null> {
+  if (encode.feature_layout !== "mobile_sam_cvat_decoder_onnx_v1") {
+    throw new Error("当前图像编码不是 MobileSAM CVAT/ONNX 布局，请重新编码或检查后端版本")
+  }
+  const modelId = encode.model_id
+  return enqueueSam2DecoderRun(modelId, async () => {
+    const ort = await getOrt()
+    const session = await loadSam2DecoderSession(modelId)
+
+    const iw = encode.image_width
+    const ih = encode.image_height
+    const image_embed = decodeLeRawFloat32Payload(encode.image_embed, ort)
+    const promptTensors = buildCvatsPromptTensors(ort, encode, prompt)
+
+    const feeds: Record<string, InstanceType<OrtModule["Tensor"]>> = {
+      image_embed,
+      point_coords: promptTensors.pointCoords,
+      point_labels: promptTensors.pointLabels,
+      orig_im_size: promptTensors.origIm,
+      mask_input: promptTensors.maskInput,
+      has_mask_input: promptTensors.hasMaskInput,
+    }
+
+    const out = await session.run(feeds)
+    return masksTensorToRleInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
+  })
+}
+
+/** 按 encode.feature_layout 分发到 SAM2.1 或 MobileSAM decoder。 */
+export async function runSamCvatsDecoder(
+  encode: Sam2EncodeImageResponse,
+  prompt: Sam2CvatsPrompt,
+  options?: Sam2CvatsDecodeOptions,
+): Promise<{ counts: number[]; w: number; h: number } | null> {
+  const layout = encode.feature_layout
+  if (layout === "sam2.1_cvat_decoder_onnx_v1") {
+    return runSam2CvatsDecoder(encode, prompt, options)
+  }
+  if (layout === "mobile_sam_cvat_decoder_onnx_v1") {
+    return runMobileSamCvatsDecoder(encode, prompt, options)
+  }
+  throw new Error(`不支持的 SAM feature_layout: ${layout ?? "(缺失)"}`)
+}
+
+export function isSamCvatsFeatureLayout(layout: string | undefined): boolean {
+  return layout === "sam2.1_cvat_decoder_onnx_v1" || layout === "mobile_sam_cvat_decoder_onnx_v1"
+}
+
+export async function loadSamDecoderSession(modelId: string): Promise<import("onnxruntime-web").InferenceSession> {
+  return loadSam2DecoderSession(modelId)
 }

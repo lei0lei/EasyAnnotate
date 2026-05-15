@@ -56,6 +56,7 @@ export type Sam2SegmentAnchorPanelProps = {
   onAutoHoverFactorChange: (value: number) => void
   inferScale: number
   onInferScaleChange: (value: number) => void
+  activeSamRuntime: { label: string; running: boolean } | null
   onCancel: () => void
   onConfirm: () => void
   getAnchor: () => HTMLElement | null
@@ -84,6 +85,7 @@ export function Sam2SegmentAnchorPanel({
   onAutoHoverFactorChange,
   inferScale,
   onInferScaleChange,
+  activeSamRuntime,
   onCancel,
   onConfirm,
   getAnchor,
@@ -131,7 +133,7 @@ export function Sam2SegmentAnchorPanel({
   const panel = (
     <div
       role="dialog"
-      aria-label="SAM2 自动标注选项"
+      aria-label="SAM 自动标注选项"
       className="fixed z-[200] w-72 rounded-md border border-border bg-background/95 p-3 shadow-md"
       style={positionStyle}
       data-ea-sam2-picker-panel=""
@@ -154,6 +156,17 @@ export function Sam2SegmentAnchorPanel({
           aria-label="暂无可用标签"
         />
       )}
+
+      <div className="mt-3 space-y-1 border-t border-border/70 pt-2">
+        <div className="text-[11px] text-muted-foreground">当前推理</div>
+        {activeSamRuntime?.running ? (
+          <p className="text-sm font-medium text-foreground">{activeSamRuntime.label}</p>
+        ) : (
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            未启动。请先在「模型 → 自动标注 → SAM 标注」中启动推理实例。
+          </p>
+        )}
+      </div>
 
       <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
         <div className="text-[11px] text-muted-foreground">Prompt 类型</div>
@@ -365,7 +378,7 @@ export function Sam2SegmentAnchorPanel({
         </button>
         <button
           type="button"
-          disabled={!selectedLabel.trim() || labels.length === 0}
+          disabled={!selectedLabel.trim() || labels.length === 0 || !activeSamRuntime?.running}
           className="inline-flex h-7 items-center rounded border border-emerald-500/40 px-2 text-xs text-emerald-600 hover:bg-emerald-500/10 disabled:pointer-events-none disabled:opacity-40"
           onClick={onConfirm}
         >

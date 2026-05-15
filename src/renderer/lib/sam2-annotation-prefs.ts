@@ -1,18 +1,13 @@
-const STORAGE_KEY = "ea-sam2-annotation-backend-model-id"
-
-export function getSam2AnnotationBackendModelId(): string | null {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY)?.trim()
-    return v || null
-  } catch {
-    return null
-  }
-}
-
-export function setSam2AnnotationBackendModelId(modelId: string): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, modelId.trim())
-  } catch {
-    // ignore
-  }
-}
+export {
+  defaultModelIdForFamily,
+  getSam2AnnotationBackendModelId,
+  getSamAnnotationFamily,
+  getSamAnnotationModelId,
+  modelIdToSamFamily,
+  pickSamModelIdForFamily,
+  SAM_ANNOTATION_FAMILY_LABELS,
+  setSam2AnnotationBackendModelId,
+  setSamAnnotationFamily,
+  setSamAnnotationModelId,
+  type SamAnnotationFamily,
+} from "@/lib/sam-annotation-prefs"

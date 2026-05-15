@@ -9,6 +9,12 @@ export type Sam2PromptMode = "point" | "bbox"
 /** 解码输出：多边形轮廓 / 分割掩码 / 边界框 */
 export type Sam2AutoAnnotationFormat = "polygon" | "mask" | "box"
 
+export type ActiveSamRuntimeInfo = {
+  /** 人类可读：族 · 权重 */
+  label: string
+  running: boolean
+}
+
 export type TaskAiToolPaletteProps = {
   /** 项目配置中的非 skeleton 类标签（与普通标注工具一致） */
   plainAnnotationLabels: string[]
@@ -38,9 +44,11 @@ export type TaskAiToolPaletteProps = {
   /** 0.3–1.5：悬停触发时间倍率 */
   sam2AutoHoverFactor: number
   onSam2AutoHoverFactorChange: (value: number) => void
-  /** 0.3–1：SAM2 编码/解码相对原图边长倍率（画布仍为原图坐标） */
+  /** 0.3–1：SAM 编码/解码相对原图边长倍率（画布仍为原图坐标） */
   sam2InferScale: number
   onSam2InferScaleChange: (value: number) => void
-  /** SAM2 面板点 OK：进入「待首次点击拉 embeddings」模式并刷新后端当前 sam2 model_id */
+  /** 配置页已启动的 SAM runtime（只读） */
+  activeSamRuntime: ActiveSamRuntimeInfo | null
+  /** SAM 面板点 OK：进入标注并刷新当前 model_id */
   onSam2Confirm: () => void
 }
