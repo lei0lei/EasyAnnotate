@@ -42,6 +42,21 @@ export type DragLiveMaskRleOverride = { shapeIndex: number; counts: number[]; w:
 /** SAM2 会话中尚未按 N 提交的整图 RLE 预览（非文档内形状） */
 export type Sam2DraftMaskRle = { counts: number[]; w: number; h: number; label: string; color: string }
 
+/** 扩散式标注：相似实例 SAM 预览 mask（非文档内形状） */
+export type DiffusionPreviewMaskRle = Sam2DraftMaskRle & { id: string }
+
+export type DiffusionPreviewPolygon = { id: string; label: string; color: string; imageRing: number[][] }
+
+export type DiffusionPreviewRectangle = {
+  id: string
+  label: string
+  color: string
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
 type RenderShapeContext = {
   annotationDoc: XAnyLabelFile | null
   hiddenShapeIndexes: number[]
@@ -54,6 +69,10 @@ type RenderShapeContext = {
   dragLiveMaskRle?: DragLiveMaskRleOverride | null
   /** SAM2：当前轮次 ONNX 预览 mask，叠在文档 mask 之上 */
   sam2DraftMaskRle?: Sam2DraftMaskRle | null
+  /** 扩散式标注：批量相似实例预览 */
+  diffusionPreviewMasks?: DiffusionPreviewMaskRle[]
+  diffusionPreviewPolygons?: DiffusionPreviewPolygon[]
+  diffusionPreviewRectangles?: DiffusionPreviewRectangle[]
 }
 
 function shapePointsWithLiveOverride(
@@ -100,12 +119,21 @@ function shapePointsForCuboid2d(
 }
 
 export function buildRenderedRectangles(context: RenderShapeContext & { stageWidth: number; stageHeight: number }): RenderedRectangle[] {
-  const { annotationDoc, hiddenShapeIndexes, hiddenClassLabels, labelColorMap, imageToStage, stageWidth, stageHeight, dragLivePoints } =
-    context
+  const {
+    annotationDoc,
+    hiddenShapeIndexes,
+    hiddenClassLabels,
+    labelColorMap,
+    imageToStage,
+    stageWidth,
+    stageHeight,
+    dragLivePoints,
+    diffusionPreviewRectangles,
+  } = context
   if (!annotationDoc) return []
   const hiddenSet = new Set(hiddenShapeIndexes)
   const hiddenClassSet = new Set(hiddenClassLabels)
-  return annotationDoc.shapes
+  const out = annotationDoc.shapes
     .map((shape, index) => {
       if (hiddenSet.has(index)) return null
       if (hiddenClassSet.has(shape.label)) return null
@@ -140,6 +168,37 @@ export function buildRenderedRectangles(context: RenderShapeContext & { stageWid
       }
     })
     .filter((item): item is RenderedRectangle => !!item)
+
+  for (const pr of diffusionPreviewRectangles ?? []) {
+    const p1 = imageToStage({ x: pr.x1, y: pr.y1 })
+    const p2 = imageToStage({ x: pr.x2, y: pr.y2 })
+    if (!p1 || !p2) continue
+    const left = Math.min(p1.x, p2.x)
+    const right = Math.max(p1.x, p2.x)
+    const top = Math.min(p1.y, p2.y)
+    const bottom = Math.max(p1.y, p2.y)
+    const clippedLeft = stageWidth > 0 ? Math.max(0, left) : left
+    const clippedTop = stageHeight > 0 ? Math.max(0, top) : top
+    const clippedRight = stageWidth > 0 ? Math.min(stageWidth, right) : right
+    const clippedBottom = stageHeight > 0 ? Math.min(stageHeight, bottom) : bottom
+    if (clippedRight - clippedLeft < 1 || clippedBottom - clippedTop < 1) continue
+    out.push({
+      index: -1,
+      shapeId: `__eaDiffusionPreview_${pr.id}`,
+      label: pr.label,
+      color: pr.color,
+      left: clippedLeft,
+      top: clippedTop,
+      width: Math.max(1, clippedRight - clippedLeft),
+      height: Math.max(1, clippedBottom - clippedTop),
+      clippedLeft: clippedLeft > left,
+      clippedTop: clippedTop > top,
+      clippedRight: clippedRight < right,
+      clippedBottom: clippedBottom < bottom,
+    })
+  }
+
+  return out
 }
 
 export function buildRenderedRotationRects(context: RenderShapeContext): RenderedRotationRect[] {
@@ -210,11 +269,20 @@ export function buildRenderedRotationRects(context: RenderShapeContext): Rendere
 export function buildRenderedPolygons(
   context: RenderShapeContext & { dragVertexLive?: DragVertexLiveOverride | null },
 ): RenderedPolygon[] {
-  const { annotationDoc, hiddenShapeIndexes, hiddenClassLabels, labelColorMap, imageToStage, dragLivePoints, dragVertexLive } = context
+  const {
+    annotationDoc,
+    hiddenShapeIndexes,
+    hiddenClassLabels,
+    labelColorMap,
+    imageToStage,
+    dragLivePoints,
+    dragVertexLive,
+    diffusionPreviewPolygons,
+  } = context
   if (!annotationDoc) return []
   const hiddenSet = new Set(hiddenShapeIndexes)
   const hiddenClassSet = new Set(hiddenClassLabels)
-  return annotationDoc.shapes
+  const out = annotationDoc.shapes
     .map((shape, index) => {
       if (hiddenSet.has(index)) return null
       if (hiddenClassSet.has(shape.label)) return null
@@ -231,6 +299,22 @@ export function buildRenderedPolygons(
       }
     })
     .filter((item): item is RenderedPolygon => !!item)
+
+  for (const dp of diffusionPreviewPolygons ?? []) {
+    const stagePoints = dp.imageRing
+      .map((pt) => imageToStage({ x: Number(pt[0] ?? 0), y: Number(pt[1] ?? 0) }))
+      .filter((item): item is Point => !!item)
+    if (stagePoints.length < 3) continue
+    out.push({
+      index: -1,
+      shapeId: `__eaDiffusionPreview_${dp.id}`,
+      label: dp.label,
+      color: dp.color,
+      stagePoints,
+    })
+  }
+
+  return out
 }
 
 function readSkeletonEdgeIndexPairs(shape: { attributes?: Record<string, unknown> }): [number, number][] {
@@ -315,7 +399,17 @@ export function buildRenderedPoints(context: RenderShapeContext): RenderedPoint[
 }
 
 export function buildRenderedMasks(context: RenderShapeContext & { stageScale: number }): RenderedMask[] {
-  const { annotationDoc, hiddenShapeIndexes, hiddenClassLabels, labelColorMap, imageToStage, dragLiveMaskRle, dragLivePoints, sam2DraftMaskRle } =
+  const {
+    annotationDoc,
+    hiddenShapeIndexes,
+    hiddenClassLabels,
+    labelColorMap,
+    imageToStage,
+    dragLiveMaskRle,
+    dragLivePoints,
+    sam2DraftMaskRle,
+    diffusionPreviewMasks,
+  } =
     context
   if (!annotationDoc) return []
   const hiddenSet = new Set(hiddenShapeIndexes)
@@ -449,27 +543,6 @@ export function buildRenderedMasks(context: RenderShapeContext & { stageScale: n
     })
     .filter((item): item is RenderedMask => !!item)
 
-  if (!sam2DraftMaskRle || sam2DraftMaskRle.w !== docIw || sam2DraftMaskRle.h !== docIh) return list
-
-  const total = docIw * docIh
-  const bin = decodeRowMajorRleToBinary(sam2DraftMaskRle.counts, total)
-  if (!maskBinaryHasForeground(bin)) return list
-  const bbox = foregroundBBoxInclusive(bin, docIw, docIh)
-  if (!bbox) return list
-  const tightCorners: Point[] = [
-    { x: bbox.minX, y: bbox.minY },
-    { x: bbox.maxX + 1, y: bbox.minY },
-    { x: bbox.maxX + 1, y: bbox.maxY + 1 },
-    { x: bbox.minX, y: bbox.maxY + 1 },
-  ]
-  const stageTight = tightCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
-  if (stageTight.length < 1) return list
-  const xs = stageTight.map((item) => item.x)
-  const ys = stageTight.map((item) => item.y)
-  const left = Math.min(...xs)
-  const top = Math.min(...ys)
-  const right = Math.max(...xs)
-  const bottom = Math.max(...ys)
   const imageCorners: Point[] = [
     { x: 0, y: 0 },
     { x: docIw, y: 0 },
@@ -484,22 +557,91 @@ export function buildRenderedMasks(context: RenderShapeContext & { stageScale: n
   const sit = Math.min(...iys)
   const siw = Math.max(...ixs) - sil
   const sih = Math.max(...iys) - sit
-  const draftMask: RenderedMask = {
-    index: -1,
-    shapeId: "__eaSam2Draft",
-    label: sam2DraftMaskRle.label,
-    color: sam2DraftMaskRle.color,
-    stagePoints: [],
-    stageSegments: [],
-    brushSize: 1,
-    left,
-    top,
-    width: Math.max(1, right - left),
-    height: Math.max(1, bottom - top),
-    raster: { counts: sam2DraftMaskRle.counts, imageWidth: docIw, imageHeight: docIh },
-    stageImageRect: { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) },
+  const stageImageRect = { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) }
+
+  let out = list
+
+  if (sam2DraftMaskRle && sam2DraftMaskRle.w === docIw && sam2DraftMaskRle.h === docIh) {
+    const total = docIw * docIh
+    const bin = decodeRowMajorRleToBinary(sam2DraftMaskRle.counts, total)
+    if (maskBinaryHasForeground(bin)) {
+      const bbox = foregroundBBoxInclusive(bin, docIw, docIh)
+      if (bbox) {
+        const tightCorners: Point[] = [
+          { x: bbox.minX, y: bbox.minY },
+          { x: bbox.maxX + 1, y: bbox.minY },
+          { x: bbox.maxX + 1, y: bbox.maxY + 1 },
+          { x: bbox.minX, y: bbox.maxY + 1 },
+        ]
+        const stageTight = tightCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
+        if (stageTight.length >= 1) {
+          const xs = stageTight.map((item) => item.x)
+          const ys = stageTight.map((item) => item.y)
+          out = [
+            ...out,
+            {
+              index: -1,
+              shapeId: "__eaSam2Draft",
+              label: sam2DraftMaskRle.label,
+              color: sam2DraftMaskRle.color,
+              stagePoints: [],
+              stageSegments: [],
+              brushSize: 1,
+              left: Math.min(...xs),
+              top: Math.min(...ys),
+              width: Math.max(1, Math.max(...xs) - Math.min(...xs)),
+              height: Math.max(1, Math.max(...ys) - Math.min(...ys)),
+              raster: { counts: sam2DraftMaskRle.counts, imageWidth: docIw, imageHeight: docIh },
+              stageImageRect,
+            },
+          ]
+        }
+      }
+    }
   }
-  return [...list, draftMask]
+
+  for (const dm of diffusionPreviewMasks ?? []) {
+    if (dm.w !== docIw || dm.h !== docIh) continue
+    const dTotal = docIw * docIh
+    const dBin = decodeRowMajorRleToBinary(dm.counts, dTotal)
+    if (!maskBinaryHasForeground(dBin)) continue
+    const dBbox = foregroundBBoxInclusive(dBin, docIw, docIh)
+    if (!dBbox) continue
+    const dTight: Point[] = [
+      { x: dBbox.minX, y: dBbox.minY },
+      { x: dBbox.maxX + 1, y: dBbox.minY },
+      { x: dBbox.maxX + 1, y: dBbox.maxY + 1 },
+      { x: dBbox.minX, y: dBbox.maxY + 1 },
+    ]
+    const dStage = dTight.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
+    if (dStage.length < 1) continue
+    const dxs = dStage.map((item) => item.x)
+    const dys = dStage.map((item) => item.y)
+    const dleft = Math.min(...dxs)
+    const dtop = Math.min(...dys)
+    const dright = Math.max(...dxs)
+    const dbottom = Math.max(...dys)
+    out = [
+      ...out,
+      {
+        index: -1,
+        shapeId: `__eaDiffusionPreview_${dm.id}`,
+        label: dm.label,
+        color: dm.color,
+        stagePoints: [],
+        stageSegments: [],
+        brushSize: 1,
+        left: dleft,
+        top: dtop,
+        width: Math.max(1, dright - dleft),
+        height: Math.max(1, dbottom - dtop),
+        raster: { counts: dm.counts, imageWidth: docIw, imageHeight: docIh },
+        stageImageRect: { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) },
+      },
+    ]
+  }
+
+  return out
 }
 
 function readCuboid2dHeightPx(shape: { attributes?: Record<string, unknown> }): number {

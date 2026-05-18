@@ -112,8 +112,20 @@ export function predictUrlForModel(modelId: string): string {
 /** 后端从公网拉取的样例图（各模型 `payload.source` 均支持 HTTPS URL）。 */
 export const MODEL_SMOKE_TEST_IMAGE_URL = "https://ultralytics.com/images/bus.jpg"
 
-export async function runModelSmokePredict(modelId: string): Promise<unknown> {
-  const url = predictUrlForModel(modelId)
+export type RunModelSmokePredictOptions = {
+  /** 可选：校验指定 catalog 槽位；默认使用模型族主槽。 */
+  runtimeSlot?: string
+}
+
+export async function runModelSmokePredict(
+  modelId: string,
+  options?: RunModelSmokePredictOptions,
+): Promise<unknown> {
+  let url = predictUrlForModel(modelId)
+  const rs = options?.runtimeSlot?.trim()
+  if (rs) {
+    url += `${url.includes("?") ? "&" : "?"}runtime_slot=${encodeURIComponent(rs)}`
+  }
   let res: Response
   try {
     res = await fetch(url, {

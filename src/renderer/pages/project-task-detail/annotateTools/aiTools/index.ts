@@ -4,7 +4,9 @@
  */
 export { TaskAiToolPalette } from "./task-ai-tool-palette"
 export { Sam2SegmentAnchorPanel } from "./sam2-segment-anchor-panel"
+export { DiffusionSegmentAnchorPanel } from "./diffusion-segment-anchor-panel"
 export type {
+  DiffusionSeedSamPreviewMode,
   Sam2AutoAnnotationFormat,
   Sam2PromptMode,
   TaskAiToolPaletteProps,

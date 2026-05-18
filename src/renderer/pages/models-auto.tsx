@@ -96,7 +96,7 @@ export default function ModelsAutoPage() {
                   <CardTitle className="text-lg">扩散式标注</CardTitle>
                 </div>
                 <CardDescription className="mt-1">
-                  与任务页左侧 AI 工具栏「扩散式标注」入口对应；开启后栏内显示，能力规划中。
+                  与任务页左侧 AI 工具栏「扩散式标注」入口对应；SAM 与 DINOv2 使用「后端模型管理」中的全局推理实例。
                 </CardDescription>
               </div>
               <GpuSwitch

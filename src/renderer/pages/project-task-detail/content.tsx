@@ -8,6 +8,7 @@ import {
   type TaskFileItem,
 } from "@/lib/projects-api"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
+import { getPrimaryShortcutLabel } from "@/lib/app-shortcut-registry"
 import { fetchModelRuntimeCatalog } from "@/lib/model-runtime-api"
 import { writeMaskRleAttributes, decodeRowMajorRleToBinary, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
 import { contourForYoloExport } from "@/lib/mask-contour"
@@ -25,9 +26,24 @@ import {
   resolveActiveSamFromCatalog,
 } from "@/lib/sam-annotation-runtime"
 import {
+  formatActiveGlobalDinov2Label,
+  resolveActiveGlobalDinov2FromCatalog,
+} from "@/lib/global-dinov2-runtime"
+import { getGlobalDinov2ModelId } from "@/lib/global-dinov2-prefs"
+import {
+  extractDiffusionPolygonRing,
+  isDiffusionCandidateAnnotatable,
+} from "@/lib/diffusion-candidate-shape"
+import {
+  runDiffusionPipeline,
+  type DiffusionCandidateResult,
+  type DiffusionSeedBbox,
+} from "@/lib/diffusion-annotation-runtime"
+import {
   getSam2AiToolbarEnabledSnapshot,
   subscribeSam2AiToolbarEnabled,
 } from "@/lib/sam2-ai-toolbar-prefs"
+import { diffusionAiToolbarPrefs } from "@/lib/placeholder-ai-toolbar-prefs"
 import { formatBytes } from "@/pages/project-task-detail/utils"
 import { findShapeIndexByStableId } from "@/pages/project-task-detail/shape-identity"
 import { useDragSessions } from "@/pages/project-task-detail/use-drag-sessions"
@@ -37,6 +53,9 @@ import type {
   DragLiveMaskRleOverride,
   DragLivePointsOverride,
   DragVertexLiveOverride,
+  DiffusionPreviewMaskRle,
+  DiffusionPreviewPolygon,
+  DiffusionPreviewRectangle,
   Sam2DraftMaskRle,
 } from "@/pages/project-task-detail/rendered-shapes"
 import { useTaskRenderModel } from "@/pages/project-task-detail/use-task-render-model"
@@ -69,12 +88,14 @@ import {
   type Sam2AutoPromptParams,
   type Sam2DecodeRequest,
 } from "@/pages/project-task-detail/use-sam2-canvas-tool"
+import { useDiffusionCanvasTool } from "@/pages/project-task-detail/use-diffusion-canvas-tool"
 import { AnnotationStoreProvider } from "@/pages/project-task-detail/annotation-store-context"
 import { TaskHeaderContainer } from "@/pages/project-task-detail/header-container"
 import { TaskSidebarContainer } from "@/pages/project-task-detail/sidebar-container"
 import { TaskCanvasContainer } from "@/pages/project-task-detail/canvas-container"
 import { rightToolModeToDrawingPreset } from "@/pages/project-task-detail/drawing-tool-preset"
 import type {
+  DiffusionSeedSamPreviewMode,
   Sam2AutoAnnotationFormat,
   Sam2PromptMode,
 } from "@/pages/project-task-detail/annotateTools/aiTools/types"
@@ -166,6 +187,64 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     if (!sam2DialogOpen) return
     refreshActiveSamRuntime()
   }, [sam2DialogOpen, refreshActiveSamRuntime])
+
+  const [diffusionDialogOpen, setDiffusionDialogOpen] = useState(false)
+  const [diffusionSelectedLabel, setDiffusionSelectedLabel] = useState("")
+  const [diffusionInferScale, setDiffusionInferScale] = useState(1)
+  const [diffusionSeedPreview, setDiffusionSeedPreview] = useState<DiffusionSeedSamPreviewMode>("bbox_and_mask")
+  const [diffusionOutputFormat, setDiffusionOutputFormat] = useState<Sam2AutoAnnotationFormat>("polygon")
+  const [diffusionPolygonVertexBias, setDiffusionPolygonVertexBias] = useState(50)
+  const [diffusionSamRunning, setDiffusionSamRunning] = useState(false)
+  const [diffusionSamRuntimeLabel, setDiffusionSamRuntimeLabel] = useState("")
+  const [diffusionDinov2Running, setDiffusionDinov2Running] = useState(false)
+  const [diffusionDinov2RuntimeLabel, setDiffusionDinov2RuntimeLabel] = useState("")
+  const [diffusionAnnotatingActive, setDiffusionAnnotatingActive] = useState(false)
+  const diffusionAnnotatingActiveRef = useRef(false)
+  diffusionAnnotatingActiveRef.current = diffusionAnnotatingActive
+  const [diffusionPhase, setDiffusionPhase] = useState<"seed" | "searching" | "preview">("seed")
+  const [diffusionSeedBbox, setDiffusionSeedBbox] = useState<DiffusionSeedBbox | null>(null)
+  const [diffusionCandidates, setDiffusionCandidates] = useState<DiffusionCandidateResult[]>([])
+  const [diffusionBusy, setDiffusionBusy] = useState(false)
+  const [diffusionSimilarityThreshold, setDiffusionSimilarityThreshold] = useState(0.45)
+  const [diffusionMaxInstances, setDiffusionMaxInstances] = useState(32)
+  const [diffusionSessionNonce, setDiffusionSessionNonce] = useState(0)
+  const [diffusionToast, setDiffusionToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
+  const diffusionSamModelIdRef = useRef("sam2/sam2.1_hiera_tiny")
+  const diffusionDinov2ModelIdRef = useRef(getGlobalDinov2ModelId())
+  const diffusionResumeAfterNCommitRef = useRef(false)
+
+  const refreshDiffusionBackendRuntimes = useCallback(() => {
+    void fetchModelRuntimeCatalog()
+      .then((cat) => {
+        const sam = resolveActiveSamFromCatalog(cat.categories)
+        const samOk = sam != null
+        if (samOk) {
+          setDiffusionSamRuntimeLabel(formatActiveSamAnnotationLabel(sam, cat.categories))
+        } else {
+          setDiffusionSamRuntimeLabel("")
+        }
+        setDiffusionSamRunning(samOk)
+        const dino = resolveActiveGlobalDinov2FromCatalog(cat.categories)
+        const dinoOk = dino != null
+        if (dinoOk) {
+          setDiffusionDinov2RuntimeLabel(formatActiveGlobalDinov2Label(dino, cat.categories))
+        } else {
+          setDiffusionDinov2RuntimeLabel("")
+        }
+        setDiffusionDinov2Running(dinoOk)
+      })
+      .catch(() => {
+        setDiffusionSamRunning(false)
+        setDiffusionSamRuntimeLabel("")
+        setDiffusionDinov2Running(false)
+        setDiffusionDinov2RuntimeLabel("")
+      })
+  }, [])
+
+  useEffect(() => {
+    if (!diffusionDialogOpen) return
+    refreshDiffusionBackendRuntimes()
+  }, [diffusionDialogOpen, refreshDiffusionBackendRuntimes])
   const {
     imageObjectUrl,
     setImageObjectUrl,
@@ -713,6 +792,13 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   }, [annotationLabelOptionsPlain, sam2SelectedLabel])
 
   useEffect(() => {
+    const plain = annotationLabelOptionsPlain
+    if (!plain.includes(diffusionSelectedLabel)) {
+      setDiffusionSelectedLabel(plain[0] ?? "")
+    }
+  }, [annotationLabelOptionsPlain, diffusionSelectedLabel])
+
+  useEffect(() => {
     sam2EmbedCacheRef.current = null
     setSam2DraftRle(null)
     // 保留 sam2ResumeAfterNCommitRef：上一张用 N 落盘后，翻页再按 N 仍应回到 SAM2
@@ -727,6 +813,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const [sam2Toast, setSam2Toast] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
 
   const handleSam2Confirm = useCallback(() => {
+    setDiffusionAnnotatingActive(false)
+    setDiffusionPhase("seed")
     sam2ResumeAfterNCommitRef.current = false
     setSam2DraftRle(null)
     setSam2SessionNonce((n) => n + 1)
@@ -753,6 +841,272 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       })
   }, [])
 
+  useEffect(() => {
+    if (!diffusionAnnotatingActive && diffusionInferScale === sam2InferScale) return
+    if (diffusionAnnotatingActive) {
+      sam2EmbedCacheRef.current = null
+    }
+  }, [diffusionAnnotatingActive, diffusionInferScale, sam2InferScale])
+
+  useEffect(() => {
+    setDiffusionSeedBbox(null)
+    setDiffusionCandidates([])
+    setDiffusionPhase("seed")
+    if (diffusionAnnotatingActive) {
+      sam2EmbedCacheRef.current = null
+    }
+  }, [activeImagePath])
+
+  useEffect(() => {
+    if (!diffusionToast) return
+    const t = window.setTimeout(() => setDiffusionToast(null), 8000)
+    return () => window.clearTimeout(t)
+  }, [diffusionToast])
+
+  const handleDiffusionConfirm = useCallback(() => {
+    setSam2AnnotatingActive(false)
+    setSam2DialogOpen(false)
+    setDiffusionSeedBbox(null)
+    setDiffusionCandidates([])
+    setDiffusionPhase("seed")
+    setDiffusionSessionNonce((n) => n + 1)
+    void fetchModelRuntimeCatalog()
+      .then((cat) => {
+        const sam = resolveActiveSamFromCatalog(cat.categories)
+        const dino = resolveActiveGlobalDinov2FromCatalog(cat.categories)
+        if (!sam || !dino) {
+          setDiffusionToast({
+            kind: "err",
+            text: "请先在「模型 → 后端模型管理」中启动全局 SAM 与 DINOv2 推理实例",
+          })
+          return
+        }
+        persistSamAnnotationSelection(sam.family, sam.modelId)
+        diffusionSamModelIdRef.current = sam.modelId
+        sam2EncodeModelIdRef.current = sam.modelId
+        diffusionDinov2ModelIdRef.current = dino.modelId
+        setDiffusionAnnotatingActive(true)
+        setDiffusionToast({ kind: "ok", text: "在画布上拖拽种子框，画完后将自动搜索" })
+      })
+      .catch(() => {
+        setDiffusionToast({ kind: "err", text: "无法连接后端，请检查推理实例状态" })
+      })
+  }, [])
+
+  const runDiffusionSearchPipeline = useCallback((seedOverride?: DiffusionSeedBbox) => {
+    const seed = seedOverride ?? diffusionSeedBbox
+    const path = activeImagePath.trim()
+    if (!seed || !path) {
+      setDiffusionToast({ kind: "err", text: "请先在画布上拖拽种子矩形框" })
+      return
+    }
+    if (diffusionBusy) return
+    setDiffusionBusy(true)
+    setDiffusionPhase("searching")
+    setDiffusionCandidates([])
+    void runDiffusionPipeline({
+      imagePath: path,
+      samModelId: diffusionSamModelIdRef.current,
+      dinov2ModelId: diffusionDinov2ModelIdRef.current,
+      inferScale: diffusionInferScale,
+      seedBbox: seed,
+      embedCache: sam2EmbedCacheRef.current,
+      similarityThreshold: diffusionSimilarityThreshold,
+      maxInstances: diffusionMaxInstances,
+      onProgress: (msg) => setDiffusionToast({ kind: "ok", text: msg }),
+    })
+      .then((result) => {
+        sam2EmbedCacheRef.current = result.embedCache
+        setDiffusionCandidates(result.candidates)
+        setDiffusionPhase("preview")
+        const iw = imageNaturalSize.width
+        const ih = imageNaturalSize.height
+        const contourOpts = sam2PolygonContourOptions(diffusionPolygonVertexBias)
+        const ok = result.candidates.filter((c) =>
+          isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts),
+        ).length
+        setDiffusionToast({
+          kind: "ok",
+          text: `找到 ${result.similarityCandidates.length} 个相似区域，${ok} 个可标注；按 ${getPrimaryShortcutLabel("new-annotation")} 全部新建，${getPrimaryShortcutLabel("select-tool")} 退出`,
+        })
+      })
+      .catch((e) => {
+        setDiffusionPhase("seed")
+        const msg = e instanceof Error ? e.message : String(e)
+        setDiffusionToast({ kind: "err", text: `扩散搜索失败：${msg}` })
+      })
+      .finally(() => {
+        setDiffusionBusy(false)
+      })
+  }, [
+    activeImagePath,
+    diffusionBusy,
+    diffusionInferScale,
+    diffusionMaxInstances,
+    diffusionOutputFormat,
+    diffusionPolygonVertexBias,
+    diffusionSeedBbox,
+    diffusionSimilarityThreshold,
+    imageNaturalSize.height,
+    imageNaturalSize.width,
+  ])
+
+  const handleDiffusionPanelOk = useCallback(() => {
+    if (!diffusionAnnotatingActive) {
+      handleDiffusionConfirm()
+    }
+  }, [diffusionAnnotatingActive, handleDiffusionConfirm])
+
+  const handleDiffusionSeedBboxChange = useCallback(
+    (bbox: DiffusionSeedBbox | null) => {
+      setDiffusionSeedBbox(bbox)
+      if (!bbox || diffusionBusy) return
+      if (!diffusionAnnotatingActive || diffusionPhase !== "seed") return
+      runDiffusionSearchPipeline(bbox)
+    },
+    [diffusionAnnotatingActive, diffusionBusy, diffusionPhase, runDiffusionSearchPipeline],
+  )
+
+  const finishDiffusionCommitAndSwitchToSelect = useCallback(() => {
+    diffusionResumeAfterNCommitRef.current = true
+    setDiffusionAnnotatingActive(false)
+    setDiffusionPhase("seed")
+    setDiffusionSeedBbox(null)
+    setDiffusionCandidates([])
+    setDiffusionDialogOpen(false)
+    handleSelectToolClick()
+  }, [handleSelectToolClick])
+
+  const exitDiffusionAnnotating = useCallback(() => {
+    diffusionResumeAfterNCommitRef.current = false
+    setDiffusionAnnotatingActive(false)
+    setDiffusionPhase("seed")
+    setDiffusionSeedBbox(null)
+    setDiffusionCandidates([])
+    setDiffusionToast(null)
+    setDiffusionDialogOpen(false)
+    sam2EmbedCacheRef.current = null
+    handleSelectToolClick()
+  }, [handleSelectToolClick])
+
+  const commitDiffusionCandidates = useCallback(() => {
+    const label = diffusionSelectedLabel.trim()
+    if (!label) {
+      setDiffusionToast({ kind: "err", text: "请选择标签" })
+      return
+    }
+    if (diffusionCandidates.length === 0) {
+      setDiffusionToast({ kind: "err", text: "没有可新建的实例（请重新搜索）" })
+      return
+    }
+    const iw = imageNaturalSize.width
+    const ih = imageNaturalSize.height
+    const contourOpts = sam2PolygonContourOptions(diffusionPolygonVertexBias)
+    let created = 0
+    for (const c of diffusionCandidates) {
+      if (!isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts)) continue
+
+      if (diffusionOutputFormat === "box") {
+        const { x1, y1, x2, y2 } = c.bbox
+        const shape = createShape({
+          imagePath: activeImagePath,
+          imageWidth: iw,
+          imageHeight: ih,
+          shape: {
+            label,
+            score: c.score,
+            points: [
+              [x1, y1],
+              [x2, y2],
+            ],
+            group_id: null,
+            description: null,
+            difficult: false,
+            shape_type: "rectangle",
+            flags: null,
+            attributes: {},
+            kie_linking: [],
+          },
+        })
+        handleEngineShapeCreated({ shapeId: shape.shapeId })
+        created += 1
+        continue
+      }
+
+      const d = c.rle!
+
+      if (diffusionOutputFormat === "mask") {
+        const shape = createShape({
+          imagePath: activeImagePath,
+          imageWidth: iw,
+          imageHeight: ih,
+          shape: {
+            label,
+            score: c.score,
+            points: [],
+            group_id: null,
+            description: null,
+            difficult: false,
+            shape_type: "mask",
+            flags: null,
+            attributes: writeMaskRleAttributes({}, { ...d, brushSize: 1 }),
+            kie_linking: [],
+          },
+        })
+        handleEngineShapeCreated({ shapeId: shape.shapeId })
+        created += 1
+        continue
+      }
+
+      if (diffusionOutputFormat === "polygon") {
+        const ring = extractDiffusionPolygonRing(c, iw, ih, contourOpts)
+        if (!ring) continue
+        const shape = createShape({
+          imagePath: activeImagePath,
+          imageWidth: iw,
+          imageHeight: ih,
+          shape: {
+            label,
+            score: c.score,
+            points: ring,
+            group_id: null,
+            description: null,
+            difficult: false,
+            shape_type: "polygon",
+            flags: null,
+            attributes: {},
+            kie_linking: [],
+          },
+        })
+        handleEngineShapeCreated({ shapeId: shape.shapeId })
+        created += 1
+        continue
+      }
+
+    }
+    if (created === 0) {
+      setDiffusionToast({ kind: "err", text: "未能生成有效形状，可改用 Bbox 输出或调低相似度阈值" })
+      return
+    }
+    const newAnnKey = getPrimaryShortcutLabel("new-annotation")
+    setDiffusionToast({
+      kind: "ok",
+      text: `已新建 ${created} 个标注；按 ${newAnnKey} 可继续用当前配置新建`,
+    })
+    finishDiffusionCommitAndSwitchToSelect()
+  }, [
+    activeImagePath,
+    createShape,
+    diffusionCandidates,
+    diffusionOutputFormat,
+    diffusionPolygonVertexBias,
+    diffusionSelectedLabel,
+    finishDiffusionCommitAndSwitchToSelect,
+    handleEngineShapeCreated,
+    imageNaturalSize.height,
+    imageNaturalSize.width,
+  ])
+
   const handleSam2EmbeddingsCached = useCallback((cache: Sam2EmbedCache) => {
     sam2EmbedCacheRef.current = cache
     if (isSamCvatsFeatureLayout(cache.response.feature_layout)) {
@@ -765,6 +1119,26 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     getSam2AiToolbarEnabledSnapshot,
     getSam2AiToolbarEnabledSnapshot,
   )
+  const diffusionAiToolbarEnabled = useSyncExternalStore(
+    diffusionAiToolbarPrefs.subscribe,
+    () => diffusionAiToolbarPrefs.getEnabled(),
+    () => false,
+  )
+
+  const tryResumeDiffusionAfterCommit = useCallback((): boolean => {
+    if (!diffusionAiToolbarEnabled) return false
+    if (diffusionAnnotatingActive) return false
+    if (!diffusionResumeAfterNCommitRef.current) return false
+    diffusionResumeAfterNCommitRef.current = false
+    setDiffusionSeedBbox(null)
+    setDiffusionCandidates([])
+    setDiffusionPhase("seed")
+    setDiffusionSessionNonce((n) => n + 1)
+    setDiffusionAnnotatingActive(true)
+    setDiffusionToast({ kind: "ok", text: "在画布上拖拽种子框，画完后将自动搜索" })
+    return true
+  }, [diffusionAiToolbarEnabled, diffusionAnnotatingActive])
+
   useEffect(() => {
     if (!sam2AiToolbarEnabled) {
       setSam2DialogOpen(false)
@@ -774,6 +1148,17 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       sam2ResumeAfterNCommitRef.current = false
     }
   }, [sam2AiToolbarEnabled])
+  useEffect(() => {
+    if (!diffusionAiToolbarEnabled) {
+      diffusionResumeAfterNCommitRef.current = false
+      setDiffusionDialogOpen(false)
+      setDiffusionAnnotatingActive(false)
+      setDiffusionPhase("seed")
+      setDiffusionSeedBbox(null)
+      setDiffusionCandidates([])
+      setDiffusionToast(null)
+    }
+  }, [diffusionAiToolbarEnabled])
   useEffect(() => {
     if (!sam2Toast) return
     const t = window.setTimeout(() => setSam2Toast(null), 6000)
@@ -977,6 +1362,10 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   }, [])
 
   const dismissAiToolUiFromShortcut = useCallback(() => {
+    if (diffusionAnnotatingActiveRef.current) {
+      exitDiffusionAnnotating()
+      return
+    }
     if (sam2AnnotatingActiveRef.current) {
       sam2ResumeAfterNCommitRef.current = true
     }
@@ -984,7 +1373,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setSam2AnnotatingActive(false)
     setSam2Toast(null)
     setSam2DraftRle(null)
-  }, [])
+  }, [exitDiffusionAnnotating])
 
   const tryResumeSam2AfterCommit = useCallback((): boolean => {
     if (!sam2AiToolbarEnabled) return false
@@ -998,6 +1387,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   }, [sam2AiToolbarEnabled, sam2AnnotatingActive])
 
   const pendingRectColor = labelColorMap.get((maskDrawingSessionLabel ?? "").trim() || rectPendingLabel) ?? "#f59e0b"
+  const diffusionLabelColor = labelColorMap.get(diffusionSelectedLabel.trim()) ?? "#f59e0b"
 
   const shouldSkipSam2Encode = useCallback(
     () =>
@@ -1042,6 +1432,75 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     sam2Auto: sam2AutoParams,
     sam2InferScale,
   })
+
+  const diffusionTool = useDiffusionCanvasTool({
+    diffusionAnnotatingActive,
+    diffusionPhase,
+    activeImagePath,
+    imageReady: !!activeImagePath.trim() && !isImageLoading && !imageLoadError && !!imageObjectUrl,
+    imageGeometry,
+    stageRef,
+    getCurrentImageGeometry,
+    stageToImageStrictWithGeometry,
+    imageToStageForBbox: imageToStageBase,
+    labelColor: diffusionLabelColor,
+    sessionNonce: diffusionSessionNonce,
+    committedSeedBbox: diffusionSeedBbox,
+    onCommittedSeedBboxChange: handleDiffusionSeedBboxChange,
+  })
+
+  /** SAM2 二次精化后的候选预览（非 DINO 粗框）；与提交逻辑共用 isDiffusionCandidateAnnotatable */
+  const diffusionPreviewShapes = useMemo(() => {
+    const masks: DiffusionPreviewMaskRle[] = []
+    const polygons: DiffusionPreviewPolygon[] = []
+    const rectangles: DiffusionPreviewRectangle[] = []
+    if (diffusionPhase !== "preview") {
+      return { masks, polygons, rectangles }
+    }
+    const label = diffusionSelectedLabel.trim()
+    const color = diffusionLabelColor
+    const iw = imageNaturalSize.width
+    const ih = imageNaturalSize.height
+    if (!label || iw < 1 || ih < 1) {
+      return { masks, polygons, rectangles }
+    }
+    const contourOpts = sam2PolygonContourOptions(diffusionPolygonVertexBias)
+    for (const c of diffusionCandidates) {
+      if (!isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts)) continue
+
+      if (diffusionOutputFormat === "box") {
+        const { x1, y1, x2, y2 } = c.bbox
+        rectangles.push({ id: c.id, label, color, x1, y1, x2, y2 })
+        continue
+      }
+
+      if (diffusionOutputFormat === "mask") {
+        masks.push({
+          id: c.id,
+          counts: c.rle!.counts,
+          w: iw,
+          h: ih,
+          label,
+          color,
+        })
+        continue
+      }
+
+      const ring = extractDiffusionPolygonRing(c, iw, ih, contourOpts)
+      if (!ring) continue
+      polygons.push({ id: c.id, label, color, imageRing: ring })
+    }
+    return { masks, polygons, rectangles }
+  }, [
+    diffusionCandidates,
+    diffusionLabelColor,
+    diffusionOutputFormat,
+    diffusionPhase,
+    diffusionPolygonVertexBias,
+    diffusionSelectedLabel,
+    imageNaturalSize.height,
+    imageNaturalSize.width,
+  ])
 
   const sam2DraftMaskForRender = useMemo((): Sam2DraftMaskRle | null => {
     if (!sam2DraftRle || !sam2SelectedLabel.trim()) return null
@@ -1090,11 +1549,21 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       dragVertexLive,
       dragLiveMaskRle,
       sam2DraftMaskRle: sam2DraftMaskForRender,
+      diffusionPreviewMasks: diffusionPreviewShapes.masks,
+      diffusionPreviewPolygons: diffusionPreviewShapes.polygons,
+      diffusionPreviewRectangles: diffusionPreviewShapes.rectangles,
     })
 
   const sam2ImageReadyForEncode =
     !!activeImagePath.trim() && !isImageLoading && !imageLoadError && !!imageObjectUrl
   const sam2BlockPan = sam2AnnotatingActive && sam2ImageReadyForEncode
+  const diffusionBlockPan =
+    diffusionAnnotatingActive &&
+    diffusionPhase === "seed" &&
+    !!activeImagePath.trim() &&
+    !isImageLoading &&
+    !imageLoadError &&
+    !!imageObjectUrl
 
   const {
     canPanAndZoom,
@@ -1143,7 +1612,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     onSelectionChanged: setSelectedShapeId,
     onHoveredShapeChanged: setHoveredShapeId,
     onViewportChanged: handleEngineViewportChanged,
-    blockViewPanAndWheel: sam2BlockPan,
+    blockViewPanAndWheel: sam2BlockPan || diffusionBlockPan,
   })
 
   const { handleDeleteCurrentAnnotation, handleDownloadCurrentImage, handleDeleteCurrentImage } = useTaskFileActions({
@@ -1207,6 +1676,10 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     cancelSam2Round,
     commitSam2DraftAndNew,
     tryResumeSam2AfterCommit,
+    diffusionAnnotatingActive,
+    diffusionPreviewActive: diffusionPhase === "preview" && diffusionCandidates.length > 0,
+    commitDiffusionCandidates,
+    tryResumeDiffusionAfterCommit,
   })
 
   const dragSessionUpdateShapePoints = useCallback(
@@ -1357,8 +1830,18 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     onSam2OverlayContextMenu: sam2Tool.handleSam2OverlayContextMenu,
     onSam2OverlayMouseMove: sam2Tool.handleSam2OverlayMouseMove,
     onSam2OverlayMouseLeave: sam2Tool.handleSam2OverlayMouseLeave,
-    sam2Toast,
-    onSam2ToastDismiss: () => setSam2Toast(null),
+    sam2Toast: diffusionAnnotatingActive ? diffusionToast : sam2Toast,
+    onSam2ToastDismiss: () => {
+      setDiffusionToast(null)
+      setSam2Toast(null)
+    },
+    diffusionOverlayActive: diffusionTool.diffusionOverlayActive,
+    diffusionSeedRect: diffusionTool.diffusionSeedRect,
+    diffusionSeedRectCommitted: diffusionTool.diffusionSeedRectCommitted,
+    diffusionSeedColor: diffusionTool.diffusionSeedColor,
+    onDiffusionOverlayClick: diffusionTool.handleDiffusionOverlayClick,
+    onDiffusionOverlayMouseMove: diffusionTool.handleDiffusionOverlayMouseMove,
+    onDiffusionOverlayMouseLeave: diffusionTool.handleDiffusionOverlayMouseLeave,
   })
 
   const handleSelectToolFromPalette = useCallback(() => {
@@ -1421,6 +1904,30 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       onSam2InferScaleChange: setSam2InferScale,
       activeSamRuntime,
       onSam2Confirm: handleSam2Confirm,
+      diffusionDialogOpen,
+      onDiffusionDialogOpenChange: setDiffusionDialogOpen,
+      diffusionSelectedLabel,
+      onDiffusionSelectedLabelChange: setDiffusionSelectedLabel,
+      diffusionInferScale,
+      onDiffusionInferScaleChange: setDiffusionInferScale,
+      diffusionSeedPreview,
+      onDiffusionSeedPreviewChange: setDiffusionSeedPreview,
+      diffusionOutputFormat,
+      onDiffusionOutputFormatChange: setDiffusionOutputFormat,
+      diffusionPolygonVertexBias,
+      onDiffusionPolygonVertexBiasChange: setDiffusionPolygonVertexBias,
+      diffusionSamRunning,
+      diffusionSamRuntimeLabel,
+      diffusionDinov2Running,
+      diffusionDinov2RuntimeLabel,
+      diffusionAnnotatingActive,
+      diffusionPhase,
+      diffusionBusy,
+      diffusionSimilarityThreshold,
+      onDiffusionSimilarityThresholdChange: setDiffusionSimilarityThreshold,
+      diffusionMaxInstances,
+      onDiffusionMaxInstancesChange: setDiffusionMaxInstances,
+      onDiffusionPanelOk: handleDiffusionPanelOk,
     },
   })
 

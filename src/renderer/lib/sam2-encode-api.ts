@@ -56,6 +56,8 @@ export function encodeImageUrlForModel(modelId: string): string {
 export type FetchSamImageEmbeddingsOptions = {
   /** 相对原图的编码边长倍率，后端将等比缩小后再跑 encoder；默认 1 */
   inferScale?: number
+  /** 可选 runtime 槽位；默认使用全局 ``sam2`` / ``mobile_sam`` 主槽。 */
+  runtimeSlot?: string
 }
 
 /** @deprecated 使用 fetchSamImageEmbeddings */
@@ -66,7 +68,11 @@ export async function fetchSamImageEmbeddings(
   source: string,
   options?: FetchSamImageEmbeddingsOptions,
 ): Promise<Sam2EncodeImageResponse> {
-  const url = encodeImageUrlForModel(modelId)
+  let url = encodeImageUrlForModel(modelId)
+  const rs = options?.runtimeSlot?.trim()
+  if (rs) {
+    url += `${url.includes("?") ? "&" : "?"}runtime_slot=${encodeURIComponent(rs)}`
+  }
   const inferScale = options?.inferScale
   const payload: Record<string, unknown> = { source }
   if (inferScale !== undefined && Number.isFinite(inferScale)) {

@@ -222,6 +222,23 @@ export type ProjectTaskCanvasSectionProps = {
   onSam2OverlayMouseLeave: MouseEventHandler<HTMLDivElement>
   sam2Toast: { kind: "ok" | "err"; text: string } | null
   onSam2ToastDismiss: () => void
+  diffusionOverlayActive: boolean
+  diffusionSeedRect: {
+    left: number
+    top: number
+    width: number
+    height: number
+    clippedLeft: boolean
+    clippedTop: boolean
+    clippedRight: boolean
+    clippedBottom: boolean
+  } | null
+  /** 已松手确认的种子框（相对拖拽中的虚线框） */
+  diffusionSeedRectCommitted: boolean
+  diffusionSeedColor: string
+  onDiffusionOverlayClick: MouseEventHandler<HTMLDivElement>
+  onDiffusionOverlayMouseMove: MouseEventHandler<HTMLDivElement>
+  onDiffusionOverlayMouseLeave: MouseEventHandler<HTMLDivElement>
 }
 
 export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
@@ -250,7 +267,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
             <div
               className="flex h-full w-full items-center justify-center overflow-hidden"
               style={{
-                cursor: props.sam2OverlayActive
+                cursor: props.sam2OverlayActive || props.diffusionOverlayActive
                   ? "crosshair"
                   : props.canPanAndZoom
                   ? props.isPanning
@@ -1046,6 +1063,43 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                                   : props.onHandleRectDrawClick
                       }
                       onDoubleClick={props.canDrawMask ? undefined : props.canDrawPolygon ? props.onHandlePolygonDrawDoubleClick : undefined}
+                    />
+                  ) : null}
+                  {props.diffusionOverlayActive ? (
+                    <div
+                      className="absolute inset-0 z-[21] cursor-crosshair"
+                      role="presentation"
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={props.onDiffusionOverlayClick}
+                      onMouseMove={props.onDiffusionOverlayMouseMove}
+                      onMouseLeave={props.onDiffusionOverlayMouseLeave}
+                    />
+                  ) : null}
+                  {props.diffusionSeedRect ? (
+                    <div
+                      className={
+                        props.diffusionSeedRectCommitted
+                          ? "pointer-events-none absolute z-[26] box-border border-solid"
+                          : "pointer-events-none absolute z-[26] box-border border-dashed"
+                      }
+                      style={{
+                        left: props.diffusionSeedRect.left,
+                        top: props.diffusionSeedRect.top,
+                        width: props.diffusionSeedRect.width,
+                        height: props.diffusionSeedRect.height,
+                        borderColor: props.diffusionSeedColor,
+                        borderLeftWidth: props.diffusionSeedRect.clippedLeft ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
+                        borderTopWidth: props.diffusionSeedRect.clippedTop ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
+                        borderRightWidth: props.diffusionSeedRect.clippedRight ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
+                        borderBottomWidth: props.diffusionSeedRect.clippedBottom ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
+                        backgroundColor: props.diffusionSeedRectCommitted
+                          ? `${props.diffusionSeedColor}28`
+                          : `${props.diffusionSeedColor}33`,
+                        boxShadow: props.diffusionSeedRectCommitted
+                          ? `0 0 0 2px rgba(255,255,255,0.92), 0 0 0 6px ${props.diffusionSeedColor}, 0 0 14px 2px ${props.diffusionSeedColor}99`
+                          : `0 0 0 1px rgba(255,255,255,0.75), 0 0 0 3px ${props.diffusionSeedColor}cc`,
+                      }}
+                      aria-hidden
                     />
                   ) : null}
                   {props.sam2OverlayActive ? (

@@ -1,5 +1,10 @@
+import { BackendGlobalRuntimePanel } from "@/components/backend-global-runtime-panel"
 import { cn } from "@/lib/utils"
 import { Server } from "lucide-react"
+
+const PAGE_TITLE = "\u540e\u7aef\u6a21\u578b\u7ba1\u7406"
+const PAGE_DESC =
+  "\u5168\u5c40 SAM \u4e0e DINOv2 \u63a8\u7406\u5b9e\u4f8b\uff1b\u5404\u81ea\u52a8\u6807\u6ce8\u5de5\u5177\u5171\u7528\u6b64\u5904\u5df2\u542f\u52a8\u7684\u6a21\u578b\u3002"
 
 export function GpuSwitch({
   id,
@@ -48,15 +53,17 @@ export function GpuSwitch({
 
 export default function ModelsBackendPage() {
   return (
-    <div className="mx-auto w-full max-w-4xl space-y-6 px-6 py-8 pb-12">
+    <div className="mx-auto w-full max-w-3xl space-y-8 px-6 py-8 pb-12">
       <div className="flex items-start gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <Server className="h-5 w-5" aria-hidden />
         </div>
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">后端模型管理</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{PAGE_TITLE}</h1>
+          <p className="mt-1 max-w-xl text-sm text-muted-foreground">{PAGE_DESC}</p>
         </div>
       </div>
+      <BackendGlobalRuntimePanel />
     </div>
   )
 }

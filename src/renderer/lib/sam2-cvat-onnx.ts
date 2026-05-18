@@ -7,6 +7,7 @@ import {
   type Sam2EncodeImageResponse,
   type Sam2TensorPayload,
 } from "@/lib/sam2-encode-api"
+import { decodeBase64ToUint8Array } from "@/lib/base64-binary"
 import { encodeBinaryToRowMajorRle, maskBinaryHasForeground } from "@/lib/mask-raster-rle"
 
 type OrtModule = typeof import("onnxruntime-web")
@@ -96,12 +97,10 @@ function decodeLeRawFloat32Payload(payload: Sam2TensorPayload, ort: OrtModule): 
     throw new Error(`SAM2 CVAT decode: expected float32 le-raw tensor, got ${payload.dtype} ${payload.encoding}`)
   }
   const expectedBytes = numElements(payload.shape) * 4
-  const bin = atob(payload.data_base64)
-  if (bin.length !== expectedBytes) {
-    throw new Error(`SAM2 CVAT decode: base64 length ${bin.length} != expected ${expectedBytes}`)
+  const u8 = decodeBase64ToUint8Array(payload.data_base64)
+  if (u8.byteLength !== expectedBytes) {
+    throw new Error(`SAM2 CVAT decode: base64 decoded length ${u8.byteLength} != expected ${expectedBytes}`)
   }
-  const u8 = new Uint8Array(expectedBytes)
-  for (let i = 0; i < bin.length; i += 1) u8[i] = bin.charCodeAt(i)
   const floats = new Float32Array(u8.buffer, u8.byteOffset, expectedBytes / 4)
   return new ort.Tensor("float32", floats, payload.shape.map((x) => Math.floor(Number(x))))
 }

@@ -76,6 +76,11 @@ type UseTaskShortcutsParams = {
   commitSam2DraftAndNew?: () => void
   /** SAM2：上次用 N 提交并进入选择后，再按 N 可回到 SAM2 标注并沿用面板中的各项设置 */
   tryResumeSam2AfterCommit?: () => boolean
+  /** 扩散式标注：预览阶段按 N 批量提交 */
+  diffusionAnnotatingActive?: boolean
+  diffusionPreviewActive?: boolean
+  commitDiffusionCandidates?: () => void
+  tryResumeDiffusionAfterCommit?: () => boolean
 }
 
 export function useTaskShortcuts({
@@ -106,6 +111,10 @@ export function useTaskShortcuts({
   cancelSam2Round,
   commitSam2DraftAndNew,
   tryResumeSam2AfterCommit,
+  diffusionAnnotatingActive,
+  diffusionPreviewActive,
+  commitDiffusionCandidates,
+  tryResumeDiffusionAfterCommit,
 }: UseTaskShortcutsParams) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -146,9 +155,18 @@ export function useTaskShortcuts({
 
       const newAnnBinding = getEffectiveShortcutBinding("new-annotation")
       if (bindingMatchesEvent(newAnnBinding, event)) {
+        if (diffusionAnnotatingActive && diffusionPreviewActive && commitDiffusionCandidates) {
+          consumeShortcutEvent(event)
+          commitDiffusionCandidates()
+          return
+        }
         if (sam2AnnotatingActive && commitSam2DraftAndNew) {
           consumeShortcutEvent(event)
           commitSam2DraftAndNew()
+          return
+        }
+        if (tryResumeDiffusionAfterCommit?.()) {
+          consumeShortcutEvent(event)
           return
         }
         if (tryResumeSam2AfterCommit?.()) {
@@ -214,15 +232,19 @@ export function useTaskShortcuts({
     sam2AnnotatingActive,
     sam2HasCancelableRound,
     cancelSam2Round,
-    clearMaskTransientState,
-    clearPolygonDraft,
     commitSam2DraftAndNew,
     tryResumeSam2AfterCommit,
+    diffusionAnnotatingActive,
+    diffusionPreviewActive,
+    commitDiffusionCandidates,
+    tryResumeDiffusionAfterCommit,
     canGoNextImage,
     canGoPrevImage,
     canRedo,
     canRepeatNewAnnotation,
     canUndo,
+    clearMaskTransientState,
+    clearPolygonDraft,
     deleteShape,
     goNextImage,
     goPrevImage,

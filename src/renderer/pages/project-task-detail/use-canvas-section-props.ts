@@ -96,6 +96,13 @@ type UseCanvasSectionPropsParams = {
   onSam2OverlayMouseLeave: CanvasSectionBaseProps["onSam2OverlayMouseLeave"]
   sam2Toast: CanvasSectionBaseProps["sam2Toast"]
   onSam2ToastDismiss: CanvasSectionBaseProps["onSam2ToastDismiss"]
+  diffusionOverlayActive: CanvasSectionBaseProps["diffusionOverlayActive"]
+  diffusionSeedRect: CanvasSectionBaseProps["diffusionSeedRect"]
+  diffusionSeedRectCommitted: CanvasSectionBaseProps["diffusionSeedRectCommitted"]
+  diffusionSeedColor: CanvasSectionBaseProps["diffusionSeedColor"]
+  onDiffusionOverlayClick: CanvasSectionBaseProps["onDiffusionOverlayClick"]
+  onDiffusionOverlayMouseMove: CanvasSectionBaseProps["onDiffusionOverlayMouseMove"]
+  onDiffusionOverlayMouseLeave: CanvasSectionBaseProps["onDiffusionOverlayMouseLeave"]
 }
 
 export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
@@ -192,6 +199,13 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     onSam2OverlayMouseLeave,
     sam2Toast,
     onSam2ToastDismiss,
+    diffusionOverlayActive,
+    diffusionSeedRect,
+    diffusionSeedRectCommitted,
+    diffusionSeedColor,
+    onDiffusionOverlayClick,
+    onDiffusionOverlayMouseMove,
+    onDiffusionOverlayMouseLeave,
   } = params
 
   const canvasSectionHandlerProps = useMemo(
@@ -247,6 +261,9 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       onSam2OverlayContextMenu,
       onSam2OverlayMouseMove,
       onSam2OverlayMouseLeave,
+      onDiffusionOverlayClick,
+      onDiffusionOverlayMouseMove,
+      onDiffusionOverlayMouseLeave,
       sam2Toast,
       onSam2ToastDismiss,
     }),
@@ -301,6 +318,9 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       onSam2OverlayContextMenu,
       onSam2OverlayMouseMove,
       onSam2OverlayMouseLeave,
+      onDiffusionOverlayClick,
+      onDiffusionOverlayMouseMove,
+      onDiffusionOverlayMouseLeave,
       sam2Toast,
       onSam2ToastDismiss,
     ],
@@ -356,6 +376,10 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       sam2PreviewRect,
       sam2AutoPreviewRect,
       sam2Toast,
+      diffusionOverlayActive,
+      diffusionSeedRect,
+      diffusionSeedRectCommitted,
+      diffusionSeedColor,
     }),
     [
       canDrawBox3d,
@@ -406,6 +430,10 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       sam2PreviewRect,
       sam2StagePoints,
       sam2Toast,
+      diffusionOverlayActive,
+      diffusionSeedRect,
+      diffusionSeedRectCommitted,
+      diffusionSeedColor,
     ],
   )
 

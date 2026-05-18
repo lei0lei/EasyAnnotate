@@ -16,6 +16,9 @@ import {
   type DragLiveMaskRleOverride,
   type DragLivePointsOverride,
   type DragVertexLiveOverride,
+  type DiffusionPreviewMaskRle,
+  type DiffusionPreviewPolygon,
+  type DiffusionPreviewRectangle,
   type Sam2DraftMaskRle,
 } from "@/pages/project-task-detail/rendered-shapes"
 import type { ProjectTag } from "@/lib/projects-api"
@@ -41,6 +44,9 @@ type UseTaskRenderModelParams = {
   dragLiveMaskRle: DragLiveMaskRleOverride | null
   /** SAM2 当前轮次预览（未按 N 写入文档） */
   sam2DraftMaskRle: Sam2DraftMaskRle | null
+  diffusionPreviewMasks: DiffusionPreviewMaskRle[]
+  diffusionPreviewPolygons: DiffusionPreviewPolygon[]
+  diffusionPreviewRectangles: DiffusionPreviewRectangle[]
 }
 
 export function useTaskRenderModel(params: UseTaskRenderModelParams) {
@@ -59,6 +65,9 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     dragVertexLive,
     dragLiveMaskRle,
     sam2DraftMaskRle,
+    diffusionPreviewMasks,
+    diffusionPreviewPolygons,
+    diffusionPreviewRectangles,
   } = params
 
   const renderedRectangles = useMemo(() => {
@@ -71,8 +80,18 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       stageWidth: imageGeometry?.stageWidth ?? 0,
       stageHeight: imageGeometry?.stageHeight ?? 0,
       dragLivePoints,
+      diffusionPreviewRectangles,
     })
-  }, [annotationDoc, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
+  }, [
+    annotationDoc,
+    diffusionPreviewRectangles,
+    dragLivePoints,
+    hiddenClassLabels,
+    hiddenShapeIndexes,
+    imageGeometry,
+    imageToStageBase,
+    labelColorMap,
+  ])
 
   const renderedRotationRects = useMemo(() => {
     return buildRenderedRotationRects({
@@ -94,8 +113,19 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       imageToStage: (point) => imageToStageBase(point),
       dragLivePoints,
       dragVertexLive,
+      diffusionPreviewPolygons,
     })
-  }, [annotationDoc, dragLivePoints, dragVertexLive, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap])
+  }, [
+    annotationDoc,
+    diffusionPreviewPolygons,
+    dragLivePoints,
+    dragVertexLive,
+    hiddenClassLabels,
+    hiddenShapeIndexes,
+    imageGeometry,
+    imageToStageBase,
+    labelColorMap,
+  ])
 
   const renderedMasks = useMemo(() => {
     return buildRenderedMasks({
@@ -108,8 +138,20 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       dragLiveMaskRle,
       dragLivePoints,
       sam2DraftMaskRle,
+      diffusionPreviewMasks,
     })
-  }, [annotationDoc, dragLiveMaskRle, dragLivePoints, hiddenClassLabels, hiddenShapeIndexes, imageGeometry, imageToStageBase, labelColorMap, sam2DraftMaskRle])
+  }, [
+    annotationDoc,
+    diffusionPreviewMasks,
+    dragLiveMaskRle,
+    dragLivePoints,
+    hiddenClassLabels,
+    hiddenShapeIndexes,
+    imageGeometry,
+    imageToStageBase,
+    labelColorMap,
+    sam2DraftMaskRle,
+  ])
 
   const renderedCuboids2d = useMemo(() => {
     return buildRenderedCuboids2d({

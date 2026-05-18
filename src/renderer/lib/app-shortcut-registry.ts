@@ -1,4 +1,5 @@
 import { loadAppConfig } from "@/lib/app-config-storage"
+import { splitBindingAlternatives } from "@/lib/keyboard-shortcut-match"
 
 /** 应用级快捷键：设置页与标注页等处共用 id / 默认键位 */
 export const APP_SHORTCUT_ROWS: { id: string; label: string; defaultBinding: string }[] = [
@@ -21,6 +22,12 @@ export function getEffectiveShortcutBinding(id: string): string {
   const custom = loadAppConfig().shortcuts[id]
   if (typeof custom === "string" && custom.trim()) return custom.trim()
   return def
+}
+
+/** 设置页展示与面板提示：取绑定串的第一种按法（如 "N"、"Escape"） */
+export function getPrimaryShortcutLabel(id: string): string {
+  const alts = splitBindingAlternatives(getEffectiveShortcutBinding(id))
+  return alts[0] ?? getDefaultShortcutBinding(id)
 }
 
 /** 由设置页 draft 生成写入 app-config 的 shortcuts 补丁（与默认相同则空串） */

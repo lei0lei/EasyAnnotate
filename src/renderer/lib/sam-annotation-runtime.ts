@@ -1,7 +1,7 @@
 /** SAM 标注工具：三族互斥 runtime（同时仅启动一个）与任务页解析。 */
 
 import { formatBackendModelDisplayName, stopModelRuntime, type RuntimeCategoryRow } from "@/lib/model-runtime-api"
-import { RUNTIME_CATEGORY_ORDER_ON_SAM2_ANNOTATION_PAGE } from "@/lib/model-runtime-ui-visibility"
+import { GLOBAL_SAM_RUNTIME_CATEGORY_IDS } from "@/lib/model-runtime-ui-visibility"
 import { SAM_ANNOTATION_FAMILY_LABELS } from "@/lib/sam-annotation-prefs"
 import {
   defaultModelIdForFamily,
@@ -12,7 +12,7 @@ import {
   setSamAnnotationModelId,
 } from "@/lib/sam-annotation-prefs"
 
-export const SAM_ANNOTATION_CATEGORY_IDS = RUNTIME_CATEGORY_ORDER_ON_SAM2_ANNOTATION_PAGE
+export const SAM_ANNOTATION_CATEGORY_IDS = GLOBAL_SAM_RUNTIME_CATEGORY_IDS
 
 export type SamAnnotationCategoryId = (typeof SAM_ANNOTATION_CATEGORY_IDS)[number]
 

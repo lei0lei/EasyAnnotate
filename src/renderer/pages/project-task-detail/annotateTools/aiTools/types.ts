@@ -9,6 +9,9 @@ export type Sam2PromptMode = "point" | "bbox"
 /** 解码输出：多边形轮廓 / 分割掩码 / 边界框 */
 export type Sam2AutoAnnotationFormat = "polygon" | "mask" | "box"
 
+/** 扩散工具：SAM 种子阶段在画布上的预览形态（仅界面；后续接解码管线） */
+export type DiffusionSeedSamPreviewMode = "bbox" | "mask" | "bbox_and_mask"
+
 export type ActiveSamRuntimeInfo = {
   /** 人类可读：族 · 权重 */
   label: string
@@ -51,4 +54,33 @@ export type TaskAiToolPaletteProps = {
   activeSamRuntime: ActiveSamRuntimeInfo | null
   /** SAM 面板点 OK：进入标注并刷新当前 model_id */
   onSam2Confirm: () => void
+
+  /** 扩散式标注（任务栏启用时显示） */
+  diffusionDialogOpen: boolean
+  onDiffusionDialogOpenChange: (open: boolean) => void
+  diffusionSelectedLabel: string
+  onDiffusionSelectedLabelChange: (label: string) => void
+  diffusionInferScale: number
+  onDiffusionInferScaleChange: (value: number) => void
+  diffusionSeedPreview: DiffusionSeedSamPreviewMode
+  onDiffusionSeedPreviewChange: (mode: DiffusionSeedSamPreviewMode) => void
+  diffusionOutputFormat: Sam2AutoAnnotationFormat
+  onDiffusionOutputFormatChange: (format: Sam2AutoAnnotationFormat) => void
+  diffusionPolygonVertexBias: number
+  onDiffusionPolygonVertexBiasChange: (value: number) => void
+  /** 扩散槽 SAM + DINOv2 是否在配置页已启动（由任务页轮询 catalog） */
+  diffusionSamRunning: boolean
+  diffusionSamRuntimeLabel: string
+  diffusionDinov2Running: boolean
+  diffusionDinov2RuntimeLabel: string
+  /** 已进入扩散标注会话 */
+  diffusionAnnotatingActive: boolean
+  diffusionPhase: "seed" | "searching" | "preview"
+  diffusionBusy: boolean
+  diffusionSimilarityThreshold: number
+  onDiffusionSimilarityThresholdChange: (value: number) => void
+  diffusionMaxInstances: number
+  onDiffusionMaxInstancesChange: (value: number) => void
+  /** 面板 OK：未开始时进入画框；已画种子框后执行搜索与 SAM 精化 */
+  onDiffusionPanelOk: () => void
 }
