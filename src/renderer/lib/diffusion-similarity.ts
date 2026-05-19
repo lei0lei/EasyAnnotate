@@ -111,6 +111,108 @@ function patchIndexFromFullXY(
   return { gy, gx }
 }
 
+function isLocalPeak(scores: Float32Array, gh: number, gw: number, gy: number, gx: number): boolean {
+  const center = scores[gy * gw + gx]!
+  for (let yy = Math.max(0, gy - 1); yy <= Math.min(gh - 1, gy + 1); yy += 1) {
+    for (let xx = Math.max(0, gx - 1); xx <= Math.min(gw - 1, gx + 1); xx += 1) {
+      if (yy === gy && xx === gx) continue
+      if (scores[yy * gw + xx]! > center) return false
+    }
+  }
+  return true
+}
+
+function adaptiveBoxFromPeak(
+  scores: Float32Array,
+  gh: number,
+  gw: number,
+  peakGy: number,
+  peakGx: number,
+  peakScore: number,
+  similarityThreshold: number,
+  patchPx: number,
+  meta: Dinov2LetterboxMeta,
+  ow: number,
+  oh: number,
+  seedW: number,
+  seedH: number,
+): [number, number, number, number] | null {
+  const idx0 = peakGy * gw + peakGx
+  if (idx0 < 0 || idx0 >= scores.length) return null
+  const connThr = Math.max(similarityThreshold, peakScore * 0.88)
+  const visited = new Uint8Array(gh * gw)
+  const q: number[] = [idx0]
+  visited[idx0] = 1
+  let qHead = 0
+  let minGx = peakGx
+  let maxGx = peakGx
+  let minGy = peakGy
+  let maxGy = peakGy
+  let region = 0
+  const maxRegion = Math.max(9, Math.floor(gh * gw * 0.1))
+  const maxRadius = Math.max(2, Math.ceil(Math.max(seedW, seedH) * meta.scale / patchPx * 1.25))
+
+  while (qHead < q.length) {
+    const idx = q[qHead++]!
+    const gy = Math.floor(idx / gw)
+    const gx = idx % gw
+    const score = scores[idx]!
+    if (score < connThr) continue
+    if (Math.abs(gy - peakGy) > maxRadius || Math.abs(gx - peakGx) > maxRadius) continue
+    region += 1
+    if (region > maxRegion) break
+    if (gx < minGx) minGx = gx
+    if (gx > maxGx) maxGx = gx
+    if (gy < minGy) minGy = gy
+    if (gy > maxGy) maxGy = gy
+
+    for (let yy = Math.max(0, gy - 1); yy <= Math.min(gh - 1, gy + 1); yy += 1) {
+      for (let xx = Math.max(0, gx - 1); xx <= Math.min(gw - 1, gx + 1); xx += 1) {
+        const nIdx = yy * gw + xx
+        if (visited[nIdx]) continue
+        visited[nIdx] = 1
+        q.push(nIdx)
+      }
+    }
+  }
+
+  if (region <= 0) return null
+  const patchPad = 0.2
+  const lx1 = (minGx - patchPad) * patchPx
+  const ly1 = (minGy - patchPad) * patchPx
+  const lx2 = (maxGx + 1 + patchPad) * patchPx
+  const ly2 = (maxGy + 1 + patchPad) * patchPx
+  let x1 = (lx1 - meta.pad_x) / meta.scale
+  let y1 = (ly1 - meta.pad_y) / meta.scale
+  let x2 = (lx2 - meta.pad_x) / meta.scale
+  let y2 = (ly2 - meta.pad_y) / meta.scale
+
+  x1 = Math.max(0, Math.min(ow - 1, x1))
+  y1 = Math.max(0, Math.min(oh - 1, y1))
+  x2 = Math.max(0, Math.min(ow - 1, x2))
+  y2 = Math.max(0, Math.min(oh - 1, y2))
+  if (x2 < x1) [x1, x2] = [x2, x1]
+  if (y2 < y1) [y1, y2] = [y2, y1]
+
+  const cx = (x1 + x2) * 0.5
+  const cy = (y1 + y2) * 0.5
+  const w = Math.max(2, x2 - x1)
+  const h = Math.max(2, y2 - y1)
+  const minW = Math.max(4, seedW * 0.6)
+  const minH = Math.max(4, seedH * 0.6)
+  const maxW = Math.max(minW, seedW * 2.2)
+  const maxH = Math.max(minH, seedH * 2.2)
+  const cw = Math.max(minW, Math.min(maxW, w))
+  const ch = Math.max(minH, Math.min(maxH, h))
+
+  return [
+    Math.max(0, cx - cw * 0.5),
+    Math.max(0, cy - ch * 0.5),
+    Math.min(ow - 1, cx + cw * 0.5),
+    Math.min(oh - 1, cy + ch * 0.5),
+  ]
+}
+
 /** 在已解码的 patch 特征上做全图相似搜索，返回候选 bbox 列表。 */
 export function searchSimilarFromPatchFeatures(
   features: Dinov2PatchFeaturesResponse,
@@ -200,7 +302,14 @@ export function searchSimilarFromPatchFeatures(
   }
 
   const seedHit = patchIndexFromFullXY((x1 + x2) * 0.5, (y1 + y2) * 0.5, meta, gh, gw)
-  if (seedHit) scores[seedHit.gy * gw + seedHit.gx] = -1
+  if (seedHit) {
+    // Suppress a small neighborhood around the seed center to reduce "self-hit" duplicates.
+    for (let yy = Math.max(0, seedHit.gy - 1); yy <= Math.min(gh - 1, seedHit.gy + 1); yy += 1) {
+      for (let xx = Math.max(0, seedHit.gx - 1); xx <= Math.min(gw - 1, seedHit.gx + 1); xx += 1) {
+        scores[yy * gw + xx] = -1
+      }
+    }
+  }
 
   const similarityThreshold = Math.max(0, Math.min(1, options.similarityThreshold ?? 0.45))
   const maxInstances = Math.max(1, Math.min(32, options.maxInstances ?? 32))
@@ -212,7 +321,16 @@ export function searchSimilarFromPatchFeatures(
   const patchPx = meta.img_size / Math.max(gh, 1)
   const minDistPatches = Math.max(1, (minPeakDistance * Math.max(bw, bh)) / patchPx * meta.scale)
 
-  const order = Array.from({ length: gh * gw }, (_, i) => i).sort((a, b) => scores[b]! - scores[a]!)
+  const localPeakIdxs: number[] = []
+  for (let gy = 0; gy < gh; gy += 1) {
+    for (let gx = 0; gx < gw; gx += 1) {
+      const idx = gy * gw + gx
+      if (scores[idx]! < similarityThreshold) continue
+      if (!isLocalPeak(scores, gh, gw, gy, gx)) continue
+      localPeakIdxs.push(idx)
+    }
+  }
+  const order = localPeakIdxs.sort((a, b) => scores[b]! - scores[a]!)
   const peaks: { gy: number; gx: number; score: number }[] = []
   for (const idx of order) {
     const score = scores[idx]!
@@ -235,12 +353,29 @@ export function searchSimilarFromPatchFeatures(
     const cyL = (gy + 0.5) * patchPx
     const cx = (cxL - meta.pad_x) / meta.scale
     const cy = (cyL - meta.pad_y) / meta.scale
-    boxes.push([
-      Math.max(0, cx - halfW),
-      Math.max(0, cy - halfH),
-      Math.min(ow - 1, cx + halfW),
-      Math.min(oh - 1, cy + halfH),
-    ])
+    const adaptive = adaptiveBoxFromPeak(
+      scores,
+      gh,
+      gw,
+      gy,
+      gx,
+      score,
+      similarityThreshold,
+      patchPx,
+      meta,
+      ow,
+      oh,
+      bw,
+      bh,
+    )
+    boxes.push(
+      adaptive ?? [
+        Math.max(0, cx - halfW),
+        Math.max(0, cy - halfH),
+        Math.min(ow - 1, cx + halfW),
+        Math.min(oh - 1, cy + halfH),
+      ],
+    )
     peakScores.push(score)
     peakXy.push([cx, cy])
   }

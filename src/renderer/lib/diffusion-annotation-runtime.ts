@@ -30,10 +30,14 @@ export type RunDiffusionPipelineParams = {
   dinov2ModelId: string
   inferScale: number
   seedBbox: DiffusionSeedBbox
+  /** 种子引导策略：仅框 / 仅掩码 / 框+掩码 */
+  seedGuideMode?: "bbox" | "mask" | "bbox_and_mask"
   embedCache: Sam2EmbedCache | null
   similarityThreshold?: number
   maxInstances?: number
   nmsIou?: number
+  /** 候选 SAM 精化并发数（默认 4，建议 1~6） */
+  refineConcurrency?: number
   onProgress?: (message: string) => void
 }
 
@@ -42,6 +46,8 @@ export type RunDiffusionPipelineResult = {
   seedMaskRle: { counts: number[]; w: number; h: number } | null
   candidates: DiffusionCandidateResult[]
   similarityCandidates: DiffusionSimilarityCandidate[]
+  refinedSuccessCount: number
+  refinedFailedCount: number
 }
 
 function bboxFromMaskRle(rle: { counts: number[]; w: number; h: number }): DiffusionSeedBbox | null {
@@ -85,46 +91,89 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
   const path = params.imagePath.trim()
   const { samModelId, dinov2ModelId, inferScale, seedBbox } = params
   const onProgress = params.onProgress
+  const seedGuideMode = params.seedGuideMode ?? "bbox_and_mask"
 
   onProgress?.("SAM 图像编码…")
   const embedCache = await ensureSamEmbedCache(path, samModelId, inferScale, params.embedCache)
 
   onProgress?.("SAM 精化种子…")
   const seedRle = await decodeSamBboxOnEncodeCache(embedCache.response, seedBbox)
+  const refinedSeedBbox = seedRle ? (bboxFromMaskRle(seedRle) ?? seedBbox) : seedBbox
+
+  let querySeedBbox: [number, number, number, number] = [
+    refinedSeedBbox.x1,
+    refinedSeedBbox.y1,
+    refinedSeedBbox.x2,
+    refinedSeedBbox.y2,
+  ]
+  let querySeedMaskRle: { counts: number[]; w: number; h: number } | undefined = undefined
+  if (seedGuideMode === "mask") {
+    querySeedMaskRle = seedRle ?? undefined
+  } else if (seedGuideMode === "bbox_and_mask") {
+    querySeedMaskRle = seedRle ?? undefined
+  }
 
   onProgress?.("DINOv2 提取 patch 特征…")
   const patchFeatures = await fetchDinov2PatchFeatures(dinov2ModelId, path)
 
   onProgress?.("前端相似搜索…")
   const similarityCandidates = searchSimilarFromPatchFeatures(patchFeatures, {
-    seedBbox: [seedBbox.x1, seedBbox.y1, seedBbox.x2, seedBbox.y2],
-    seedMaskRle: seedRle ?? undefined,
+    seedBbox: querySeedBbox,
+    seedMaskRle: querySeedMaskRle,
     similarityThreshold: params.similarityThreshold,
     maxInstances: params.maxInstances,
     nmsIou: params.nmsIou,
   })
 
-  const candidates: DiffusionCandidateResult[] = []
   const total = similarityCandidates.length
-  for (let i = 0; i < total; i += 1) {
-    const c = similarityCandidates[i]!
-    onProgress?.(`SAM 精化候选 ${i + 1}/${total}…`)
-    const [x1, y1, x2, y2] = c.bbox
-    const bbox = { x1, y1, x2, y2 }
-    let rle: { counts: number[]; w: number; h: number } | null = null
-    try {
-      rle = await decodeSamBboxOnEncodeCache(embedCache.response, bbox)
-    } catch {
-      rle = null
+  const candidates: DiffusionCandidateResult[] = new Array(total)
+  if (total > 0) {
+    const concurrency = Math.max(1, Math.min(6, Math.floor(params.refineConcurrency ?? 4)))
+    let nextIndex = 0
+    let done = 0
+    let refinedSuccessCount = 0
+    let refinedFailedCount = 0
+    onProgress?.(`SAM 精化候选 0/${total}（并发 ${Math.min(concurrency, total)}）…`)
+
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex
+        nextIndex += 1
+        if (i >= total) return
+        const c = similarityCandidates[i]!
+        const [x1, y1, x2, y2] = c.bbox
+        const bbox = { x1, y1, x2, y2 }
+        let rle: { counts: number[]; w: number; h: number } | null = null
+        try {
+          rle = await decodeSamBboxOnEncodeCache(embedCache.response, bbox)
+        } catch {
+          rle = null
+        }
+        if (rle) refinedSuccessCount += 1
+        else refinedFailedCount += 1
+        const refinedBbox = rle ? (bboxFromMaskRle(rle) ?? bbox) : bbox
+        candidates[i] = {
+          id: newCandidateId(),
+          bbox: refinedBbox,
+          score: c.score,
+          rle,
+          selected: true,
+        }
+        done += 1
+        onProgress?.(`SAM 精化候选 ${done}/${total}…`)
+      }
     }
-    const refinedBbox = rle ? (bboxFromMaskRle(rle) ?? bbox) : bbox
-    candidates.push({
-      id: newCandidateId(),
-      bbox: refinedBbox,
-      score: c.score,
-      rle,
-      selected: true,
-    })
+
+    const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker())
+    await Promise.all(workers)
+    return {
+      embedCache,
+      seedMaskRle: seedRle,
+      candidates,
+      similarityCandidates,
+      refinedSuccessCount,
+      refinedFailedCount,
+    }
   }
 
   return {
@@ -132,5 +181,7 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
     seedMaskRle: seedRle,
     candidates,
     similarityCandidates,
+    refinedSuccessCount: 0,
+    refinedFailedCount: 0,
   }
 }

@@ -10,7 +10,7 @@ import {
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import { getPrimaryShortcutLabel } from "@/lib/app-shortcut-registry"
 import { fetchModelRuntimeCatalog } from "@/lib/model-runtime-api"
-import { writeMaskRleAttributes, decodeRowMajorRleToBinary, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
+import { writeMaskRleAttributes, decodeRowMajorRleToBinary, encodeBinaryToRowMajorRle, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
 import { contourForYoloExport } from "@/lib/mask-contour"
 import {
   formatOrtWebInferError,
@@ -109,6 +109,27 @@ function sam2PolygonContourOptions(vertexBias0to100: number): { rdpEpsilon: numb
     rdpEpsilon: 8.5 - (8.5 - 0.22) * t,
     maxPoints: Math.max(24, Math.floor(36 + t * 620)),
   }
+}
+
+function rectMaskRleFromBbox(
+  bbox: { x1: number; y1: number; x2: number; y2: number },
+  iw: number,
+  ih: number,
+): { counts: number[]; w: number; h: number } | null {
+  if (iw <= 0 || ih <= 0) return null
+  const x1 = Math.max(0, Math.min(iw - 1, Math.floor(Math.min(bbox.x1, bbox.x2))))
+  const y1 = Math.max(0, Math.min(ih - 1, Math.floor(Math.min(bbox.y1, bbox.y2))))
+  const x2Inc = Math.max(0, Math.min(iw - 1, Math.ceil(Math.max(bbox.x1, bbox.x2)) - 1))
+  const y2Inc = Math.max(0, Math.min(ih - 1, Math.ceil(Math.max(bbox.y1, bbox.y2)) - 1))
+  if (x2Inc < x1 || y2Inc < y1) return null
+  const bin = new Uint8Array(iw * ih)
+  const rowFillFrom = x1
+  const rowFillTo = x2Inc + 1
+  for (let y = y1; y <= y2Inc; y += 1) {
+    const row = y * iw
+    bin.fill(1, row + rowFillFrom, row + rowFillTo)
+  }
+  return { counts: encodeBinaryToRowMajorRle(bin), w: iw, h: ih }
 }
 
 export type ProjectTaskDetailContentProps = {
@@ -910,6 +931,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       dinov2ModelId: diffusionDinov2ModelIdRef.current,
       inferScale: diffusionInferScale,
       seedBbox: seed,
+      seedGuideMode: diffusionSeedPreview,
       embedCache: sam2EmbedCacheRef.current,
       similarityThreshold: diffusionSimilarityThreshold,
       maxInstances: diffusionMaxInstances,
@@ -927,7 +949,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
         ).length
         setDiffusionToast({
           kind: "ok",
-          text: `找到 ${result.similarityCandidates.length} 个相似区域，${ok} 个可标注；按 ${getPrimaryShortcutLabel("new-annotation")} 全部新建，${getPrimaryShortcutLabel("select-tool")} 退出`,
+          text:
+            `找到 ${result.similarityCandidates.length} 个相似区域，` +
+            `SAM 精化成功 ${result.refinedSuccessCount} / 失败 ${result.refinedFailedCount}，` +
+            `${ok} 个可标注；按 ${getPrimaryShortcutLabel("new-annotation")} 全部新建，` +
+            `${getPrimaryShortcutLabel("select-tool")} 退出`,
         })
       })
       .catch((e) => {
@@ -1004,7 +1030,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     const contourOpts = sam2PolygonContourOptions(diffusionPolygonVertexBias)
     let created = 0
     for (const c of diffusionCandidates) {
-      if (!isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts)) continue
+      if (diffusionOutputFormat !== "mask" && !isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts)) continue
 
       if (diffusionOutputFormat === "box") {
         const { x1, y1, x2, y2 } = c.bbox
@@ -1036,6 +1062,9 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       const d = c.rle!
 
       if (diffusionOutputFormat === "mask") {
+        const maskRle =
+          d && d.w === iw && d.h === ih ? d : rectMaskRleFromBbox(c.bbox, iw, ih)
+        if (!maskRle) continue
         const shape = createShape({
           imagePath: activeImagePath,
           imageWidth: iw,
@@ -1049,7 +1078,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
             difficult: false,
             shape_type: "mask",
             flags: null,
-            attributes: writeMaskRleAttributes({}, { ...d, brushSize: 1 }),
+            attributes: writeMaskRleAttributes({}, { ...maskRle, brushSize: 1 }),
             kie_linking: [],
           },
         })
@@ -1179,6 +1208,13 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
 
       const label = sam2SelectedLabelRef.current.trim()
       if (!label) return
+
+      // 删除点导致 point prompt 为空时，立即清空当前预览并作废在途解码。
+      if (ctx.promptMode === "point" && ctx.points.length === 0) {
+        sam2DecodeGenRef.current += 1
+        setSam2DraftRle(null)
+        return
+      }
 
       const prompt = mapFullImageSam2PromptToEncode(enc, {
         promptMode: ctx.promptMode,

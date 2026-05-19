@@ -23,6 +23,7 @@ import {
   stopOtherSamAnnotationRuntimes,
   type SamAnnotationCategoryId,
 } from "@/lib/sam-annotation-runtime"
+import { clearSam2DecoderSessions, loadSam2DecoderSession } from "@/lib/sam2-cvat-onnx"
 import {
   getSamAnnotationFamily,
   SAM_ANNOTATION_FAMILY_LABELS,
@@ -101,9 +102,11 @@ function SamGlobalRuntimeBlock({
     }
     setBusy(true)
     try {
+      clearSam2DecoderSessions()
       await stopOtherSamAnnotationRuntimes(selectedFamily)
       await startModelRuntime(selectedFamily, modelId, useGpu)
       persistSamAnnotationSelection(selectedFamily, modelId)
+      void loadSam2DecoderSession(modelId).catch(() => {})
       await onReload()
     } catch (e) {
       window.alert(e instanceof Error ? e.message : "启动失败")
@@ -116,6 +119,7 @@ function SamGlobalRuntimeBlock({
     const stopFamily = activeSam?.family ?? selectedFamily
     setBusy(true)
     try {
+      clearSam2DecoderSessions()
       await stopModelRuntime(stopFamily)
       await onReload()
     } catch (e) {

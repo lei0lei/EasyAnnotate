@@ -44,7 +44,7 @@ export type TaskAiToolPaletteProps = {
   /** 0–1，仅当 decoder 导出预测 IoU 时用于过滤 */
   sam2AutoIouThreshold: number
   onSam2AutoIouThresholdChange: (value: number) => void
-  /** 0.3–1.5：悬停触发时间倍率 */
+  /** 0.1–1：悬停触发时间倍率 */
   sam2AutoHoverFactor: number
   onSam2AutoHoverFactorChange: (value: number) => void
   /** 0.3–1：SAM 编码/解码相对原图边长倍率（画布仍为原图坐标） */

@@ -61,7 +61,7 @@ export type Sam2AutoPromptParams = {
   objectBoxH: number
   /** 0–1，与 decoder 导出的预测 IoU 比较（无 IoU 输出时不生效） */
   iouThreshold: number
-  /** 0.3–1.5，悬停触发时间 = 基准 × 该系数 */
+  /** 0.1–1，悬停触发时间 = 基准 × 该系数 */
   hoverFactor: number
 }
 
@@ -578,7 +578,11 @@ export function useSam2CanvasTool(params: Params) {
       const p = roundPointToInt(img)
       const idx = hitPointIndex(points, p, hitRadiusImage)
       if (idx >= 0) {
-        setPoints((prev) => prev.filter((_, i) => i !== idx))
+        setPoints((prev) => {
+          const next = prev.filter((_, i) => i !== idx)
+          queueDecode({ promptMode: "point", nextPoints: next, bbox: null })
+          return next
+        })
         return
       }
       const wasEmpty = points.length === 0

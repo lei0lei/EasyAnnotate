@@ -293,10 +293,11 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                   }}
                 >
                   <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
+                    {/* Keep image rendering in sync with canvas-geometry fitScale assumptions. */}
                     <img
                       src={props.imageObjectUrl}
                       alt={props.currentFileName}
-                      className="max-h-full max-w-full object-contain select-none"
+                      className="h-full w-full object-contain select-none"
                       onError={props.onImageError}
                       onLoad={props.onImageLoad}
                       draggable={false}

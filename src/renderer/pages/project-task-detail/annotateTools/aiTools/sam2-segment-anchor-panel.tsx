@@ -293,13 +293,13 @@ export function Sam2SegmentAnchorPanel({
               </div>
               <input
                 type="range"
-                min={30}
-                max={150}
+                min={10}
+                max={100}
                 step={5}
                 value={Math.round(autoHoverFactor * 100)}
                 onChange={(e) => onAutoHoverFactorChange(Number(e.target.value) / 100)}
                 className="h-2 w-full cursor-pointer accent-emerald-600"
-                aria-label="悬停触发时间倍率，约 0.3 到 1.5"
+                aria-label="悬停触发时间倍率，约 0.1 到 1"
               />
             </div>
           </div>

@@ -238,36 +238,54 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
 
   const createShape = useCallback(
     ({ imagePath, imageWidth, imageHeight, shape }: CreateShapeParams) => {
-      const workingDoc =
-        params.annotationDoc ??
-        createXAnyLabelTemplate({
-          imagePath,
-          imageWidth,
-          imageHeight,
-        })
       const shapeId = createShapeStableId()
-      const nextDoc = cloneAnnotationDoc({
-        ...workingDoc,
-        shapes: [
-          ...workingDoc.shapes,
-          {
-            ...shape,
-            attributes: {
-              ...shape.attributes,
-              __eaShapeId: shapeId,
+      let created: CreateShapeResult | null = null
+      let nextDocForCommit: XAnyLabelFile | null = null
+
+      params.setAnnotationDoc((prev) => {
+        const workingDoc =
+          prev ??
+          createXAnyLabelTemplate({
+            imagePath,
+            imageWidth,
+            imageHeight,
+          })
+        const nextDoc = cloneAnnotationDoc({
+          ...workingDoc,
+          shapes: [
+            ...workingDoc.shapes,
+            {
+              ...shape,
+              attributes: {
+                ...shape.attributes,
+                __eaShapeId: shapeId,
+              },
             },
-          },
-        ],
+          ],
+        })
+        created = {
+          shapeIndex: nextDoc.shapes.length - 1,
+          shapeId,
+        }
+        nextDocForCommit = nextDoc
+        return nextDoc
       })
-      const shapeIndex = nextDoc.shapes.length - 1
-      params.setAnnotationDoc(nextDoc)
-      commitDoc(nextDoc, {
-        source: "command",
+
+      if (nextDocForCommit) {
+        commitDoc(nextDocForCommit, {
+          source: "command",
+          shapeId,
+        })
+      }
+
+      if (created) return created
+
+      return {
+        shapeIndex: 0,
         shapeId,
-      })
-      return { shapeIndex, shapeId } satisfies CreateShapeResult
+      } satisfies CreateShapeResult
     },
-    [commitDoc, params, resolveShapeIdFromDoc],
+    [commitDoc, params],
   )
 
   const replaceDoc = useCallback(
