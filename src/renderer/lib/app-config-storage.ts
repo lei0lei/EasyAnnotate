@@ -414,3 +414,28 @@ export function resetAppConfigToDefaults(): void {
   memoryConfig = { ...DEFAULT }
   persistAppConfigToDisk(memoryConfig)
 }
+
+/**
+ * Migrate all config data from `oldDir` to `newDir` via IPC, then update in-memory + disk config.
+ * Returns an error message on failure, or empty string on success.
+ */
+export async function migrateAndUpdateGlobalConfigDir(newDir: string): Promise<string> {
+  const cur = loadAppConfig()
+  const oldDir = cur.storagePaths.globalConfigDir.trim()
+  const resolvedNew = newDir.trim()
+  if (!resolvedNew) return "目标路径不能为空。"
+  if (oldDir === resolvedNew) {
+    return ""
+  }
+  const result = await ipc.app.MigrateGlobalConfigDir({ oldDir, newDir: resolvedNew })
+  if (!result.success) {
+    return result.errorMessage || "迁移失败。"
+  }
+  const next: AppConfig = {
+    ...cur,
+    storagePaths: { ...cur.storagePaths, globalConfigDir: resolvedNew },
+  }
+  memoryConfig = next
+  persistAppConfigToDisk(next)
+  return ""
+}

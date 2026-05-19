@@ -107,6 +107,17 @@ message GetAppConfigFromDiskResponse {
   string error_message = 3;
 }
 
+message MigrateGlobalConfigDirRequest {
+  string old_dir = 1;
+  string new_dir = 2;
+}
+
+message MigrateGlobalConfigDirResponse {
+  bool success = 1;
+  string error_message = 2;
+  int32 copied_count = 3;
+}
+
 message ValidateProjectDirectoryRequest {
   string path = 1;
 }
@@ -497,6 +508,7 @@ service AppService {
   rpc GetDefaultGlobalConfigDir(google.protobuf.Empty) returns (DefaultGlobalConfigDirResponse);
   rpc SaveAppConfigToDisk(SaveAppConfigToDiskRequest) returns (google.protobuf.Empty);
   rpc GetAppConfigFromDisk(GetAppConfigFromDiskRequest) returns (GetAppConfigFromDiskResponse);
+  rpc MigrateGlobalConfigDir(MigrateGlobalConfigDirRequest) returns (MigrateGlobalConfigDirResponse);
   rpc ListAnnotationProjects(ListAnnotationProjectsRequest) returns (ListAnnotationProjectsResponse);
   rpc UpsertAnnotationProject(UpsertAnnotationProjectRequest) returns (google.protobuf.Empty);
   rpc DeleteAnnotationProject(DeleteAnnotationProjectRequest) returns (google.protobuf.Empty);

@@ -55,7 +55,7 @@ const PREPROCESS_OPTIONS = [
   "缩放",
   "转灰度图像",
   "对比度调整",
-  "类别修改",
+  "类别编辑",
   "随机采样",
   "去除无标签图像",
 ] as const
@@ -68,7 +68,7 @@ const PREPROCESS_ICONS: Record<(typeof PREPROCESS_OPTIONS)[number], LucideIcon> 
   缩放: Scaling,
   转灰度图像: ImageIcon,
   对比度调整: Contrast,
-  类别修改: Tags,
+  类别编辑: Tags,
   随机采样: Shuffle,
   去除无标签图像: Filter,
 }
@@ -162,7 +162,6 @@ export default function ProjectExportPage() {
   const [hydrated, setHydrated] = useState(false)
   const [projectTasks, setProjectTasks] = useState<ProjectTaskItem[]>([])
 
-  const minGap = 5
   const backHref = projectId ? `/projects/${projectId}` : "/projects/mine"
   const pageTitle = formatTypeLabel(taskId)
 
@@ -371,14 +370,14 @@ export default function ProjectExportPage() {
 
   function handleTrainBoundaryChange(rawValue: number) {
     if (!activeVersion) return
-    const maxAllowed = activeVersion.valBoundary - minGap
+    const maxAllowed = activeVersion.valBoundary
     const trainBoundary = Math.max(0, Math.min(rawValue, maxAllowed))
     updateActiveVersion({ trainBoundary })
   }
 
   function handleValBoundaryChange(rawValue: number) {
     if (!activeVersion) return
-    const minAllowed = activeVersion.trainBoundary + minGap
+    const minAllowed = activeVersion.trainBoundary
     const valBoundary = Math.min(100, Math.max(rawValue, minAllowed))
     updateActiveVersion({ valBoundary })
   }
@@ -526,7 +525,7 @@ export default function ProjectExportPage() {
                     max={100}
                     value={activeVersion?.trainBoundary ?? 70}
                     onChange={(e) => handleTrainBoundaryChange(Number(e.target.value))}
-                    className={`${sliderInputClass} z-20`}
+                    className={`${sliderInputClass} z-30`}
                     disabled={!activeVersion}
                   />
                   <input
@@ -535,7 +534,7 @@ export default function ProjectExportPage() {
                     max={100}
                     value={activeVersion?.valBoundary ?? 90}
                     onChange={(e) => handleValBoundaryChange(Number(e.target.value))}
-                    className={`${sliderInputClass} z-30`}
+                    className={`${sliderInputClass} z-20`}
                     disabled={!activeVersion}
                   />
                 </div>

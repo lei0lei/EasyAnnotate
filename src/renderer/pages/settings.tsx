@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { ipc } from "@/gen/ipc"
 import { APP_SHORTCUT_ROWS, buildShortcutsPersistPatch } from "@/lib/app-shortcut-registry"
-import { loadAppConfig, updateAppConfig } from "@/lib/app-config-storage"
+import { loadAppConfig, migrateAndUpdateGlobalConfigDir, updateAppConfig } from "@/lib/app-config-storage"
 import { CheckCircle2, FolderOpen, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
 import { useCallback, useEffect, useId, useState } from "react"
 
@@ -105,29 +105,61 @@ export default function SettingsPage() {
     setBackendStatus("applied")
   }, [basePath, host, port, protocol])
 
-  const handleApplyStoragePaths = useCallback(() => {
+  const [storageMigrating, setStorageMigrating] = useState(false)
+
+  const handleApplyStoragePaths = useCallback(async () => {
     const resolvedGlobalConfigDir = globalConfigDir.trim() || defaultGlobalConfigDir
-    updateAppConfig({
-      storagePaths: {
-        databaseDir: "",
-        assetsDir: "",
-        globalConfigDir: resolvedGlobalConfigDir,
-      },
-    })
+    const currentRaw = loadAppConfig().storagePaths.globalConfigDir.trim()
+    const currentEffective = currentRaw || defaultGlobalConfigDir
+    if (currentEffective !== resolvedGlobalConfigDir) {
+      setStorageMigrating(true)
+      try {
+        const errMsg = await migrateAndUpdateGlobalConfigDir(resolvedGlobalConfigDir)
+        if (errMsg) {
+          window.alert(`配置迁移失败：${errMsg}`)
+          return
+        }
+      } finally {
+        setStorageMigrating(false)
+      }
+    } else {
+      updateAppConfig({
+        storagePaths: {
+          databaseDir: "",
+          assetsDir: "",
+          globalConfigDir: resolvedGlobalConfigDir,
+        },
+      })
+    }
     setGlobalConfigDir(resolvedGlobalConfigDir)
     setStorageStatus("applied")
   }, [defaultGlobalConfigDir, globalConfigDir])
 
-  const handleStorageDefaults = useCallback(() => {
+  const handleStorageDefaults = useCallback(async () => {
     const resolvedGlobalConfigDir = defaultGlobalConfigDir
+    const currentRaw = loadAppConfig().storagePaths.globalConfigDir.trim()
+    const currentEffective = currentRaw || defaultGlobalConfigDir
+    if (currentEffective !== resolvedGlobalConfigDir) {
+      setStorageMigrating(true)
+      try {
+        const errMsg = await migrateAndUpdateGlobalConfigDir(resolvedGlobalConfigDir)
+        if (errMsg) {
+          window.alert(`配置迁移失败：${errMsg}`)
+          return
+        }
+      } finally {
+        setStorageMigrating(false)
+      }
+    } else {
+      updateAppConfig({
+        storagePaths: {
+          databaseDir: "",
+          assetsDir: "",
+          globalConfigDir: resolvedGlobalConfigDir,
+        },
+      })
+    }
     setGlobalConfigDir(resolvedGlobalConfigDir)
-    updateAppConfig({
-      storagePaths: {
-        databaseDir: "",
-        assetsDir: "",
-        globalConfigDir: resolvedGlobalConfigDir,
-      },
-    })
     setStorageStatus("reset")
   }, [defaultGlobalConfigDir])
 
@@ -294,7 +326,7 @@ export default function SettingsPage() {
                   type="button"
                   variant="outline"
                   className="shrink-0 gap-1.5"
-                  disabled={selectingGlobalConfigDir}
+                  disabled={selectingGlobalConfigDir || storageMigrating}
                   onClick={() => void handleSelectGlobalConfigDir()}
                 >
                   <FolderOpen className="h-3.5 w-3.5" aria-hidden />
@@ -302,10 +334,10 @@ export default function SettingsPage() {
                 </Button>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" onClick={handleApplyStoragePaths}>
-                  应用
+                <Button type="button" size="sm" disabled={storageMigrating} onClick={() => void handleApplyStoragePaths()}>
+                  {storageMigrating ? "迁移中..." : "应用"}
                 </Button>
-                <Button type="button" size="sm" variant="outline" onClick={handleStorageDefaults}>
+                <Button type="button" size="sm" variant="outline" disabled={storageMigrating} onClick={() => void handleStorageDefaults()}>
                   使用默认
                 </Button>
                 <CompletionIcon status={storageStatus} />

@@ -54,6 +54,8 @@ import {
   SaveAppConfigToDiskRequest,
   GetAppConfigFromDiskRequest,
   GetAppConfigFromDiskResponse,
+  MigrateGlobalConfigDirRequest,
+  MigrateGlobalConfigDirResponse,
   SelectFilesResponse,
   SetThemeRequest,
   UpdateProjectRequest,
@@ -76,6 +78,7 @@ import {
 import {
   getDefaultDatabaseDir,
   getDefaultGlobalConfigDir,
+  migrateGlobalConfigDir,
   readAppConfigFromDisk,
   saveAppConfigToDisk,
 } from "./app-config-disk";
@@ -1017,6 +1020,14 @@ ipc.registerService(AppService({
         exists: false,
         errorMessage: error instanceof Error ? error.message : String(error),
       }
+    }
+  },
+  async MigrateGlobalConfigDir(request: MigrateGlobalConfigDirRequest): Promise<MigrateGlobalConfigDirResponse> {
+    const result = migrateGlobalConfigDir(request.oldDir, request.newDir)
+    return {
+      success: result.success,
+      errorMessage: result.errorMessage,
+      copiedCount: result.copiedCount,
     }
   },
   async ListAnnotationProjects(request: ListAnnotationProjectsRequest) {

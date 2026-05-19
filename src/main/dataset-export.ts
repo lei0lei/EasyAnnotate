@@ -134,7 +134,7 @@ function readTaskImages(taskRootDir: string, taskId: string): ExportImageItem[] 
   return items
 }
 
-function collectExportImages(project: ProjectRecord, taskId?: string): ExportImageItem[] {
+function collectExportImages(project: ProjectRecord, taskId?: string, knownTaskIds?: Set<string>): ExportImageItem[] {
   const tasksRoot = resolveProjectDataRoot(project)
   if (!fs.existsSync(tasksRoot)) return []
   if (taskId) {
@@ -143,7 +143,11 @@ function collectExportImages(project: ProjectRecord, taskId?: string): ExportIma
   }
   const entries = fs.readdirSync(tasksRoot, { withFileTypes: true }).filter((item) => item.isDirectory())
   const items: ExportImageItem[] = []
+  const hasKnownTaskFilter = Boolean(knownTaskIds && knownTaskIds.size > 0)
   for (const entry of entries) {
+    // Project-level export should follow the current task registry.
+    // This skips orphan task directories left by historical inconsistencies.
+    if (hasKnownTaskFilter && !knownTaskIds!.has(entry.name)) continue
     items.push(...readTaskImages(path.join(tasksRoot, entry.name), entry.name))
   }
   return items
@@ -753,7 +757,8 @@ function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: 
 
 function runExport(job: ExportJobRecord, req: ExportRequest): void {
   updateJob(job.id, { status: "running", progress: 1, message: "开始导出" })
-  const allItems = collectExportImages(req.project, req.taskId)
+  const knownTaskIds = req.taskId ? undefined : new Set(Object.keys(req.taskNameById))
+  const allItems = collectExportImages(req.project, req.taskId, knownTaskIds)
   if (allItems.length === 0) {
     updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的图片" })
     return

@@ -52,3 +52,85 @@ export function readAppConfigFromDisk(globalConfigDir: string): { jsonText: stri
     return { jsonText: "", exists: false }
   }
 }
+
+function copyDirRecursive(src: string, dest: string): number {
+  if (!fs.existsSync(src)) return 0
+  fs.mkdirSync(dest, { recursive: true })
+  let count = 0
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name)
+    const destPath = path.join(dest, entry.name)
+    if (entry.isDirectory()) {
+      count += copyDirRecursive(srcPath, destPath)
+    } else {
+      fs.copyFileSync(srcPath, destPath)
+      count += 1
+    }
+  }
+  return count
+}
+
+/**
+ * Patch `globalConfigDir` inside an existing `app-config.json`.
+ * If the file doesn't exist or isn't valid JSON, create a minimal one.
+ */
+function patchConfigDirInFile(configFilePath: string, newGlobalConfigDir: string): void {
+  let data: Record<string, unknown> = {}
+  try {
+    if (fs.existsSync(configFilePath)) {
+      const raw = fs.readFileSync(configFilePath, "utf8")
+      const parsed = JSON.parse(raw) as unknown
+      if (parsed && typeof parsed === "object") data = parsed as Record<string, unknown>
+    }
+  } catch {
+    // start from empty
+  }
+  if (typeof data.storagePaths !== "object" || data.storagePaths === null) {
+    data.storagePaths = {}
+  }
+  ;(data.storagePaths as Record<string, unknown>).globalConfigDir = newGlobalConfigDir
+  fs.mkdirSync(path.dirname(configFilePath), { recursive: true })
+  fs.writeFileSync(configFilePath, JSON.stringify(data, null, 2), "utf8")
+}
+
+/**
+ * Copy all contents from oldDir to newDir (recursive).
+ * After copying:
+ * - The `app-config.json` in newDir is patched to reflect the new path.
+ * - The default dir's `app-config.json` is also updated to point to the new path
+ *   so that `hydrateAppConfigFromDisk` can find it on next launch.
+ * - The default dir's config and data are never deleted.
+ */
+export function migrateGlobalConfigDir(
+  oldDir: string,
+  newDir: string,
+): { success: boolean; errorMessage: string; copiedCount: number } {
+  const resolvedOld = resolveConfigDir(oldDir)
+  const resolvedNew = newDir.trim()
+  if (!resolvedNew) {
+    return { success: false, errorMessage: "目标路径不能为空。", copiedCount: 0 }
+  }
+  const normOld = path.resolve(resolvedOld)
+  const normNew = path.resolve(resolvedNew)
+  if (normOld === normNew) {
+    return { success: true, errorMessage: "", copiedCount: 0 }
+  }
+  try {
+    let copiedCount = 0
+    if (fs.existsSync(resolvedOld)) {
+      copiedCount = copyDirRecursive(resolvedOld, resolvedNew)
+    } else {
+      fs.mkdirSync(resolvedNew, { recursive: true })
+    }
+    patchConfigDirInFile(path.join(resolvedNew, CONFIG_FILE_NAME), resolvedNew)
+
+    const defaultDir = getDefaultGlobalConfigDir()
+    const defaultConfigFile = path.join(defaultDir, CONFIG_FILE_NAME)
+    patchConfigDirInFile(defaultConfigFile, resolvedNew)
+
+    return { success: true, errorMessage: "", copiedCount }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, errorMessage: `迁移失败：${msg}`, copiedCount: 0 }
+  }
+}
