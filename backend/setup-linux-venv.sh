@@ -81,7 +81,9 @@ if [[ "$INSTALL_ML" == "1" ]]; then
 
   echo "==> Installing ML repos into venv"
   python -m pip install "${GH}/ultralytics"
-  python -m pip install "${GH}/dinov2"
+  # DINOv2 metadata may pin old torch versions (e.g. 2.0.0).
+  # We already installed torch/torchvision explicitly above, so skip dep resolution here.
+  python -m pip install --no-deps "${GH}/dinov2"
   python -m pip install "${GH}/sam2"
   python -m pip install "${GH}/mobilesam"
   python -m pip install "${GH}/efficientsam"

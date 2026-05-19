@@ -77,7 +77,8 @@ echo "=== Ultralytics YOLO (pip install into site-packages) ==="
 
 echo ""
 echo "=== DINOv2 (pip install into site-packages) ==="
-"$PYTHON_EXE" -m pip install "${GH}/dinov2"
+# DINOv2 package metadata may pin torch==2.0.0; torch is managed explicitly above.
+"$PYTHON_EXE" -m pip install --no-deps "${GH}/dinov2"
 
 echo ""
 echo "=== SAM 2 (pip install into site-packages) ==="
