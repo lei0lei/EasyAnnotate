@@ -10,7 +10,7 @@ import { loadAppConfig, updateAppConfig } from "@/lib/app-config-storage"
 import { CheckCircle2, FolderOpen, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
 import { useCallback, useEffect, useId, useState } from "react"
 
-const DEFAULT_BACKEND = { host: "127.0.0.1", port: "8000" } as const
+const DEFAULT_BACKEND = { protocol: "http", host: "127.0.0.1", port: "8000", basePath: "" } as const
 
 function defaultShortcutMap(): Record<string, string> {
   return Object.fromEntries(APP_SHORTCUT_ROWS.map((row) => [row.id, row.defaultBinding]))
@@ -44,6 +44,8 @@ export default function SettingsPage() {
   const [defaultGlobalConfigDir, setDefaultGlobalConfigDir] = useState(initial.storagePaths.globalConfigDir)
   const [host, setHost] = useState(initial.backend.host)
   const [port, setPort] = useState(initial.backend.port)
+  const [protocol, setProtocol] = useState(initial.backend.protocol)
+  const [basePath, setBasePath] = useState(initial.backend.basePath)
   const [globalConfigDir, setGlobalConfigDir] = useState(initial.storagePaths.globalConfigDir)
   const [backendStatus, setBackendStatus] = useState<CompletionStatus>(null)
   const [storageStatus, setStorageStatus] = useState<CompletionStatus>(null)
@@ -90,15 +92,18 @@ export default function SettingsPage() {
   }, [])
 
   const handleApplyBackend = useCallback(() => {
+    const normalizedProtocol = protocol === "https" ? "https" : "http"
     updateAppConfig({
       backend: {
         ...loadAppConfig().backend,
+        protocol: normalizedProtocol,
         host: host.trim() || DEFAULT_BACKEND.host,
         port: port.trim() || DEFAULT_BACKEND.port,
+        basePath: basePath.trim(),
       },
     })
     setBackendStatus("applied")
-  }, [host, port])
+  }, [basePath, host, port, protocol])
 
   const handleApplyStoragePaths = useCallback(() => {
     const resolvedGlobalConfigDir = globalConfigDir.trim() || defaultGlobalConfigDir
@@ -147,10 +152,18 @@ export default function SettingsPage() {
   const handleBackendDefaults = useCallback(() => {
     const preservedDir = loadAppConfig().backend.localBackendDir ?? ""
     updateAppConfig({
-      backend: { host: DEFAULT_BACKEND.host, port: DEFAULT_BACKEND.port, localBackendDir: preservedDir },
+      backend: {
+        protocol: DEFAULT_BACKEND.protocol,
+        host: DEFAULT_BACKEND.host,
+        port: DEFAULT_BACKEND.port,
+        basePath: DEFAULT_BACKEND.basePath,
+        localBackendDir: preservedDir,
+      },
     })
+    setProtocol(DEFAULT_BACKEND.protocol)
     setHost(DEFAULT_BACKEND.host)
     setPort(DEFAULT_BACKEND.port)
+    setBasePath(DEFAULT_BACKEND.basePath)
     setBackendStatus("reset")
   }, [])
 
@@ -185,6 +198,20 @@ export default function SettingsPage() {
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
+                  <label htmlFor={`${baseId}-protocol`} className="text-sm font-medium text-foreground">
+                    协议
+                  </label>
+                  <select
+                    id={`${baseId}-protocol`}
+                    value={protocol}
+                    onChange={(e) => setProtocol(e.target.value === "https" ? "https" : "http")}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
                   <label htmlFor={`${baseId}-host`} className="text-sm font-medium text-foreground">
                     IP 或主机名
                   </label>
@@ -209,6 +236,19 @@ export default function SettingsPage() {
                     value={port}
                     onChange={(e) => setPort(e.target.value)}
                     autoComplete="off"
+                  />
+                </div>
+                <div className="space-y-2 sm:col-span-2">
+                  <label htmlFor={`${baseId}-base-path`} className="text-sm font-medium text-foreground">
+                    API 根路径（可选）
+                  </label>
+                  <Input
+                    id={`${baseId}-base-path`}
+                    placeholder="例如 /easyannotate（留空表示直接 /api/v1）"
+                    value={basePath}
+                    onChange={(e) => setBasePath(e.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
                   />
                 </div>
               </div>

@@ -1,4 +1,5 @@
 import { apiV1Root, encodeUrlPathSegments, readFetchError } from "@/lib/backend-http"
+import { isHttpImageSource, postLocalImageAsMultipart } from "@/lib/backend-image-upload"
 
 export type Sam2TensorPayload = {
   dtype: string
@@ -49,6 +50,11 @@ export function encodeImageUrlForModel(modelId: string): string {
   return `${apiV1Root()}/models/${tail}/encode-image`
 }
 
+export function encodeImageUploadUrlForModel(modelId: string): string {
+  const tail = encodeUrlPathSegments(modelId)
+  return `${apiV1Root()}/models/${tail}/encode-image-upload`
+}
+
 /**
  * POST encode-image：后端 encoder 特征（float32），供浏览器 `decoder.onnx` 解码。
  * 支持 sam2/*、mobile_sam/*；需已启动对应 model_id 的 runtime。
@@ -80,11 +86,23 @@ export async function fetchSamImageEmbeddings(
   }
   let res: Response
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ payload }),
-    })
+    if (isHttpImageSource(source)) {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ payload }),
+      })
+    } else {
+      let uploadUrl = encodeImageUploadUrlForModel(modelId)
+      if (rs) {
+        uploadUrl += `${uploadUrl.includes("?") ? "&" : "?"}runtime_slot=${encodeURIComponent(rs)}`
+      }
+      const uploadPayload: Record<string, unknown> = {}
+      if (inferScale !== undefined && Number.isFinite(inferScale)) {
+        uploadPayload.infer_scale = Math.min(1, Math.max(0.3, inferScale))
+      }
+      res = await postLocalImageAsMultipart(uploadUrl, source, uploadPayload)
+    }
   } catch (err) {
     const hint = err instanceof Error ? err.message : String(err)
     throw new Error(`无法连接 ${url}（${hint}）`)

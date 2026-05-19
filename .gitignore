@@ -17,4 +17,5 @@ _extract/
 create-mobrowser-app-*.tgz
 
 
-backend/
+backend/python-embed
+backend/external

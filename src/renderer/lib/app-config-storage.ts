@@ -2,15 +2,18 @@ import { ipc } from "@/gen/ipc"
 import { STORAGE_KEYS } from "@/lib/storage/keys"
 
 /** 与磁盘上 JSON 结构版本号一致，便于做迁移；升级时加 migrate 逻辑即可 */
-const APP_CONFIG_VERSION = 2
+const APP_CONFIG_VERSION = 3
 
 export type ModelsDefaultPage = "hub" | "auto" | "training"
 
 export type AppConfig = {
   version: typeof APP_CONFIG_VERSION
   backend: {
+    protocol: "http" | "https"
     host: string
     port: string
+    /** 可选 API 根路径（如 `/easyannotate`），会拼接到 `/api/v1` 前 */
+    basePath: string
     /** 便携 Python backend 根目录（含 start.ps1）；空表示自动查找 */
     localBackendDir: string
   }
@@ -40,7 +43,7 @@ export type AppConfig = {
 const DEFAULT: AppConfig = {
   version: APP_CONFIG_VERSION,
   /** 与 backend/start.ps1 中 uvicorn --port 8000 对齐 */
-  backend: { host: "127.0.0.1", port: "8000", localBackendDir: "" },
+  backend: { protocol: "http", host: "127.0.0.1", port: "8000", basePath: "", localBackendDir: "" },
   storagePaths: { databaseDir: "", assetsDir: "", globalConfigDir: "" },
   pageFlow: {
     workflow: { openEditorOnCreate: true },
@@ -66,7 +69,27 @@ type AppConfigV1 = {
   shortcuts?: Partial<Record<string, string>>
 }
 
-type AppConfigAnyVersion = AppConfig | AppConfigV1
+type AppConfigV2 = {
+  version: 2
+  backend: {
+    host: string
+    port: string
+    localBackendDir?: string
+  }
+  storagePaths: {
+    databaseDir: string
+    assetsDir: string
+    globalConfigDir: string
+  }
+  pageFlow: {
+    workflow: { openEditorOnCreate: boolean }
+    models: { defaultPage: ModelsDefaultPage }
+    monitor: { openEditorOnCreate: boolean }
+  }
+  shortcuts: Partial<Record<string, string>>
+}
+
+type AppConfigAnyVersion = AppConfig | AppConfigV2 | AppConfigV1
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null
@@ -91,9 +114,46 @@ function isModelsDefaultPage(v: unknown): v is ModelsDefaultPage {
   return v === "hub" || v === "auto" || v === "training"
 }
 
-function isAppConfigV2(d: unknown): d is AppConfig {
+function isBackendProtocol(v: unknown): v is "http" | "https" {
+  return v === "http" || v === "https"
+}
+
+function isAppConfigV3(d: unknown): d is AppConfig {
   if (!isRecord(d)) return false
   if (d.version !== APP_CONFIG_VERSION) return false
+  if (!isRecord(d.backend) || typeof d.backend.host !== "string" || typeof d.backend.port !== "string") return false
+  const protocol = d.backend.protocol
+  if (protocol !== undefined && !isBackendProtocol(protocol)) return false
+  const basePath = d.backend.basePath
+  if (basePath !== undefined && typeof basePath !== "string") return false
+  const localBackendDir = d.backend.localBackendDir
+  if (localBackendDir !== undefined && typeof localBackendDir !== "string") return false
+  if (
+    !isRecord(d.storagePaths) ||
+    typeof d.storagePaths.databaseDir !== "string" ||
+    typeof d.storagePaths.assetsDir !== "string" ||
+    typeof d.storagePaths.globalConfigDir !== "string"
+  ) {
+    return false
+  }
+  if (
+    !isRecord(d.pageFlow) ||
+    !isRecord(d.pageFlow.workflow) ||
+    typeof d.pageFlow.workflow.openEditorOnCreate !== "boolean" ||
+    !isRecord(d.pageFlow.models) ||
+    !isModelsDefaultPage(d.pageFlow.models.defaultPage) ||
+    !isRecord(d.pageFlow.monitor) ||
+    typeof d.pageFlow.monitor.openEditorOnCreate !== "boolean"
+  ) {
+    return false
+  }
+  if (!isRecord(d.shortcuts) && d.shortcuts != null) return false
+  return true
+}
+
+function isAppConfigV2(d: unknown): d is AppConfigV2 {
+  if (!isRecord(d)) return false
+  if (d.version !== 2) return false
   if (!isRecord(d.backend) || typeof d.backend.host !== "string" || typeof d.backend.port !== "string") return false
   const localBackendDir = d.backend.localBackendDir
   if (localBackendDir !== undefined && typeof localBackendDir !== "string") return false
@@ -121,10 +181,10 @@ function isAppConfigV2(d: unknown): d is AppConfig {
 }
 
 function isAppConfigAnyVersion(d: unknown): d is AppConfigAnyVersion {
-  return isAppConfigV2(d) || isAppConfigV1(d)
+  return isAppConfigV3(d) || isAppConfigV2(d) || isAppConfigV1(d)
 }
 
-function normalizeAnyToV2(raw: AppConfigAnyVersion): AppConfig {
+function normalizeAnyToV3(raw: AppConfigAnyVersion): AppConfig {
   const applyLegacyPort = (cfg: AppConfig): AppConfig => {
     const h = cfg.backend.host.trim()
     const p = cfg.backend.port.trim()
@@ -135,6 +195,30 @@ function normalizeAnyToV2(raw: AppConfigAnyVersion): AppConfig {
   }
 
   if (raw.version === APP_CONFIG_VERSION) {
+    const merged: AppConfig = {
+      version: APP_CONFIG_VERSION,
+      backend: { ...DEFAULT.backend, ...raw.backend },
+      storagePaths: { ...DEFAULT.storagePaths, ...raw.storagePaths },
+      pageFlow: {
+        workflow: {
+          ...DEFAULT.pageFlow.workflow,
+          ...raw.pageFlow.workflow,
+        },
+        models: {
+          ...DEFAULT.pageFlow.models,
+          ...raw.pageFlow.models,
+        },
+        monitor: {
+          ...DEFAULT.pageFlow.monitor,
+          ...raw.pageFlow.monitor,
+        },
+      },
+      shortcuts: { ...DEFAULT.shortcuts, ...raw.shortcuts },
+    }
+    return applyLegacyPort(merged)
+  }
+
+  if (raw.version === 2) {
     const merged: AppConfig = {
       version: APP_CONFIG_VERSION,
       backend: { ...DEFAULT.backend, ...raw.backend },
@@ -181,7 +265,7 @@ function parseAppConfigJson(jsonText: string): AppConfig | null {
   try {
     const parsed = JSON.parse(jsonText) as unknown
     if (!isAppConfigAnyVersion(parsed)) return null
-    return normalizeAnyToV2(parsed)
+    return normalizeAnyToV3(parsed)
   } catch {
     return null
   }

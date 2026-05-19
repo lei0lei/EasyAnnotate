@@ -1,0 +1,18 @@
+# 由 install-ml-gpu-deps.ps1 clone 的上游仓库（体积大）。
+external/github/dinov2/
+external/github/sam2/
+external/github/ultralytics/
+external/github/mobilesam/
+external/github/efficientsam/
+
+__pycache__/
+*.py[cod]
+
+bus.jpg
+
+# Downloaded weights (registry.json stays tracked)
+external/resources/**/*.pt
+external/resources/**/*.pth
+external/resources/**/*.onnx
+external/resources/**/*.engine
+external/resources/**/*.zip

@@ -1,0 +1,12 @@
+# 安装在「嵌入式」python-embed 中时使用：由 install-ml-gpu-deps.ps1 先装 torch/torchvision，再 -r 本文件。
+# 勿单独写 --extra-index-url（由 bat 传入 CUDA 轮子索引；默认 cu128）。
+
+numpy>=1.24,<3
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0,<5
+tqdm>=4.66.0
+# MobileSAM TinyViT encoder needs timm (upstream setup.py does not declare it).
+timm>=0.9.0,<2
+# torch.onnx.export (2.5+) may import onnxscript; export_sam21_cvat_decoder.py needs these.
+onnx>=1.16
+onnxscript>=0.1.0

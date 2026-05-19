@@ -8,14 +8,23 @@ import { loadAppConfig } from "@/lib/app-config-storage"
  * `sam2-encode-api.ts`（encode-image、decoder-onnx）。
  */
 export function backendHttpOrigin(): string {
-  const { host, port } = loadAppConfig().backend
+  const { protocol, host, port } = loadAppConfig().backend
+  const scheme = protocol === "https" ? "https" : "http"
   const h = host.trim() || "127.0.0.1"
   const p = (port.trim() || "8000").replace(/^:/, "")
-  return `http://${h}:${p}`
+  return `${scheme}://${h}:${p}`
+}
+
+function normalizeBasePath(input: string): string {
+  const t = input.trim()
+  if (!t) return ""
+  const withLeading = t.startsWith("/") ? t : `/${t}`
+  return withLeading.replace(/\/+$/, "")
 }
 
 export function apiV1Root(): string {
-  return `${backendHttpOrigin()}/api/v1`
+  const { basePath } = loadAppConfig().backend
+  return `${backendHttpOrigin()}${normalizeBasePath(basePath)}/api/v1`
 }
 
 /** 将含 `/` 的 id 按段编码，供 FastAPI `{param:path}` 路由使用（与 `sam2-encode-api` 一致）。 */

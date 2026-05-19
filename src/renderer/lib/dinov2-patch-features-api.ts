@@ -1,4 +1,5 @@
 import { apiV1Root, encodeUrlPathSegments, readFetchError } from "@/lib/backend-http"
+import { isHttpImageSource, postLocalImageAsMultipart } from "@/lib/backend-image-upload"
 
 export type Dinov2TensorPayload = {
   dtype: string
@@ -35,6 +36,11 @@ export function patchFeaturesUrlForModel(modelId: string): string {
   return `${apiV1Root()}/models/${tail}/patch-features`
 }
 
+export function patchFeaturesUploadUrlForModel(modelId: string): string {
+  const tail = encodeUrlPathSegments(modelId)
+  return `${apiV1Root()}/models/${tail}/patch-features-upload`
+}
+
 export async function fetchDinov2PatchFeatures(
   modelId: string,
   source: string,
@@ -47,11 +53,19 @@ export async function fetchDinov2PatchFeatures(
   }
   let res: Response
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ payload }),
-    })
+    if (isHttpImageSource(source)) {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ payload }),
+      })
+    } else {
+      const uploadPayload: Record<string, unknown> = {}
+      if (options?.imgSize !== undefined) {
+        uploadPayload.img_size = options.imgSize
+      }
+      res = await postLocalImageAsMultipart(patchFeaturesUploadUrlForModel(modelId), source, uploadPayload)
+    }
   } catch (err) {
     const hint = err instanceof Error ? err.message : String(err)
     throw new Error(`无法连接 ${url}（${hint}）`)
