@@ -16,3 +16,5 @@ external/resources/**/*.pth
 external/resources/**/*.onnx
 external/resources/**/*.engine
 external/resources/**/*.zip
+
+.venv/
