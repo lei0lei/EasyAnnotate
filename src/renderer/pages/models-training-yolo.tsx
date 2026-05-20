@@ -52,6 +52,7 @@ import {
   uploadYoloDatasetZipWithProgress,
   type YoloDatasetUploadProgress,
 } from "@/lib/yolo-dataset-upload"
+import { GpuSwitch } from "@/pages/models-backend"
 import { cn } from "@/lib/utils"
 import { ArrowLeft, Loader2, Plus, Upload } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -170,6 +171,7 @@ export default function ModelsTrainingYoloPage() {
   const [batch, setBatch] = useState(2)
   const [imgsz, setImgsz] = useState(640)
   const [device, setDevice] = useState("cpu")
+  const [exportOnnx, setExportOnnx] = useState(false)
   const [devices, setDevices] = useState<YoloDeviceOption[]>([])
 
   const [augmentEnabled, setAugmentEnabled] = useState(false)
@@ -622,6 +624,7 @@ export default function ModelsTrainingYoloPage() {
         augment: augmentEnabled ? buildAugmentTrainPayload(augmentValues, task) : null,
         use_custom_optimizer: optimizerEnabled,
         optimizer: optimizerEnabled ? buildOptimizerTrainPayload(optimizerValues, task) : null,
+        export_onnx: exportOnnx,
       })
     } catch (e) {
       setTraining(false)
@@ -938,6 +941,19 @@ export default function ModelsTrainingYoloPage() {
                     ))}
                   </select>
                 </label>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-4">
+                <div className="min-w-0">
+                  <p className="text-sm text-foreground">{m.paramExportOnnx}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{m.paramExportOnnxHint}</p>
+                </div>
+                <GpuSwitch
+                  id="yolo-export-onnx"
+                  checked={exportOnnx}
+                  disabled={!jobReady || training}
+                  onCheckedChange={setExportOnnx}
+                  label={exportOnnx ? m.switchOn : m.switchOff}
+                />
               </div>
             </CardContent>
           </Card>

@@ -450,6 +450,7 @@ export async function startYoloTraining(
     augment: Record<string, unknown> | null
     use_custom_optimizer: boolean
     optimizer: Record<string, unknown> | null
+    export_onnx: boolean
   },
 ): Promise<void> {
   const res = await fetchWithTimeout(

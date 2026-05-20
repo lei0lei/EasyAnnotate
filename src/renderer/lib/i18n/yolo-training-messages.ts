@@ -27,6 +27,8 @@ export type YoloTrainingMessages = {
   paramBatch: string
   paramImgsz: string
   paramDevice: string
+  paramExportOnnx: string
+  paramExportOnnxHint: string
   boardAugment: string
   boardOptimizer: string
   switchOn: string
@@ -126,6 +128,8 @@ const zhCN: YoloTrainingMessages = {
   paramBatch: "批大小 batch",
   paramImgsz: "输入尺寸 imgsz",
   paramDevice: "设备",
+  paramExportOnnx: "训练后导出 ONNX",
+  paramExportOnnxHint: "训练成功后使用 Ultralytics export，输入尺寸与上方 imgsz 一致",
   boardAugment: "图像增强",
   boardOptimizer: "优化器",
   switchOn: "启用",
@@ -232,6 +236,8 @@ const en: YoloTrainingMessages = {
   paramBatch: "Batch size",
   paramImgsz: "Image size (imgsz)",
   paramDevice: "Device",
+  paramExportOnnx: "Export ONNX after training",
+  paramExportOnnxHint: "Runs Ultralytics export when training finishes; imgsz matches the value above",
   boardAugment: "Augmentation",
   boardOptimizer: "Optimizer",
   switchOn: "On",

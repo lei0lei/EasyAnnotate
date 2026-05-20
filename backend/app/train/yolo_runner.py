@@ -133,6 +133,27 @@ def _apply_custom_train_kwargs(
                 pass
 
 
+def _export_trained_onnx(
+    job_slug: str,
+    model: Any,
+    *,
+    imgsz: int,
+) -> str | None:
+    append_train_log(job_slug, f"开始导出 ONNX（imgsz={imgsz}，与训练一致）…")
+    _set_job(job_slug, message=f"正在导出 ONNX（imgsz={imgsz}）…", progress=99)
+    try:
+        export_path = model.export(format="onnx", imgsz=int(imgsz))
+        path_str = str(export_path)
+        append_train_log(job_slug, f"ONNX 导出完成：{path_str}")
+        save_meta(job_slug, {"onnx_export_path": path_str, "onnx_export_error": None})
+        return path_str
+    except Exception as e:
+        err = f"ONNX 导出失败：{e}"
+        append_train_log(job_slug, err)
+        save_meta(job_slug, {"onnx_export_error": str(e)})
+        return None
+
+
 def _training_thread(
     job_slug: str,
     *,
@@ -146,6 +167,7 @@ def _training_thread(
     augment: dict[str, Any] | None,
     use_custom_optimizer: bool,
     optimizer: dict[str, Any] | None,
+    export_onnx: bool = False,
 ) -> None:
     try:
         from ultralytics import YOLO
@@ -264,6 +286,12 @@ def _training_thread(
         run_dir = _newest_run_dir(runs_root)
         done_msg = f"训练完成：{run_dir}"
         append_train_log(job_slug, done_msg)
+        if export_onnx:
+            onnx_path = _export_trained_onnx(job_slug, model, imgsz=imgsz)
+            if onnx_path:
+                done_msg = f"{done_msg}；ONNX：{onnx_path}"
+            else:
+                done_msg = f"{done_msg}；ONNX 导出失败（见 train.log）"
         _set_job(
             job_slug,
             status="success",
@@ -303,6 +331,7 @@ def start_training(
     augment: dict[str, Any] | None = None,
     use_custom_optimizer: bool = False,
     optimizer: dict[str, Any] | None = None,
+    export_onnx: bool = False,
 ) -> None:
     slug = (job_slug or "").strip()
     with _lock:
@@ -336,6 +365,7 @@ def start_training(
                 "augment": augment,
                 "use_custom_optimizer": use_custom_optimizer,
                 "optimizer": optimizer,
+                "export_onnx": export_onnx,
             },
             "status": "running",
             "train_progress": 0,
@@ -359,6 +389,7 @@ def start_training(
                 augment=augment,
                 use_custom_optimizer=use_custom_optimizer,
                 optimizer=optimizer,
+                export_onnx=export_onnx,
             )
         except Exception as e:
             err_msg = f"训练线程异常：{e}"

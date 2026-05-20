@@ -40,6 +40,7 @@ class StartTrainBody(BaseModel):
     augment: dict[str, Any] | None = None
     use_custom_optimizer: bool = Field(False, description="启用自定义优化器参数")
     optimizer: dict[str, Any] | None = None
+    export_onnx: bool = Field(False, description="训练成功后导出 ONNX（imgsz 与训练一致）")
 
 
 def _require_slug(job_slug: str) -> str:
@@ -320,6 +321,7 @@ def start_train(body: StartTrainBody) -> dict[str, Any]:
             augment=body.augment,
             use_custom_optimizer=body.use_custom_optimizer,
             optimizer=body.optimizer,
+            export_onnx=body.export_onnx,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
