@@ -111,6 +111,8 @@
 
     /* App UI: avoid accidental text selection; keep inputs / editable content selectable. */
     html {
+        height: 100%;
+        overflow: hidden;
         user-select: none;
         -webkit-user-select: none;
     }
@@ -127,5 +129,12 @@
 
     body {
         @apply bg-background text-foreground;
+        height: 100%;
+        overflow: hidden;
+    }
+
+    #root {
+        height: 100%;
+        overflow: hidden;
     }
 }

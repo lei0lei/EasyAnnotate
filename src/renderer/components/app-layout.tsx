@@ -39,15 +39,15 @@ export function AppLayout() {
   } as CSSProperties
 
   return (
-    <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background" style={layoutStyle}>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background" style={layoutStyle}>
       <AppTitlebar
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={toggleSidebar}
         onHeightChange={setTitlebarHeight}
       />
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <AppSidebar collapsed={sidebarCollapsed} />
-        <main className="min-h-0 flex-1 overflow-y-auto scrollbar-none">
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-none">
           <Outlet />
         </main>
       </div>

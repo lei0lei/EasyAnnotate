@@ -1,4 +1,4 @@
-import { apiV1Root, encodeUrlPathSegments, readFetchError } from "@/lib/backend-http"
+import { apiV1Root, readFetchError } from "@/lib/backend-http"
 
 export type InferenceInfo = {
   method: string
@@ -104,41 +104,3 @@ export async function stopModelRuntime(categoryId: string): Promise<unknown> {
   return res.json()
 }
 
-export function predictUrlForModel(modelId: string): string {
-  const tail = encodeUrlPathSegments(modelId)
-  return `${apiV1Root()}/models/${tail}/predict`
-}
-
-/** 后端从公网拉取的样例图（各模型 `payload.source` 均支持 HTTPS URL）。 */
-export const MODEL_SMOKE_TEST_IMAGE_URL = "https://ultralytics.com/images/bus.jpg"
-
-export type RunModelSmokePredictOptions = {
-  /** 可选：校验指定 catalog 槽位；默认使用模型族主槽。 */
-  runtimeSlot?: string
-}
-
-export async function runModelSmokePredict(
-  modelId: string,
-  options?: RunModelSmokePredictOptions,
-): Promise<unknown> {
-  let url = predictUrlForModel(modelId)
-  const rs = options?.runtimeSlot?.trim()
-  if (rs) {
-    url += `${url.includes("?") ? "&" : "?"}runtime_slot=${encodeURIComponent(rs)}`
-  }
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ payload: { source: MODEL_SMOKE_TEST_IMAGE_URL } }),
-    })
-  } catch (err) {
-    const hint = err instanceof Error ? err.message : String(err)
-    throw new Error(`无法连接 ${url}（${hint}）`)
-  }
-  if (!res.ok) {
-    throw new Error(`predict ${res.status}: ${await readFetchError(res)}`)
-  }
-  return res.json()
-}

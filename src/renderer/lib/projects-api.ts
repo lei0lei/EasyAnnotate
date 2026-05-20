@@ -381,6 +381,7 @@ export async function startDatasetExport(payload: {
   taskId?: string
   exportFormat: string
   keepProjectStructure: boolean
+  compressToZip?: boolean
   trainBoundary: number
   valBoundary: number
   versionName: string
@@ -392,6 +393,7 @@ export async function startDatasetExport(payload: {
     taskId: payload.taskId || "",
     exportFormat: payload.exportFormat,
     keepProjectStructure: payload.keepProjectStructure,
+    compressToZip: payload.compressToZip === true,
     trainBoundary: Math.floor(payload.trainBoundary),
     valBoundary: Math.floor(payload.valBoundary),
     versionName: payload.versionName,

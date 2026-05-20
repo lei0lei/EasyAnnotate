@@ -91,7 +91,12 @@ import {
 } from "./project-export-versions-disk";
 import { deleteProjectTasksFile, readProjectTasks, writeProjectTasks } from "./project-tasks-disk";
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
-import { listDatasetExportJobs, startDatasetExportJob } from "./dataset-export";
+import {
+  buildUniqueExportFolderPath,
+  buildUniqueZipPath,
+  listDatasetExportJobs,
+  startDatasetExportJob,
+} from "./dataset-export";
 import {
   probeLocalBackendHealth,
   startEmbeddedPythonBackend,
@@ -945,9 +950,10 @@ ipc.registerService(AppService({
       }
       const taskId = (request.taskId || "").trim()
       const keepProjectStructure = request.keepProjectStructure === true
+      const compressToZip = request.compressToZip === true
       const dialogResult = await app.showOpenDialog({
         parentWindow: win,
-        title: "选择导出目录",
+        title: compressToZip ? "选择 ZIP 保存目录" : "选择导出目录",
         defaultPath: project.localPath || path.dirname(project.configFilePath),
         selectionPolicy: "directories",
         features: {
@@ -958,8 +964,11 @@ ipc.registerService(AppService({
       if (dialogResult.canceled || !dialogResult.paths[0]) {
         return { canceled: true, jobId: "", errorMessage: "" }
       }
-      const outputDir = dialogResult.paths[0]
-      fs.mkdirSync(outputDir, { recursive: true })
+      const parentDir = dialogResult.paths[0]
+      const versionName = request.versionName || "export"
+      const outputPath = compressToZip
+        ? buildUniqueZipPath(parentDir, versionName)
+        : buildUniqueExportFolderPath(parentDir, versionName)
       const trainBoundary = Math.max(0, Math.min(100, Math.floor(request.trainBoundary)))
       const valBoundary = Math.max(trainBoundary, Math.min(100, Math.floor(request.valBoundary)))
       const started = startDatasetExportJob({
@@ -971,7 +980,8 @@ ipc.registerService(AppService({
         trainBoundary,
         valBoundary,
         versionName: request.versionName || "Untitled Version",
-        outputDir,
+        compressToZip,
+        outputPath,
         taskNameById: Object.fromEntries((request.taskNames ?? []).map((item) => [item.taskId, item.taskName])),
       })
       return { canceled: false, jobId: started.jobId, errorMessage: "" }
@@ -1100,6 +1110,49 @@ ipc.registerService(AppService({
       message: stopped
         ? ""
         : "当前没有由本应用拉起的本地后端进程。若接口仍可用，可能是手动启动或其它程序占用端口。",
+    }
+  },
+  async CopyYoloTrainingDatasetZip(request) {
+    const backendDir = request.backendDirectory?.trim() ?? ""
+    const sourceZip = request.sourceZipPath?.trim() ?? ""
+    const trainingName = request.trainingName?.trim() ?? ""
+    if (!backendDir) {
+      return { ok: false, errorMessage: "未配置本地 backend 目录", datasetZipPath: "" }
+    }
+    if (!sourceZip) {
+      return { ok: false, errorMessage: "未选择 zip 文件", datasetZipPath: "" }
+    }
+    if (!trainingName) {
+      return { ok: false, errorMessage: "未填写训练名称", datasetZipPath: "" }
+    }
+    if (!fs.existsSync(sourceZip)) {
+      return { ok: false, errorMessage: `源文件不存在：${sourceZip}`, datasetZipPath: "" }
+    }
+    if (!sourceZip.toLowerCase().endsWith(".zip")) {
+      return { ok: false, errorMessage: "仅支持 .zip 数据集", datasetZipPath: "" }
+    }
+    const slug = trainingName
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+      .replace(/\s+/g, "_")
+      .replace(/^\.+|\.+$/g, "")
+      .slice(0, 120)
+    if (!slug) {
+      return { ok: false, errorMessage: "训练名称无效", datasetZipPath: "" }
+    }
+    try {
+      const jobDir = path.join(path.normalize(backendDir), "external", "temp", slug)
+      if (!fs.existsSync(jobDir)) {
+        return { ok: false, errorMessage: "请先点击「创建训练任务」", datasetZipPath: "" }
+      }
+      const dest = path.join(jobDir, "dataset.zip")
+      fs.copyFileSync(sourceZip, dest)
+      return { ok: true, errorMessage: "", datasetZipPath: dest }
+    } catch (error) {
+      return {
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        datasetZipPath: "",
+      }
     }
   },
 }))

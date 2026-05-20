@@ -416,6 +416,8 @@ message StartDatasetExportRequest {
   int32 val_boundary = 7;
   string version_name = 8;
   repeated TaskNameItem task_names = 9;
+  /** 为 true 时导出为 .zip；为 false 时在所选目录下生成数据集文件夹 */
+  bool compress_to_zip = 10;
 }
 
 message TaskNameItem {
@@ -474,6 +476,19 @@ message LocalBackendStatusResponse {
   bool reachable = 1;
 }
 
+/** 将本地 zip 复制到 backend/external/temp/<训练名>/dataset.zip */
+message CopyYoloTrainingDatasetZipRequest {
+  string backend_directory = 1;
+  string source_zip_path = 2;
+  string training_name = 3;
+}
+
+message CopyYoloTrainingDatasetZipResponse {
+  bool ok = 1;
+  string error_message = 2;
+  string dataset_zip_path = 3;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -518,4 +533,5 @@ service AppService {
   rpc StartLocalBackend(StartLocalBackendRequest) returns (StartLocalBackendResponse);
   rpc StopLocalBackend(google.protobuf.Empty) returns (StopLocalBackendResponse);
   rpc GetLocalBackendStatus(google.protobuf.Empty) returns (LocalBackendStatusResponse);
+  rpc CopyYoloTrainingDatasetZip(CopyYoloTrainingDatasetZipRequest) returns (CopyYoloTrainingDatasetZipResponse);
 }

@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { contourForYoloExport, minimumAreaBoundingBoxCornersFromPoints, obbCornersFromMaskBinary } from "../renderer/lib/mask-contour"
@@ -32,7 +34,10 @@ type ExportRequest = {
   trainBoundary: number
   valBoundary: number
   versionName: string
-  outputDir: string
+  /** 为 true 时写入临时目录后打包为 ZIP；为 false 时直接写入 outputPath 文件夹 */
+  compressToZip: boolean
+  /** 导出目标：文件夹路径，或（compressToZip 时）ZIP 文件路径 */
+  outputPath: string
   taskNameById: Record<string, string>
 }
 
@@ -66,6 +71,148 @@ function sanitizeSegment(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) return "default"
   return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+}
+
+function sanitizeExportZipBaseName(versionName: string): string {
+  const trimmed = versionName.trim()
+  if (!trimmed) return "export"
+  return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/\.+$/g, "")
+}
+
+export function buildUniqueZipPath(parentDir: string, baseName: string): string {
+  const safeBase = sanitizeExportZipBaseName(baseName)
+  let candidate = path.join(parentDir, `${safeBase}.zip`)
+  let index = 1
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(parentDir, `${safeBase}_${String(index).padStart(3, "0")}.zip`)
+    index += 1
+  }
+  return candidate
+}
+
+export function buildUniqueExportFolderPath(parentDir: string, baseName: string): string {
+  const safeBase = sanitizeExportZipBaseName(baseName)
+  let candidate = path.join(parentDir, safeBase)
+  let index = 1
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(parentDir, `${safeBase}_${String(index).padStart(3, "0")}`)
+    index += 1
+  }
+  return candidate
+}
+
+type StagingStats = { fileCount: number; totalBytes: number }
+
+function measureStagingDirStats(rootDir: string): StagingStats {
+  let fileCount = 0
+  let totalBytes = 0
+  const stack = [rootDir]
+  while (stack.length > 0) {
+    const dir = stack.pop()!
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absPath = path.join(dir, ent.name)
+      if (ent.isDirectory()) {
+        stack.push(absPath)
+      } else if (ent.isFile()) {
+        fileCount += 1
+        try {
+          totalBytes += fs.statSync(absPath).size
+        } catch {
+          /* ignore unreadable files */
+        }
+      }
+    }
+  }
+  return { fileCount, totalBytes }
+}
+
+/** Windows 10+ 自带 tar.exe；其他平台使用 PATH 中的 tar。 */
+function resolveSystemTarExecutable(): string {
+  if (process.platform === "win32") {
+    const tarExe = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
+    if (fs.existsSync(tarExe)) return tarExe
+  }
+  return "tar"
+}
+
+/**
+ * 使用系统 tar 将目录打包为 ZIP（子进程，`-C sourceDir .` 避免扫错目录）。
+ * 进度根据 ZIP 体积与源目录总大小估算；若 tar 结束前 ZIP 尚未落盘则按耗时平滑推进。
+ */
+async function zipDirectoryToFile(
+  sourceDir: string,
+  zipFilePath: string,
+  onProgress?: (percent: number, message: string) => void,
+): Promise<void> {
+  const absSource = path.resolve(sourceDir)
+  if (!fs.existsSync(absSource)) {
+    throw new Error(`ZIP 压缩失败：临时导出目录不存在（${absSource}）`)
+  }
+
+  const { fileCount, totalBytes } = measureStagingDirStats(absSource)
+  if (fileCount === 0) {
+    throw new Error("ZIP 压缩失败：没有可打包的文件")
+  }
+
+  ensureDir(path.dirname(zipFilePath))
+  const absZip = path.resolve(zipFilePath)
+  if (fs.existsSync(absZip)) fs.unlinkSync(absZip)
+
+  onProgress?.(0, `正在压缩 ZIP…（共 ${fileCount} 个文件）`)
+
+  const tarExe = resolveSystemTarExecutable()
+  const startedAt = Date.now()
+  let lastPct = 0
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(tarExe, ["-a", "-c", "-f", absZip, "-C", absSource, "."], {
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    })
+
+    let stderr = ""
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+
+    const pollTimer = setInterval(() => {
+      let pct = lastPct
+      if (fs.existsSync(absZip) && totalBytes > 0) {
+        try {
+          const zipSize = fs.statSync(absZip).size
+          pct = Math.min(95, Math.round((zipSize / totalBytes) * 100))
+        } catch {
+          /* ignore */
+        }
+      } else {
+        const elapsedSec = (Date.now() - startedAt) / 1000
+        pct = Math.min(90, Math.floor(elapsedSec * 2))
+      }
+      if (pct > lastPct) {
+        lastPct = pct
+        onProgress?.(pct, `正在压缩 ZIP… ${pct}%`)
+      }
+    }, 400)
+
+    child.on("error", (error) => {
+      clearInterval(pollTimer)
+      reject(error)
+    })
+    child.on("close", (code) => {
+      clearInterval(pollTimer)
+      if (code === 0) {
+        onProgress?.(100, "压缩完成")
+        resolve()
+        return
+      }
+      const detail = stderr.trim()
+      reject(new Error(detail ? `ZIP 压缩失败：${detail}` : `ZIP 压缩失败（退出码 ${code ?? "unknown"}）`))
+    })
+  })
+
+  if (!fs.existsSync(absZip)) {
+    throw new Error("ZIP 压缩失败：未生成输出文件")
+  }
 }
 
 function nowIso(): string {
@@ -517,7 +664,7 @@ function createJobRecord(req: ExportRequest): ExportJobRecord {
     versionName: req.versionName,
     exportFormat: req.exportFormat,
     keepProjectStructure: req.keepProjectStructure,
-    outputDir: req.outputDir,
+    outputDir: req.outputPath,
     status: "queued",
     progress: 0,
     message: "等待开始",
@@ -537,7 +684,7 @@ function writeYoloDataYaml(rootDir: string, classNames: string[], splitNames: st
       "",
     )
   }
-  yamlLines.push(`path: ${rootDir.replace(/\\/g, "/")}`)
+  yamlLines.push("path: .")
   for (const split of existingSplits) {
     yamlLines.push(`${split}: images/${split}`)
   }
@@ -558,7 +705,7 @@ function writeYoloDataYamlPose(rootDir: string, classNames: string[], splitNames
     "# visibility: 0=not labeled, 1=occluded, 2=visible (exported keypoints use 2 or 0)",
     "# flip_idx below is identity; replace with symmetric pairs for your template if needed.",
     "",
-    `path: ${rootDir.replace(/\\/g, "/")}`,
+    "path: .",
   ]
   for (const split of existingSplits) {
     lines.push(`${split}: images/${split}`)
@@ -755,7 +902,7 @@ function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: 
   }
 }
 
-function runExport(job: ExportJobRecord, req: ExportRequest): void {
+async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void> {
   updateJob(job.id, { status: "running", progress: 1, message: "开始导出" })
   const knownTaskIds = req.taskId ? undefined : new Set(Object.keys(req.taskNameById))
   const allItems = collectExportImages(req.project, req.taskId, knownTaskIds)
@@ -798,35 +945,57 @@ function runExport(job: ExportJobRecord, req: ExportRequest): void {
       }
     }
   }
+  const compressToZip = req.compressToZip === true
+  const exportProgressCap = compressToZip ? 82 : 99
   const updateProgress = (done: number, total: number, message: string) => {
-    const progress = Math.max(1, Math.min(99, Math.floor((done / Math.max(1, total)) * 100)))
+    const progress = Math.max(1, Math.min(exportProgressCap, Math.floor((done / Math.max(1, total)) * exportProgressCap)))
     updateJob(job.id, { progress, message })
   }
   const poseLayout = req.exportFormat === "yolo-pose" ? buildYoloPoseLayout(req.project, classNames, allItems) : null
+  const stagingDir = compressToZip ? path.join(os.tmpdir(), `easyannotate-export-${job.id}`) : req.outputPath
+  fs.mkdirSync(stagingDir, { recursive: true })
   try {
     if (req.exportFormat === "coco") {
-      exportAsCoco(groupedItems, req.outputDir, classNames, !req.taskId && req.keepProjectStructure, updateProgress)
+      exportAsCoco(groupedItems, stagingDir, classNames, !req.taskId && req.keepProjectStructure, updateProgress)
     } else if (req.exportFormat === "voc") {
-      exportAsVoc(groupedItems, req.outputDir, !req.taskId && req.keepProjectStructure, updateProgress)
+      exportAsVoc(groupedItems, stagingDir, !req.taskId && req.keepProjectStructure, updateProgress)
     } else {
       exportAsYolo(
         req.exportFormat,
         groupedItems,
         classByName,
         classNames,
-        req.outputDir,
+        stagingDir,
         !req.taskId && req.keepProjectStructure,
         updateProgress,
         poseLayout,
       )
     }
-    updateJob(job.id, { status: "success", progress: 100, message: "导出完成" })
+    if (compressToZip) {
+      await zipDirectoryToFile(stagingDir, req.outputPath, (zipPercent, message) => {
+        const progress = 82 + Math.floor((zipPercent / 100) * 17)
+        updateJob(job.id, { progress, message })
+      })
+    }
+    updateJob(job.id, {
+      status: "success",
+      progress: 100,
+      message: `导出完成：${req.outputPath}`,
+    })
   } catch (error) {
     updateJob(job.id, {
       status: "failed",
       progress: 100,
       message: error instanceof Error ? error.message : String(error),
     })
+  } finally {
+    if (compressToZip) {
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+      } catch {
+        /* ignore cleanup errors */
+      }
+    }
   }
 }
 
@@ -834,7 +1003,13 @@ export function startDatasetExportJob(req: ExportRequest): { jobId: string } {
   const job = createJobRecord(req)
   exportJobs.set(job.id, job)
   queueMicrotask(() => {
-    runExport(job, req)
+    void runExport(job, req).catch((error) => {
+      updateJob(job.id, {
+        status: "failed",
+        progress: 100,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    })
   })
   return { jobId: job.id }
 }

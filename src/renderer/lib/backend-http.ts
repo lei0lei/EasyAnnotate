@@ -8,7 +8,11 @@ import { loadAppConfig } from "@/lib/app-config-storage"
  * `sam2-encode-api.ts`（encode-image、decoder-onnx）。
  */
 export function backendHttpOrigin(): string {
-  const { protocol, host, port } = loadAppConfig().backend
+  const { protocol, host, port, remoteConnected } = loadAppConfig().backend
+  // 远程未连接时强制走本地后端；已连接时走设置中的远程地址。
+  if (!remoteConnected) {
+    return "http://127.0.0.1:8000"
+  }
   const scheme = protocol === "https" ? "https" : "http"
   const h = host.trim() || "127.0.0.1"
   const p = (port.trim() || "8000").replace(/^:/, "")

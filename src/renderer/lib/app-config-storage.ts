@@ -16,6 +16,8 @@ export type AppConfig = {
     basePath: string
     /** 便携 Python backend 根目录（含 start.ps1）；空表示自动查找 */
     localBackendDir: string
+    /** 是否已连接远程后端（仅连接状态，不控制远程服务进程） */
+    remoteConnected?: boolean
   }
   storagePaths: {
     databaseDir: string
@@ -43,7 +45,7 @@ export type AppConfig = {
 const DEFAULT: AppConfig = {
   version: APP_CONFIG_VERSION,
   /** 与 backend/start.ps1 中 uvicorn --port 8000 对齐 */
-  backend: { protocol: "http", host: "127.0.0.1", port: "8000", basePath: "", localBackendDir: "" },
+  backend: { protocol: "http", host: "127.0.0.1", port: "8000", basePath: "", localBackendDir: "", remoteConnected: false },
   storagePaths: { databaseDir: "", assetsDir: "", globalConfigDir: "" },
   pageFlow: {
     workflow: { openEditorOnCreate: true },
@@ -128,6 +130,8 @@ function isAppConfigV3(d: unknown): d is AppConfig {
   if (basePath !== undefined && typeof basePath !== "string") return false
   const localBackendDir = d.backend.localBackendDir
   if (localBackendDir !== undefined && typeof localBackendDir !== "string") return false
+  const remoteConnected = d.backend.remoteConnected
+  if (remoteConnected !== undefined && typeof remoteConnected !== "boolean") return false
   if (
     !isRecord(d.storagePaths) ||
     typeof d.storagePaths.databaseDir !== "string" ||
@@ -157,6 +161,8 @@ function isAppConfigV2(d: unknown): d is AppConfigV2 {
   if (!isRecord(d.backend) || typeof d.backend.host !== "string" || typeof d.backend.port !== "string") return false
   const localBackendDir = d.backend.localBackendDir
   if (localBackendDir !== undefined && typeof localBackendDir !== "string") return false
+  const remoteConnected = d.backend.remoteConnected
+  if (remoteConnected !== undefined && typeof remoteConnected !== "boolean") return false
   if (
     !isRecord(d.storagePaths) ||
     typeof d.storagePaths.databaseDir !== "string" ||

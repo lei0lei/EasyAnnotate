@@ -1,5 +1,5 @@
 /**
- * 后端模型管理：全局 SAM（sam2 / mobile_sam 互斥）与 DINOv2 启停 / 测试。
+ * 后端模型管理：全局 SAM（sam2 / mobile_sam 互斥）与 DINOv2 启停。
  */
 import { Button } from "@/components/ui/button"
 import { getGlobalDinov2ModelId, setGlobalDinov2ModelId } from "@/lib/global-dinov2-prefs"
@@ -7,7 +7,6 @@ import { GLOBAL_DINOV2_RUNTIME_CATEGORY_ID } from "@/lib/global-dinov2-runtime"
 import {
   fetchModelRuntimeCatalog,
   formatBackendModelDisplayName,
-  runModelSmokePredict,
   startModelRuntime,
   stopModelRuntime,
   type RuntimeCategoryRow,
@@ -33,7 +32,7 @@ import {
 import { GpuSwitch } from "@/pages/models-backend"
 import { RuntimeCategoryFlatSection } from "@/pages/runtime-category-flat-section"
 import { cn } from "@/lib/utils"
-import { AlertCircle, Check, Loader2, X } from "lucide-react"
+import { AlertCircle, Loader2 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react"
 
 function SamGlobalRuntimeBlock({
@@ -44,8 +43,6 @@ function SamGlobalRuntimeBlock({
   onReload: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
-  const [testing, setTesting] = useState(false)
-  const [testOutcome, setTestOutcome] = useState<"success" | "failure" | null>(null)
   const [selectedFamily, setSelectedFamily] = useState<SamAnnotationCategoryId>(() => {
     const fam = getSamAnnotationFamily()
     return isSamAnnotationCategoryId(fam) ? fam : "sam2"
@@ -59,6 +56,7 @@ function SamGlobalRuntimeBlock({
     () => selectedRow?.variants.find((v) => v.model_id === selectedModelId),
     [selectedRow, selectedModelId],
   )
+  const hasVariants = (selectedRow?.variants.length ?? 0) > 0
   const assetsOk = selectedVariant?.assets_installed ?? false
   const familyMismatch = activeSam != null && activeSam.family !== selectedFamily
   const activeLabel = useMemo(() => {
@@ -91,7 +89,6 @@ function SamGlobalRuntimeBlock({
     const mid = reconcileSamFamilyAndModelId(family, row)
     setSelectedModelId(mid)
     setSamAnnotationModelId(family, mid)
-    setTestOutcome(null)
   }
 
   const handleStart = async () => {
@@ -129,24 +126,6 @@ function SamGlobalRuntimeBlock({
     }
   }
 
-  const handleTest = async () => {
-    const modelId = selectedModelId.trim()
-    if (!modelId) {
-      setTestOutcome("failure")
-      return
-    }
-    setTesting(true)
-    setTestOutcome(null)
-    try {
-      await runModelSmokePredict(modelId)
-      setTestOutcome("success")
-    } catch {
-      setTestOutcome("failure")
-    } finally {
-      setTesting(false)
-    }
-  }
-
   const hasSamCategories = GLOBAL_SAM_RUNTIME_CATEGORY_IDS.some((id) => rows.some((r) => r.id === id))
   if (!hasSamCategories) {
     return (
@@ -172,7 +151,7 @@ function SamGlobalRuntimeBlock({
           id="ea-global-sam-gpu"
           label="GPU"
           checked={useGpu}
-          disabled={busy || testing || Boolean(activeSam)}
+          disabled={busy || Boolean(activeSam)}
           onCheckedChange={setUseGpu}
         />
       </div>
@@ -182,11 +161,11 @@ function SamGlobalRuntimeBlock({
         </label>
         <select
           id="ea-global-sam-family"
-          disabled={busy || testing}
+          disabled={busy}
           className={cn(
             "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            (busy || testing) && "cursor-not-allowed opacity-60",
+            busy && "cursor-not-allowed opacity-60",
           )}
           value={selectedFamily}
           onChange={(e) => {
@@ -211,42 +190,44 @@ function SamGlobalRuntimeBlock({
         </label>
         <select
           id="ea-global-sam-model"
-          disabled={busy || testing || !selectedRow}
+          disabled={busy || !selectedRow}
           className={cn(
             "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            (busy || testing || !selectedRow) && "cursor-not-allowed opacity-60",
+            (busy || !selectedRow) && "cursor-not-allowed opacity-60",
           )}
           value={selectedModelId}
           onChange={(e) => {
             setSelectedModelId(e.target.value)
             setSamAnnotationModelId(selectedFamily, e.target.value)
-            setTestOutcome(null)
           }}
         >
-          {(selectedRow?.variants ?? []).map((v: RuntimeVariantRow) => (
-            <option key={v.model_id} value={v.model_id}>
-              {v.label.trim() ? v.label : formatBackendModelDisplayName(v.model_id)}
+          {hasVariants ? (
+            (selectedRow?.variants ?? []).map((v: RuntimeVariantRow) => (
+              <option key={v.model_id} value={v.model_id}>
+                {v.label.trim() ? v.label : formatBackendModelDisplayName(v.model_id)}
+              </option>
+            ))
+          ) : (
+            <option value="" disabled>
+              无可用权重（请检查后端资源）
             </option>
-          ))}
+          )}
         </select>
+        {!hasVariants ? (
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            当前后端未返回 SAM 可用权重。请确认服务端 `external/resources` 已放置模型文件，并重启后端后刷新本页。
+          </p>
+        ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" size="sm" disabled={busy || testing || !assetsOk} onClick={() => void handleStart()}>
+        <Button type="button" size="sm" disabled={busy || !assetsOk || !hasVariants} onClick={() => void handleStart()}>
           {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
           启动
         </Button>
-        <Button type="button" size="sm" variant="outline" disabled={busy || testing || !activeSam} onClick={() => void handleStop()}>
+        <Button type="button" size="sm" variant="outline" disabled={busy || !activeSam} onClick={() => void handleStop()}>
           停止
         </Button>
-        <SamTestButtons
-          busy={busy}
-          testing={testing}
-          assetsOk={assetsOk}
-          selectedModelId={selectedModelId}
-          onTest={handleTest}
-          testOutcome={testOutcome}
-        />
       </div>
     </section>
   )
@@ -291,62 +272,11 @@ function SamGlobalHeader({
   )
 }
 
-function SamTestButtons({
-  busy,
-  testing,
-  assetsOk,
-  selectedModelId,
-  onTest,
-  testOutcome,
-}: {
-  busy: boolean
-  testing: boolean
-  assetsOk: boolean
-  selectedModelId: string
-  onTest: () => void
-  testOutcome: "success" | "failure" | null
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        disabled={busy || testing || !assetsOk || !selectedModelId}
-        onClick={() => void onTest()}
-      >
-        {testing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
-        测试
-      </Button>
-      {testOutcome === "success" ? (
-        <span
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-          title="测试成功"
-          aria-label="测试成功"
-        >
-          <Check className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-        </span>
-      ) : null}
-      {testOutcome === "failure" ? (
-        <span
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-red-500/50 bg-red-500/15 text-red-700 dark:text-red-300"
-          title="测试失败"
-          aria-label="测试失败"
-        >
-          <X className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-        </span>
-      ) : null}
-    </div>
-  )
-}
-
 export function BackendGlobalRuntimePanel() {
   const [rows, setRows] = useState<RuntimeCategoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [testingId, setTestingId] = useState<string | null>(null)
-  const [testOutcomeByCategory, setTestOutcomeByCategory] = useState<Record<string, "success" | "failure" | null>>({})
   const [modelIdByCategory, setModelIdByCategory] = useState<Record<string, string>>({})
   const [useGpuByCategory, setUseGpuByCategory] = useState<Record<string, boolean>>({})
 
@@ -420,34 +350,12 @@ export function BackendGlobalRuntimePanel() {
     }
   }
 
-  const handleDinoTest = async () => {
-    const modelId = modelIdByCategory[categoryId] ?? dinoRow?.variants[0]?.model_id ?? ""
-    if (!modelId) {
-      setTestOutcomeByCategory((prev) => ({ ...prev, [categoryId]: "failure" }))
-      return
-    }
-    setTestingId(categoryId)
-    setTestOutcomeByCategory((prev) => ({ ...prev, [categoryId]: null }))
-    try {
-      await runModelSmokePredict(modelId)
-      setTestOutcomeByCategory((prev) => ({ ...prev, [categoryId]: "success" }))
-    } catch {
-      setTestOutcomeByCategory((prev) => ({ ...prev, [categoryId]: "failure" }))
-    } finally {
-      setTestingId(null)
-    }
-  }
-
   if (error) {
-    return (
-      <BackendRuntimeError error={error} />
-    )
+    return <BackendRuntimeError error={error} />
   }
 
   if (loading && rows.length === 0) {
-    return (
-      <BackendRuntimeLoading />
-    )
+    return <BackendRuntimeLoading />
   }
 
   return (
@@ -461,12 +369,8 @@ export function BackendGlobalRuntimePanel() {
       useGpuByCategory={useGpuByCategory}
       setUseGpuByCategory={setUseGpuByCategory}
       busyId={busyId}
-      testingId={testingId}
-      testOutcomeByCategory={testOutcomeByCategory}
-      setTestOutcomeByCategory={setTestOutcomeByCategory}
       handleDinoStart={handleDinoStart}
       handleDinoStop={handleDinoStop}
-      handleDinoTest={handleDinoTest}
     />
   )
 }
@@ -507,12 +411,8 @@ function BackendRuntimePanelBody({
   useGpuByCategory,
   setUseGpuByCategory,
   busyId,
-  testingId,
-  testOutcomeByCategory,
-  setTestOutcomeByCategory,
   handleDinoStart,
   handleDinoStop,
-  handleDinoTest,
 }: {
   rows: RuntimeCategoryRow[]
   load: () => Promise<void>
@@ -523,12 +423,8 @@ function BackendRuntimePanelBody({
   useGpuByCategory: Record<string, boolean>
   setUseGpuByCategory: Dispatch<SetStateAction<Record<string, boolean>>>
   busyId: string | null
-  testingId: string | null
-  testOutcomeByCategory: Record<string, "success" | "failure" | null>
-  setTestOutcomeByCategory: Dispatch<SetStateAction<Record<string, "success" | "failure" | null>>>
   handleDinoStart: () => void
   handleDinoStop: () => void
-  handleDinoTest: () => void
 }) {
   return (
     <div className="space-y-8">
@@ -546,16 +442,12 @@ function BackendRuntimePanelBody({
             onModelIdChange={(mid) => {
               setGlobalDinov2ModelId(mid)
               setModelIdByCategory((prev) => ({ ...prev, [categoryId]: mid }))
-              setTestOutcomeByCategory((prev) => ({ ...prev, [categoryId]: null }))
             }}
             useGpu={useGpuByCategory[categoryId] ?? true}
             onUseGpuChange={(v) => setUseGpuByCategory((prev) => ({ ...prev, [categoryId]: v }))}
             busy={busyId === categoryId}
-            testing={testingId === categoryId}
-            testOutcome={testOutcomeByCategory[categoryId] ?? null}
             onStart={() => void handleDinoStart()}
             onStop={() => void handleDinoStop()}
-            onTest={() => void handleDinoTest()}
           />
         </>
       ) : (

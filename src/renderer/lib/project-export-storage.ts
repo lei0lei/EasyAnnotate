@@ -29,6 +29,8 @@ export type ExportVersionItem = {
   augmentSteps: ExportPipelineStep[]
   exportFormat: ExportFormat
   keepProjectStructureEnabled: boolean
+  /** 开启后导出为 ZIP；关闭则导出为文件夹 */
+  compressToZip: boolean
 }
 
 type ExportVersionDoc = {
@@ -94,6 +96,8 @@ function isExportVersionItem(data: unknown): data is ExportVersionItem {
   if (!Array.isArray(data.augmentSteps) || !data.augmentSteps.every(isPipelineStep)) return false
   if (!isExportFormat(data.exportFormat)) return false
   if (typeof data.keepProjectStructureEnabled !== "boolean") return false
+  const compressToZip = data.compressToZip
+  if (compressToZip !== undefined && typeof compressToZip !== "boolean") return false
   return true
 }
 
@@ -130,6 +134,7 @@ function normalizeItem(item: ExportVersionItem): ExportVersionItem {
       type: step.type.trim(),
       config: step.config.trim(),
     })),
+    compressToZip: item.compressToZip ?? false,
   }
 }
 

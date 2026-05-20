@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator"
 import { ipc } from "@/gen/ipc"
 import { APP_SHORTCUT_ROWS, buildShortcutsPersistPatch } from "@/lib/app-shortcut-registry"
 import { loadAppConfig, migrateAndUpdateGlobalConfigDir, updateAppConfig } from "@/lib/app-config-storage"
+import { cn } from "@/lib/utils"
 import { CheckCircle2, FolderOpen, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
 import { useCallback, useEffect, useId, useState } from "react"
 
@@ -20,6 +21,13 @@ function savedShortcutMap(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(loadAppConfig().shortcuts).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
   )
+}
+
+function remoteOriginFromFields(protocol: "http" | "https", host: string, port: string): string {
+  const scheme = protocol === "https" ? "https" : "http"
+  const h = host.trim() || DEFAULT_BACKEND.host
+  const p = (port.trim() || DEFAULT_BACKEND.port).replace(/^:/, "")
+  return `${scheme}://${h}:${p}`
 }
 
 type CompletionStatus = "applied" | "reset" | null
@@ -46,8 +54,10 @@ export default function SettingsPage() {
   const [port, setPort] = useState(initial.backend.port)
   const [protocol, setProtocol] = useState(initial.backend.protocol)
   const [basePath, setBasePath] = useState(initial.backend.basePath)
+  const [remoteConnected, setRemoteConnected] = useState(Boolean(initial.backend.remoteConnected))
+  const [remoteReachable, setRemoteReachable] = useState(false)
+  const [remotePending, setRemotePending] = useState(false)
   const [globalConfigDir, setGlobalConfigDir] = useState(initial.storagePaths.globalConfigDir)
-  const [backendStatus, setBackendStatus] = useState<CompletionStatus>(null)
   const [storageStatus, setStorageStatus] = useState<CompletionStatus>(null)
   const [shortcutStatus, setShortcutStatus] = useState<CompletionStatus>(null)
   const [shortcutDraft, setShortcutDraft] = useState<Record<string, string>>(() => ({
@@ -91,19 +101,40 @@ export default function SettingsPage() {
       })
   }, [])
 
-  const handleApplyBackend = useCallback(() => {
-    const normalizedProtocol = protocol === "https" ? "https" : "http"
-    updateAppConfig({
-      backend: {
-        ...loadAppConfig().backend,
-        protocol: normalizedProtocol,
-        host: host.trim() || DEFAULT_BACKEND.host,
-        port: port.trim() || DEFAULT_BACKEND.port,
-        basePath: basePath.trim(),
-      },
-    })
-    setBackendStatus("applied")
-  }, [basePath, host, port, protocol])
+  const probeRemoteHealth = useCallback(
+    async (nextProtocol: "http" | "https", nextHost: string, nextPort: string, nextBasePath: string): Promise<boolean> => {
+      const origin = remoteOriginFromFields(nextProtocol, nextHost, nextPort)
+      const base = nextBasePath.trim() ? (nextBasePath.trim().startsWith("/") ? nextBasePath.trim() : `/${nextBasePath.trim()}`) : ""
+      const healthUrl = `${origin}${base}/health`
+      try {
+        const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2000) })
+        return response.ok
+      } catch {
+        return false
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!remoteConnected) {
+      setRemoteReachable(false)
+      return
+    }
+    let alive = true
+    const tick = () => {
+      void probeRemoteHealth(protocol, host, port, basePath).then((ok) => {
+        if (!alive) return
+        setRemoteReachable(ok)
+      })
+    }
+    tick()
+    const timer = window.setInterval(tick, 2500)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [basePath, host, port, probeRemoteHealth, protocol, remoteConnected])
 
   const [storageMigrating, setStorageMigrating] = useState(false)
 
@@ -181,22 +212,56 @@ export default function SettingsPage() {
     setShortcutStatus("reset")
   }, [])
 
-  const handleBackendDefaults = useCallback(() => {
-    const preservedDir = loadAppConfig().backend.localBackendDir ?? ""
+  const handleStartRemote = useCallback(async () => {
+    setRemotePending(true)
+    try {
+      const normalizedProtocol = protocol === "https" ? "https" : "http"
+      const normalizedHost = host.trim() || DEFAULT_BACKEND.host
+      const normalizedPort = port.trim() || DEFAULT_BACKEND.port
+      const normalizedBasePath = basePath.trim()
+
+      const local = await ipc.app.GetLocalBackendStatus({})
+      if (local.reachable) {
+        window.alert("请先停止本地后端，再连接远程后端。")
+        return
+      }
+
+      const ok = await probeRemoteHealth(normalizedProtocol, normalizedHost, normalizedPort, normalizedBasePath)
+      if (!ok) {
+        window.alert("远程后端健康检查失败（/health 不可用）。请确认服务端已启动且地址端口正确。")
+        return
+      }
+
+      updateAppConfig({
+        backend: {
+          ...loadAppConfig().backend,
+          protocol: normalizedProtocol,
+          host: normalizedHost,
+          port: normalizedPort,
+          basePath: normalizedBasePath,
+          remoteConnected: true,
+        },
+      })
+      setProtocol(normalizedProtocol)
+      setHost(normalizedHost)
+      setPort(normalizedPort)
+      setBasePath(normalizedBasePath)
+      setRemoteConnected(true)
+      setRemoteReachable(true)
+    } finally {
+      setRemotePending(false)
+    }
+  }, [basePath, host, port, probeRemoteHealth, protocol])
+
+  const handleStopRemote = useCallback(() => {
     updateAppConfig({
       backend: {
-        protocol: DEFAULT_BACKEND.protocol,
-        host: DEFAULT_BACKEND.host,
-        port: DEFAULT_BACKEND.port,
-        basePath: DEFAULT_BACKEND.basePath,
-        localBackendDir: preservedDir,
+        ...loadAppConfig().backend,
+        remoteConnected: false,
       },
     })
-    setProtocol(DEFAULT_BACKEND.protocol)
-    setHost(DEFAULT_BACKEND.host)
-    setPort(DEFAULT_BACKEND.port)
-    setBasePath(DEFAULT_BACKEND.basePath)
-    setBackendStatus("reset")
+    setRemoteConnected(false)
+    setRemoteReachable(false)
   }, [])
 
   const shortcutCaptureRow = shortcutCaptureRowId
@@ -285,13 +350,21 @@ export default function SettingsPage() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" onClick={handleApplyBackend}>
-                  应用
+                <Button type="button" size="sm" disabled={remotePending} onClick={() => void handleStartRemote()}>
+                  启动
                 </Button>
-                <Button type="button" size="sm" variant="outline" onClick={handleBackendDefaults}>
-                  使用默认
+                <Button type="button" size="sm" variant="outline" disabled={remotePending} onClick={handleStopRemote}>
+                  停止
                 </Button>
-                <CompletionIcon status={backendStatus} />
+                <span
+                  className={cn(
+                    "h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background",
+                    remoteConnected && remoteReachable ? "bg-emerald-500" : "bg-red-500",
+                  )}
+                  title={remoteConnected && remoteReachable ? "远程已连接" : "远程未连接"}
+                  role="status"
+                  aria-label={remoteConnected && remoteReachable ? "远程后端已连接" : "远程后端未连接"}
+                />
               </div>
             </CardContent>
           </Card>

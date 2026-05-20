@@ -135,6 +135,7 @@ function createExportVersion(scope: ExportVersionItem["scope"], orderIndex: numb
     augmentSteps: [],
     exportFormat: "coco",
     keepProjectStructureEnabled: false,
+    compressToZip: false,
   }
 }
 
@@ -158,6 +159,7 @@ export default function ProjectExportPage() {
   const [exporting, setExporting] = useState(false)
   const [activeExportJobId, setActiveExportJobId] = useState("")
   const [exportMessage, setExportMessage] = useState("")
+  const [exportProgress, setExportProgress] = useState(0)
   const [saving, setSaving] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const [projectTasks, setProjectTasks] = useState<ProjectTaskItem[]>([])
@@ -316,11 +318,14 @@ export default function ProjectExportPage() {
   function handleExport() {
     if (exporting || !activeVersion) return
     setExporting(true)
+    setExportProgress(0)
+    setExportMessage("正在启动导出…")
     void startDatasetExport({
       projectId: projectId || "",
       taskId: taskId || "",
       exportFormat: activeVersion.exportFormat,
       keepProjectStructure: activeVersion.keepProjectStructureEnabled,
+      compressToZip: activeVersion.compressToZip,
       trainBoundary: activeVersion.trainBoundary,
       valBoundary: activeVersion.valBoundary,
       versionName: activeVersion.name,
@@ -345,10 +350,12 @@ export default function ProjectExportPage() {
         if (!alive) return
         const current = jobs.find((item) => item.id === activeExportJobId)
         if (!current) return
+        setExportProgress(Math.max(0, Math.min(100, current.progress)))
         setExportMessage(current.message || `导出进度 ${current.progress}%`)
         if (current.status === "success") {
           setExporting(false)
           setActiveExportJobId("")
+          setExportProgress(100)
           setExportMessage("导出完成")
           updateActiveVersion({ status: "ready" })
           return
@@ -356,6 +363,7 @@ export default function ProjectExportPage() {
         if (current.status === "failed") {
           setExporting(false)
           setActiveExportJobId("")
+          setExportProgress(0)
           setExportMessage(current.message || "导出失败")
           return
         }
@@ -609,7 +617,22 @@ export default function ProjectExportPage() {
 
           <Card className="border-border">
             <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
-              <div>
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <label className="relative inline-flex cursor-pointer items-center">
+                    <input
+                      type="checkbox"
+                      className="peer sr-only"
+                      checked={activeVersion?.compressToZip ?? false}
+                      onChange={(e) => updateActiveVersion({ compressToZip: e.target.checked })}
+                      aria-label="切换压缩为 ZIP"
+                      disabled={!activeVersion}
+                    />
+                    <span className="h-6 w-11 rounded-full bg-muted transition-colors peer-checked:bg-primary peer-disabled:opacity-50" />
+                    <span className="pointer-events-none absolute left-0.5 h-5 w-5 rounded-full bg-background shadow transition-transform peer-checked:translate-x-5" />
+                  </label>
+                  <span className="text-sm text-foreground">压缩为 ZIP</span>
+                </div>
                 {showKeepProjectStructureToggle ? (
                   <div className="flex items-center gap-2">
                     <label className="relative inline-flex cursor-pointer items-center">
@@ -641,7 +664,22 @@ export default function ProjectExportPage() {
                   {exporting ? "导出中..." : "导出"}
                 </Button>
               </div>
-              {exportMessage ? <p className="w-full text-xs text-muted-foreground">{exportMessage}</p> : null}
+              {exporting || exportMessage ? (
+                <div className="w-full space-y-1.5">
+                  <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted/90">
+                    <div
+                      className="h-full rounded-full bg-primary/90 transition-[width] duration-300"
+                      style={{ width: `${exportProgress}%` }}
+                      role="progressbar"
+                      aria-valuenow={Math.round(exportProgress)}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-label="导出进度"
+                    />
+                  </div>
+                  {exportMessage ? <p className="text-xs text-muted-foreground">{exportMessage}</p> : null}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </div>

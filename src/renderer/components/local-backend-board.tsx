@@ -10,6 +10,7 @@ const LOCAL_BACKEND_START_TIMEOUT_MS = 60_000
 
 export function LocalBackendBoard() {
   const [backendDir, setBackendDir] = useState(() => loadAppConfig().backend.localBackendDir ?? "")
+  const [remoteConnected, setRemoteConnected] = useState(() => Boolean(loadAppConfig().backend.remoteConnected))
   const [reachable, setReachable] = useState<boolean | null>(null)
   const [picking, setPicking] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
@@ -17,6 +18,7 @@ export function LocalBackendBoard() {
   const [startupTimedOut, setStartupTimedOut] = useState(false)
 
   const refreshStatus = useCallback(() => {
+    setRemoteConnected(Boolean(loadAppConfig().backend.remoteConnected))
     void ipc.app
       .GetLocalBackendStatus({})
       .then((s) => setReachable(s.reachable))
@@ -79,6 +81,10 @@ export function LocalBackendBoard() {
   }, [])
 
   const startBackend = useCallback(async () => {
+    if (remoteConnected) {
+      setHint("当前已连接远程后端，请先在「远程后端」里停止连接，再启动本地后端。")
+      return
+    }
     setHint(null)
     setStartupTimedOut(false)
     try {
@@ -99,7 +105,7 @@ export function LocalBackendBoard() {
       setPendingStartSince(null)
       setHint(e instanceof Error ? e.message : String(e))
     }
-  }, [backendDir, refreshStatus])
+  }, [backendDir, refreshStatus, remoteConnected])
 
   const stopBackend = useCallback(async () => {
     setHint(null)
@@ -115,6 +121,7 @@ export function LocalBackendBoard() {
   }, [refreshStatus])
 
   const dirLabel = backendDir.trim() ? backendDir.trim() : "未设置（将自动查找项目内的 backend）"
+  const runtimeLabel = remoteConnected ? "远程运行中" : reachable === true ? "本地运行中" : "未连接"
 
   return (
     <Card className="border-border/80 shadow-sm">
@@ -175,6 +182,7 @@ export function LocalBackendBoard() {
               variant="outline"
               size="sm"
               className="h-9 w-[6.75rem]"
+              disabled={remoteConnected}
               onClick={() => void startBackend()}
             >
               启动
@@ -189,19 +197,18 @@ export function LocalBackendBoard() {
               停止
             </Button>
           </div>
-          <span
-            className={cn(
-              "h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background",
-              reachable === null && "bg-muted-foreground/45",
-              reachable === true && "bg-emerald-500",
-              reachable === false && "bg-red-500",
-            )}
-            title={reachable === true ? "已连接" : reachable === false ? "无法连接" : "检测中"}
-            role="status"
-            aria-label={
-              reachable === true ? "后端已连接" : reachable === false ? "后端无法连接" : "正在检测连接"
-            }
-          />
+          <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <span
+              className={cn(
+                "h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background",
+                remoteConnected ? "bg-emerald-500" : reachable === null ? "bg-muted-foreground/45" : reachable ? "bg-emerald-500" : "bg-red-500",
+              )}
+              title={runtimeLabel}
+              role="status"
+              aria-label={runtimeLabel}
+            />
+            <span>{runtimeLabel}</span>
+          </div>
         </div>
         {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
       </CardContent>

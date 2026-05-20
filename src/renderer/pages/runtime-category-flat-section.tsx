@@ -2,7 +2,6 @@ import { Button } from "@/components/ui/button"
 import { formatBackendModelDisplayName, type RuntimeCategoryRow, type RuntimeVariantRow } from "@/lib/model-runtime-api"
 import { GpuSwitch } from "@/pages/models-backend"
 import { cn } from "@/lib/utils"
-import { Check, Loader2, X } from "lucide-react"
 
 export type RuntimeCategoryTaskToolbar = {
   enabled: boolean
@@ -20,11 +19,8 @@ export type RuntimeCategoryFlatSectionProps = {
   useGpu: boolean
   onUseGpuChange: (v: boolean) => void
   busy: boolean
-  testing: boolean
-  testOutcome: "success" | "failure" | null
   onStart: () => void
   onStop: () => void
-  onTest: () => void
   /** When set, an extra “启用/禁用” switch is shown and GPU/model/actions are locked while disabled */
   taskToolbar?: RuntimeCategoryTaskToolbar
   /** When true, always draw the top stack rule (use when this block is the only child but should follow other page content) */
@@ -39,17 +35,15 @@ export function RuntimeCategoryFlatSection({
   useGpu,
   onUseGpuChange,
   busy,
-  testing,
-  testOutcome,
   onStart,
   onStop,
-  onTest,
   taskToolbar,
   forceTopStackRule = false,
 }: RuntimeCategoryFlatSectionProps) {
   const variantRow = row.variants.find((v) => v.model_id === selectedModelId)
   const assetsOk = variantRow?.assets_installed ?? false
   const locked = Boolean(taskToolbar && !taskToolbar.enabled)
+  const hasVariants = row.variants.length > 0
 
   return (
     <section
@@ -91,7 +85,7 @@ export function RuntimeCategoryFlatSection({
           id={`ea-runtime-gpu-flat-${categoryId}`}
           label="GPU"
           checked={useGpu}
-          disabled={busy || testing || row.running || locked}
+          disabled={busy || row.running || locked}
           onCheckedChange={onUseGpuChange}
         />
       </div>
@@ -112,51 +106,32 @@ export function RuntimeCategoryFlatSection({
           value={selectedModelId}
           onChange={(e) => onModelIdChange(e.target.value)}
         >
-          {row.variants.map((v: RuntimeVariantRow) => (
-            <option key={v.model_id} value={v.model_id}>
-              {v.label.trim() ? v.label : formatBackendModelDisplayName(v.model_id)}
+          {hasVariants ? (
+            row.variants.map((v: RuntimeVariantRow) => (
+              <option key={v.model_id} value={v.model_id}>
+                {v.label.trim() ? v.label : formatBackendModelDisplayName(v.model_id)}
+              </option>
+            ))
+          ) : (
+            <option value="" disabled>
+              无可用模型（请检查后端资源）
             </option>
-          ))}
+          )}
         </select>
+        {!hasVariants ? (
+          <p className="text-xs text-amber-700 dark:text-amber-300">
+            当前后端未返回可用权重。请确认已在服务端放置 `external/resources` 模型文件，并重启后端后再刷新。
+          </p>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" size="sm" disabled={busy || testing || !assetsOk || locked} onClick={() => void onStart()}>
+        <Button type="button" size="sm" disabled={busy || !assetsOk || locked || !hasVariants} onClick={() => void onStart()}>
           启动
         </Button>
-        <Button type="button" size="sm" variant="outline" disabled={busy || testing || !row.running} onClick={() => void onStop()}>
+        <Button type="button" size="sm" variant="outline" disabled={busy || !row.running} onClick={() => void onStop()}>
           停止
         </Button>
-        <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={busy || testing || !assetsOk || !selectedModelId || locked}
-            onClick={() => void onTest()}
-          >
-            {testing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
-            测试
-          </Button>
-          {testOutcome === "success" ? (
-            <span
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-              title="测试成功"
-              aria-label="测试成功"
-            >
-              <Check className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-            </span>
-          ) : null}
-          {testOutcome === "failure" ? (
-            <span
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-red-500/50 bg-red-500/15 text-red-700 dark:text-red-300"
-              title="测试失败"
-              aria-label="测试失败"
-            >
-              <X className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-            </span>
-          ) : null}
-        </div>
       </div>
     </section>
   )

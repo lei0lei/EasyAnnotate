@@ -17,4 +17,7 @@ external/resources/**/*.onnx
 external/resources/**/*.engine
 external/resources/**/*.zip
 
+# 训练任务临时目录（数据集、runs、权重副本）
+external/temp/
+
 .venv/

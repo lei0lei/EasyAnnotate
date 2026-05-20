@@ -12,6 +12,8 @@ import ModelsBackendPage from "@/pages/models-backend"
 import ModelsPlaceholderAnnotationPage from "@/pages/models-placeholder-annotation-page"
 import ModelsSam2AnnotationPage from "@/pages/models-sam2-annotation"
 import ModelsTrainingPage from "@/pages/models-training"
+import ModelsTrainingYoloPage from "@/pages/models-training-yolo"
+import ModelsTrainingHistoryDetailPage from "@/pages/models-training-history-detail"
 import ProjectDetailPage from "@/pages/project-detail"
 import ProjectExportPage from "@/pages/project-export"
 import ProjectTaskAppendImagesPage from "@/pages/project-task-append-images"
@@ -80,6 +82,8 @@ export default function App() {
             <Route path="annotation/detection" element={<Navigate to="/models/auto" replace />} />
             <Route path="annotation/:placeholderSlug" element={<ModelsPlaceholderAnnotationPage />} />
             <Route path="training" element={<ModelsTrainingPage />} />
+            <Route path="training/yolo" element={<ModelsTrainingYoloPage />} />
+            <Route path="training/history/:jobSlug" element={<ModelsTrainingHistoryDetailPage />} />
           </Route>
           <Route path="monitor" element={<MonitorOutlet />}>
             <Route index element={<MonitorHubPage />} />
