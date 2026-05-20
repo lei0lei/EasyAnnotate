@@ -216,9 +216,46 @@ def _path_for_yaml(value: Path) -> str:
     return value.resolve().as_posix()
 
 
+_DATASET_SPLIT_KEYS = ("train", "val", "test")
+
+
+def _split_path_missing(dataset_root: Path, value: Any) -> bool:
+    """train/val/test 未配置或指向的目录不存在时视为缺少。"""
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return True
+        value = value[0]
+    if not isinstance(value, str) or not value.strip():
+        return True
+    rel = value.strip().replace("\\", "/")
+    if rel in (".", "./"):
+        return False
+    candidate = Path(rel)
+    resolved = candidate if candidate.is_absolute() else (dataset_root / candidate)
+    try:
+        resolved = resolved.resolve()
+    except OSError:
+        return True
+    return not resolved.is_dir()
+
+
+def _normalize_dataset_split_paths(raw: dict[str, Any], dataset_root: Path) -> list[str]:
+    """缺少的 train/val/test 统一为 ``.``（相对 path 根目录的当前目录）。"""
+    changed: list[str] = []
+    for key in _DATASET_SPLIT_KEYS:
+        if _split_path_missing(dataset_root, raw.get(key)):
+            if raw.get(key) != ".":
+                raw[key] = "."
+                changed.append(key)
+    return changed
+
+
 def fix_data_yaml_path_after_unpack(data_yaml: Path, job_slug: str) -> Path:
     """
-    解压后原地更新 data.yaml：仅将 path 设为数据集根的绝对路径，train/val/test 保持相对 path。
+    解压后原地更新 data.yaml：path 设为数据集根绝对路径；
+    缺少或无效的 train/val/test 设为 ``.``（相对 path 的当前目录）。
     """
     import yaml
 
@@ -245,6 +282,7 @@ def fix_data_yaml_path_after_unpack(data_yaml: Path, job_slug: str) -> Path:
         raise ValueError(f"数据集根目录不存在：{dataset_root}")
 
     raw["path"] = _path_for_yaml(dataset_root)
+    split_fixed = _normalize_dataset_split_paths(raw, dataset_root)
     data_yaml.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
     resolved = data_yaml.resolve()
     save_meta(
@@ -255,7 +293,10 @@ def fix_data_yaml_path_after_unpack(data_yaml: Path, job_slug: str) -> Path:
             "dataset_ready": True,
         },
     )
-    append_train_log(job_slug, f"已修正 data.yaml 的 path={raw['path']}（train/val 仍为相对路径）")
+    log = f"已修正 data.yaml 的 path={raw['path']}"
+    if split_fixed:
+        log += f"；train/val/test 缺省目录已设为 .：{', '.join(split_fixed)}"
+    append_train_log(job_slug, log)
     return resolved
 
 

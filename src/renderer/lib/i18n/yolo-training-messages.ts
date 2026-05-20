@@ -11,6 +11,8 @@ export type YoloTrainingMessages = {
   labelTask: string
   labelBaseWeight: string
   labelZipData: string
+  zipHintRemote: string
+  zipHintLocal: string
   labelCommonParams: string
   noModelsOption: string
   uploadedWeightOption: (name: string) => string
@@ -76,6 +78,14 @@ export type YoloTrainingMessages = {
     datasetPickZip: string
     datasetUploadZip: string
   }
+  historyDetail: {
+    loadingLogs: string
+    loadingParams: string
+    loadingResults: string
+    backendDisconnected: string
+    requestFailed: (detail: string) => string
+    resultsApiMissing: string
+  }
 }
 
 const zhCN: YoloTrainingMessages = {
@@ -88,6 +98,8 @@ const zhCN: YoloTrainingMessages = {
   labelTask: "任务",
   labelBaseWeight: "初始权重",
   labelZipData: "zip数据",
+  zipHintRemote: "HTTP 上传至远程",
+  zipHintLocal: "本地选文件 · tar 解压",
   labelCommonParams: "常用参数",
   noModelsOption: "无可用模型（请先 install-resources）",
   uploadedWeightOption: (name) => `已上传：${name}`,
@@ -160,6 +172,14 @@ const zhCN: YoloTrainingMessages = {
     datasetPickZip: "请点击右侧图标选择 ZIP 数据集",
     datasetUploadZip: "请上传 ZIP 数据集",
   },
+  historyDetail: {
+    loadingLogs: "正在读取…",
+    loadingParams: "正在加载参数…",
+    loadingResults: "正在扫描结果图…",
+    backendDisconnected: "后端未连接，无法加载。请先在设置中连接远程或启动本地后端。",
+    requestFailed: (detail) => `加载失败：${detail}`,
+    resultsApiMissing: "远程后端可能未更新，缺少结果图接口（/history/.../results）",
+  },
 }
 
 const en: YoloTrainingMessages = {
@@ -172,6 +192,8 @@ const en: YoloTrainingMessages = {
   labelTask: "Task",
   labelBaseWeight: "Base weights",
   labelZipData: "Dataset ZIP",
+  zipHintRemote: "Upload ZIP over HTTP (remote)",
+  zipHintLocal: "Pick local file · tar extract",
   labelCommonParams: "Common parameters",
   noModelsOption: "No models available (run install-resources first)",
   uploadedWeightOption: (name) => `Uploaded: ${name}`,
@@ -243,6 +265,14 @@ const en: YoloTrainingMessages = {
       filename?.trim() ? `Dataset ready (${filename.trim()})` : "Dataset ready",
     datasetPickZip: "Click the icon to choose a ZIP dataset",
     datasetUploadZip: "Upload a ZIP dataset",
+  },
+  historyDetail: {
+    loadingLogs: "Loading logs…",
+    loadingParams: "Loading parameters…",
+    loadingResults: "Scanning result images…",
+    backendDisconnected: "Backend is not connected. Connect remote or start local backend in Settings.",
+    requestFailed: (detail) => `Failed to load: ${detail}`,
+    resultsApiMissing: "Remote backend may be outdated (missing /history/.../results API)",
   },
 }
 

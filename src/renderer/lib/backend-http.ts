@@ -40,3 +40,19 @@ export async function readFetchError(res: Response): Promise<string> {
   const text = await res.text().catch(() => "")
   return text || res.statusText || "unknown"
 }
+
+/** 避免远程慢连/无响应时前端一直停在「正在加载」。 */
+export async function fetchWithTimeout(
+  input: string,
+  init?: RequestInit,
+  timeoutMs = 60_000,
+): Promise<Response> {
+  try {
+    return await fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+  } catch (e) {
+    if (e instanceof Error && e.name === "TimeoutError") {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`)
+    }
+    throw e
+  }
+}

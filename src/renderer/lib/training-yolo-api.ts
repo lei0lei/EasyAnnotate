@@ -1,5 +1,8 @@
 import { loadAppConfig } from "@/lib/app-config-storage"
-import { apiV1Root, encodeUrlPathSegments, readFetchError } from "@/lib/backend-http"
+import { apiV1Root, encodeUrlPathSegments, fetchWithTimeout, readFetchError } from "@/lib/backend-http"
+
+const YOLO_FETCH_TIMEOUT_MS = 60_000
+const YOLO_LOGS_TIMEOUT_MS = 120_000
 
 export type YoloFamilyId = "yolov8" | "yolo26"
 export type YoloTaskId = "detect" | "segment" | "pose" | "obb" | "classify"
@@ -79,7 +82,7 @@ export async function fetchYoloTrainingCatalog(): Promise<{
   families: Array<{ id: string; label: string }>
   tasks: Array<{ id: string; label: string }>
 }> {
-  const res = await fetch(`${yoloRoot()}/catalog`)
+  const res = await fetchWithTimeout(`${yoloRoot()}/catalog`, undefined, YOLO_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
 }
@@ -94,14 +97,18 @@ export function trainingNameToJobSlug(displayName: string): string {
 }
 
 export async function fetchYoloTrainingHistory(): Promise<YoloHistoryItem[]> {
-  const res = await fetch(`${yoloRoot()}/history`)
+  const res = await fetchWithTimeout(`${yoloRoot()}/history`, undefined, YOLO_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as { items: YoloHistoryItem[] }
   return data.items ?? []
 }
 
 export async function fetchYoloTrainingLogs(jobSlug: string): Promise<string> {
-  const res = await fetch(`${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/logs`)
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/logs`,
+    undefined,
+    YOLO_LOGS_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as { logs: string }
   return data.logs ?? ""
@@ -124,7 +131,11 @@ export type YoloTrainingResultImagesResponse = {
 export async function fetchYoloTrainingResultImages(
   jobSlug: string,
 ): Promise<YoloTrainingResultImagesResponse> {
-  const res = await fetch(`${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results`)
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results`,
+    undefined,
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json() as Promise<YoloTrainingResultImagesResponse>
 }
@@ -136,9 +147,11 @@ export function yoloTrainingResultImageUrl(jobSlug: string, imagePath: string, m
 }
 
 export async function deleteYoloTrainingJob(jobSlug: string): Promise<void> {
-  const res = await fetch(`${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}`, {
-    method: "DELETE",
-  })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}`,
+    { method: "DELETE" },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
 }
 
@@ -148,18 +161,22 @@ export async function prepareYoloTrainingJob(trainingName: string): Promise<{
   display_name: string
   created_at: string
 }> {
-  const res = await fetch(`${yoloRoot()}/jobs/prepare`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ training_name: trainingName }),
-  })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/jobs/prepare`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ training_name: trainingName }),
+    },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
 }
 
 export async function fetchYoloModels(family: YoloFamilyId, task: YoloTaskId): Promise<YoloCatalogModel[]> {
   const q = new URLSearchParams({ family, task })
-  const res = await fetch(`${yoloRoot()}/models?${q}`)
+  const res = await fetchWithTimeout(`${yoloRoot()}/models?${q}`, undefined, YOLO_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as { models: YoloCatalogModel[] }
   return data.models ?? []
@@ -167,13 +184,13 @@ export async function fetchYoloModels(family: YoloFamilyId, task: YoloTaskId): P
 
 export async function fetchYoloWorkspace(jobSlug: string): Promise<YoloWorkspaceSnapshot> {
   const q = new URLSearchParams({ job_slug: jobSlug })
-  const res = await fetch(`${yoloRoot()}/workspace?${q}`)
+  const res = await fetchWithTimeout(`${yoloRoot()}/workspace?${q}`, undefined, YOLO_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
 }
 
 export async function fetchYoloDevices(): Promise<YoloDeviceOption[]> {
-  const res = await fetch(`${yoloRoot()}/devices`)
+  const res = await fetchWithTimeout(`${yoloRoot()}/devices`, undefined, YOLO_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as { devices: YoloDeviceOption[] }
   return data.devices ?? []
@@ -181,7 +198,7 @@ export async function fetchYoloDevices(): Promise<YoloDeviceOption[]> {
 
 export async function fetchYoloTrainStatus(jobSlug: string): Promise<{ job: YoloTrainJob; workspace: YoloWorkspaceSnapshot }> {
   const q = new URLSearchParams({ job_slug: jobSlug })
-  const res = await fetch(`${yoloRoot()}/status?${q}`)
+  const res = await fetchWithTimeout(`${yoloRoot()}/status?${q}`, undefined, YOLO_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
 }
@@ -194,7 +211,11 @@ export async function unpackYoloDataset(
   if (originalFilename?.trim()) {
     q.set("original_filename", originalFilename.trim())
   }
-  const res = await fetch(`${yoloRoot()}/dataset/unpack?${q}`, { method: "POST" })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/dataset/unpack?${q}`,
+    { method: "POST" },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
 }
@@ -206,7 +227,11 @@ export async function uploadYoloDatasetZip(
   const form = new FormData()
   form.append("file", file)
   const q = new URLSearchParams({ job_slug: jobSlug })
-  const res = await fetch(`${yoloRoot()}/dataset/upload?${q}`, { method: "POST", body: form })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/dataset/upload?${q}`,
+    { method: "POST", body: form },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
 }
@@ -286,11 +311,15 @@ export async function selectYoloBaseModel(
   family: YoloFamilyId,
   task: YoloTaskId,
 ): Promise<YoloWeightValidationResponse> {
-  const res = await fetch(`${yoloRoot()}/base-model/select`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ job_slug: jobSlug, asset_id: assetId, family, task }),
-  })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/base-model/select`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_slug: jobSlug, asset_id: assetId, family, task }),
+    },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as {
     weight_meta?: YoloWeightMeta | null
@@ -311,7 +340,11 @@ export async function uploadYoloBaseModel(
   const form = new FormData()
   form.append("file", file)
   const q = new URLSearchParams({ job_slug: jobSlug, family, task })
-  const res = await fetch(`${yoloRoot()}/base-model/upload?${q}`, { method: "POST", body: form })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/base-model/upload?${q}`,
+    { method: "POST", body: form },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as {
     weight_meta?: YoloWeightMeta | null
@@ -329,7 +362,11 @@ export async function validateYoloBaseModel(
   task: YoloTaskId,
 ): Promise<YoloWeightValidationResponse> {
   const q = new URLSearchParams({ job_slug: jobSlug, family, task })
-  const res = await fetch(`${yoloRoot()}/base-model/validate?${q}`, { method: "POST" })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/base-model/validate?${q}`,
+    { method: "POST" },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as YoloWeightValidationResponse
   return {
@@ -358,10 +395,14 @@ export async function startYoloTraining(
     optimizer: Record<string, unknown> | null
   },
 ): Promise<void> {
-  const res = await fetch(`${yoloRoot()}/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ job_slug: jobSlug, ...payload }),
-  })
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/start`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_slug: jobSlug, ...payload }),
+    },
+    YOLO_FETCH_TIMEOUT_MS,
+  )
   if (!res.ok) throw new Error(await readFetchError(res))
 }

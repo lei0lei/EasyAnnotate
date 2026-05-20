@@ -1,4 +1,4 @@
-import { apiV1Root, readFetchError } from "@/lib/backend-http"
+import { apiV1Root, fetchWithTimeout, readFetchError } from "@/lib/backend-http"
 import { loadAppConfig } from "@/lib/app-config-storage"
 
 /** 大 ZIP 上传 + 服务端解压（含远程）默认 2 小时 */
@@ -143,21 +143,11 @@ export async function unpackYoloDatasetWithTimeout(
   if (originalFilename?.trim()) {
     q.set("original_filename", originalFilename.trim())
   }
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const res = await fetch(`${apiV1Root()}/training/yolo/dataset/unpack?${q}`, {
-      method: "POST",
-      signal: controller.signal,
-    })
-    if (!res.ok) throw new Error(await readFetchError(res))
-    return res.json()
-  } catch (e) {
-    if (e instanceof Error && e.name === "AbortError") {
-      throw new Error(`解压超时（超过 ${Math.round(timeoutMs / 60_000)} 分钟）`)
-    }
-    throw e
-  } finally {
-    clearTimeout(timer)
-  }
+  const res = await fetchWithTimeout(
+    `${apiV1Root()}/training/yolo/dataset/unpack?${q}`,
+    { method: "POST" },
+    timeoutMs,
+  )
+  if (!res.ok) throw new Error(await readFetchError(res))
+  return res.json()
 }

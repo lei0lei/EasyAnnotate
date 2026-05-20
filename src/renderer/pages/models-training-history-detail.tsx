@@ -13,7 +13,9 @@ import {
   type YoloTrainingResultImage,
   type YoloWorkspaceSnapshot,
 } from "@/lib/training-yolo-api"
+import { useYoloTrainingMessages } from "@/lib/i18n"
 import { buildTrainParamSections } from "@/lib/yolo-train-params-view"
+import { formatYoloBackendEndpointLabel } from "@/lib/yolo-dataset-upload"
 import { cn } from "@/lib/utils"
 import { ArrowLeft, Loader2, Trash2 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
@@ -28,8 +30,10 @@ const DETAIL_TABS = [
 type DetailTabId = (typeof DETAIL_TABS)[number]["id"]
 
 export default function ModelsTrainingHistoryDetailPage() {
+  const { m } = useYoloTrainingMessages()
   const { jobSlug = "" } = useParams<{ jobSlug: string }>()
   const navigate = useNavigate()
+  const backendEndpoint = formatYoloBackendEndpointLabel()
   const [activeTab, setActiveTab] = useState<DetailTabId>("logs")
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
   const [displayName, setDisplayName] = useState("")
@@ -66,14 +70,15 @@ export default function ModelsTrainingHistoryDetailPage() {
           setDisplayName(jobSlug)
           setIsRunning(false)
           if (!opts?.silent) {
-            setWorkspaceError(e instanceof Error ? e.message : String(e))
+            const msg = e instanceof Error ? e.message : String(e)
+            setWorkspaceError(m.historyDetail.requestFailed(msg))
           }
         })
         .finally(() => {
           if (!opts?.silent) setWorkspaceLoading(false)
         })
     },
-    [jobSlug],
+    [jobSlug, m.historyDetail],
   )
 
   const loadLogs = useCallback(
@@ -90,18 +95,25 @@ export default function ModelsTrainingHistoryDetailPage() {
         })
         .catch((e) => {
           if (!opts?.silent) {
-            setError(e instanceof Error ? e.message : String(e))
+            const msg = e instanceof Error ? e.message : String(e)
+            setError(m.historyDetail.requestFailed(msg))
           }
         })
         .finally(() => {
           if (!opts?.silent) setLoading(false)
         })
     },
-    [jobSlug],
+    [jobSlug, m.historyDetail],
   )
 
   useEffect(() => {
     void probeBackendHealth().then(setBackendOk)
+  }, [])
+
+  const resetDetailLoading = useCallback(() => {
+    setLoading(false)
+    setWorkspaceLoading(false)
+    setResultsLoading(false)
   }, [])
 
   const loadResults = useCallback(
@@ -118,39 +130,56 @@ export default function ModelsTrainingHistoryDetailPage() {
         })
         .catch((e) => {
           if (!opts?.silent) {
-            setResultsError(e instanceof Error ? e.message : String(e))
+            const msg = e instanceof Error ? e.message : String(e)
+            setResultsError(
+              msg.includes("404") || msg.includes("Not Found")
+                ? m.historyDetail.resultsApiMissing
+                : m.historyDetail.requestFailed(msg),
+            )
           }
         })
         .finally(() => {
           if (!opts?.silent) setResultsLoading(false)
         })
     },
-    [jobSlug],
+    [jobSlug, m.historyDetail],
   )
 
   useEffect(() => {
+    if (backendOk === null) return
+    if (!backendOk) {
+      resetDetailLoading()
+      const disconnected = m.historyDetail.backendDisconnected
+      setError(disconnected)
+      setWorkspaceError(disconnected)
+      setResultsError(disconnected)
+      return
+    }
+    setError(null)
+    setWorkspaceError(null)
+    setResultsError(null)
     refreshJobState()
     loadLogs()
     loadResults()
-  }, [refreshJobState, loadLogs, loadResults])
+  }, [backendOk, refreshJobState, loadLogs, loadResults, resetDetailLoading, m.historyDetail])
 
   useEffect(() => {
-    if (!jobSlug || !isRunning) return
+    if (!backendOk || !jobSlug || !isRunning) return
     const t = window.setInterval(refreshJobState, 2000)
     return () => window.clearInterval(t)
-  }, [jobSlug, isRunning, refreshJobState])
+  }, [backendOk, jobSlug, isRunning, refreshJobState])
 
   useEffect(() => {
-    if (!jobSlug || !isRunning || activeTab !== "logs") return
+    if (!backendOk || !jobSlug || !isRunning || activeTab !== "logs") return
     const t = window.setInterval(() => loadLogs({ silent: true }), 3000)
     return () => window.clearInterval(t)
-  }, [jobSlug, isRunning, activeTab, loadLogs])
+  }, [backendOk, jobSlug, isRunning, activeTab, loadLogs])
 
   useEffect(() => {
-    if (!jobSlug || !isRunning || activeTab !== "results") return
+    if (!backendOk || !jobSlug || !isRunning || activeTab !== "results") return
     const t = window.setInterval(() => loadResults({ silent: true }), 5000)
     return () => window.clearInterval(t)
-  }, [jobSlug, isRunning, activeTab, loadResults])
+  }, [backendOk, jobSlug, isRunning, activeTab, loadResults])
 
   const pageTitle = useMemo(() => displayName || jobSlug || "训练任务", [displayName, jobSlug])
 
@@ -195,6 +224,11 @@ export default function ModelsTrainingHistoryDetailPage() {
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">{pageTitle}</h1>
           <p className="mt-1 font-mono text-sm text-muted-foreground">{jobSlug || "—"}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {backendEndpoint.mode === "remote"
+              ? m.backendModeRemote(backendEndpoint.label)
+              : m.backendModeLocal}
+          </p>
         </div>
         <Button
           type="button"
@@ -272,10 +306,10 @@ export default function ModelsTrainingHistoryDetailPage() {
               </Button>
             </div>
             <div className="min-h-0 flex-1">
-              {loading && !logs ? (
+              {loading && !error && !logs ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  正在读取…
+                  {m.historyDetail.loadingLogs}
                 </div>
               ) : error ? (
                 <p className="text-sm text-destructive">{error}</p>
@@ -300,10 +334,10 @@ export default function ModelsTrainingHistoryDetailPage() {
             aria-labelledby="tab-params"
             className="min-h-[min(50vh,480px)]"
           >
-            {workspaceLoading && !workspace ? (
+            {workspaceLoading && !workspaceError && !workspace ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                正在加载参数…
+                {m.historyDetail.loadingParams}
               </div>
             ) : workspaceError ? (
               <p className="text-sm text-destructive">{workspaceError}</p>
@@ -343,10 +377,10 @@ export default function ModelsTrainingHistoryDetailPage() {
                 重新加载
               </Button>
             </div>
-            {resultsLoading && resultImages.length === 0 ? (
+            {resultsLoading && !resultsError && resultImages.length === 0 ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                正在扫描结果图…
+                {m.historyDetail.loadingResults}
               </div>
             ) : resultsError ? (
               <p className="text-sm text-destructive">{resultsError}</p>

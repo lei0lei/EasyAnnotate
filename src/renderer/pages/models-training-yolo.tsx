@@ -753,9 +753,9 @@ export default function ModelsTrainingYoloPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs font-medium text-muted-foreground">{m.labelZipData}</p>
                 {!isLocalBackend ? (
-                  <span className="text-[11px] text-muted-foreground">HTTP ?????</span>
+                  <span className="text-[11px] text-muted-foreground">{m.zipHintRemote}</span>
                 ) : (
-                  <span className="text-[11px] text-muted-foreground">????? ? tar ??</span>
+                  <span className="text-[11px] text-muted-foreground">{m.zipHintLocal}</span>
                 )}
               </div>
               <div className="flex gap-2">
