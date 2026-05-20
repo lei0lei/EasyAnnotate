@@ -2,7 +2,7 @@ import { loadAppConfig } from "@/lib/app-config-storage"
 import { apiV1Root, encodeUrlPathSegments, readFetchError } from "@/lib/backend-http"
 
 export type YoloFamilyId = "yolov8" | "yolo26"
-export type YoloTaskId = "detect" | "segment" | "pose" | "obb"
+export type YoloTaskId = "detect" | "segment" | "pose" | "obb" | "classify"
 
 export type YoloCatalogModel = { asset_id: string; label: string }
 
@@ -12,9 +12,11 @@ export type YoloWorkspaceSnapshot = {
   display_name: string
   created_at?: string | null
   dataset_zip: string | null
+  dataset_zip_filename?: string | null
   dataset_dir: string | null
   data_yaml: string | null
   base_model: string | null
+  base_model_filename?: string | null
   base_model_asset_id?: string | null
   train_log?: string | null
   meta?: Record<string, unknown>
@@ -39,7 +41,17 @@ export type YoloHistoryItem = {
   created_at: string
   status: string
   job_dir: string
+  family?: string | null
+  task?: string | null
+  model_label?: string | null
+  imgsz?: number | null
+  progress?: number
+  epoch?: number
+  epochs?: number
 }
+
+/** @deprecated 训练页不再持久化会话；仅训练历史详情删除任务时清理遗留项。 */
+export const YOLO_ACTIVE_JOB_STORAGE_KEY = "easyannotate.yolo.activeJobSlug"
 
 function yoloRoot(): string {
   return `${apiV1Root()}/training/yolo`
@@ -72,6 +84,15 @@ export async function fetchYoloTrainingCatalog(): Promise<{
   return res.json()
 }
 
+/** 与 backend `sanitize_training_slug` 一致，用于前端同名检测。 */
+export function trainingNameToJobSlug(displayName: string): string {
+  const trimmed = displayName.trim()
+  if (!trimmed) return ""
+  let slug = trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+  slug = slug.replace(/\s+/g, "_").replace(/^[._]+|[._]+$/g, "")
+  return slug.slice(0, 120)
+}
+
 export async function fetchYoloTrainingHistory(): Promise<YoloHistoryItem[]> {
   const res = await fetch(`${yoloRoot()}/history`)
   if (!res.ok) throw new Error(await readFetchError(res))
@@ -84,6 +105,41 @@ export async function fetchYoloTrainingLogs(jobSlug: string): Promise<string> {
   if (!res.ok) throw new Error(await readFetchError(res))
   const data = (await res.json()) as { logs: string }
   return data.logs ?? ""
+}
+
+export type YoloTrainingResultImage = {
+  path: string
+  name: string
+  mtime: number
+  size: number
+}
+
+export type YoloTrainingResultImagesResponse = {
+  job_slug: string
+  runs_dir: string
+  run_dir: string | null
+  items: YoloTrainingResultImage[]
+}
+
+export async function fetchYoloTrainingResultImages(
+  jobSlug: string,
+): Promise<YoloTrainingResultImagesResponse> {
+  const res = await fetch(`${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results`)
+  if (!res.ok) throw new Error(await readFetchError(res))
+  return res.json() as Promise<YoloTrainingResultImagesResponse>
+}
+
+export function yoloTrainingResultImageUrl(jobSlug: string, imagePath: string, mtime?: number): string {
+  const q = new URLSearchParams({ path: imagePath })
+  if (mtime != null && mtime > 0) q.set("t", String(mtime))
+  return `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results/image?${q}`
+}
+
+export async function deleteYoloTrainingJob(jobSlug: string): Promise<void> {
+  const res = await fetch(`${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}`, {
+    method: "DELETE",
+  })
+  if (!res.ok) throw new Error(await readFetchError(res))
 }
 
 export async function prepareYoloTrainingJob(trainingName: string): Promise<{
@@ -130,38 +186,161 @@ export async function fetchYoloTrainStatus(jobSlug: string): Promise<{ job: Yolo
   return res.json()
 }
 
-export async function unpackYoloDataset(jobSlug: string): Promise<{ data_yaml: string }> {
+export async function unpackYoloDataset(
+  jobSlug: string,
+  originalFilename?: string,
+): Promise<{ data_yaml: string; dataset_zip_filename?: string | null }> {
   const q = new URLSearchParams({ job_slug: jobSlug })
+  if (originalFilename?.trim()) {
+    q.set("original_filename", originalFilename.trim())
+  }
   const res = await fetch(`${yoloRoot()}/dataset/unpack?${q}`, { method: "POST" })
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
 }
 
-export async function uploadYoloDatasetZip(jobSlug: string, file: File): Promise<{ data_yaml: string }> {
+export async function uploadYoloDatasetZip(
+  jobSlug: string,
+  file: File,
+): Promise<{ data_yaml: string; dataset_zip_filename?: string | null }> {
   const form = new FormData()
   form.append("file", file)
   const q = new URLSearchParams({ job_slug: jobSlug })
   const res = await fetch(`${yoloRoot()}/dataset/upload?${q}`, { method: "POST", body: form })
   if (!res.ok) throw new Error(await readFetchError(res))
-  const data = (await res.json()) as { data_yaml: string }
-  return { data_yaml: data.data_yaml }
+  return res.json()
 }
 
-export async function selectYoloBaseModel(jobSlug: string, assetId: string): Promise<void> {
+export type YoloWeightMeta = {
+  task: string | null
+  family: string | null
+  model_name: string | null
+  source: string
+}
+
+export function weightMetaMatchesTrainingConfig(
+  meta: YoloWeightMeta | null | undefined,
+  family: YoloFamilyId,
+  task: YoloTaskId,
+): boolean {
+  if (!meta) return false
+  if (meta.task && meta.task !== task) return false
+  if (meta.family && meta.family !== family) return false
+  return true
+}
+
+export function weightMetaHasMismatch(
+  meta: YoloWeightMeta | null | undefined,
+  family: YoloFamilyId,
+  task: YoloTaskId,
+): boolean {
+  if (!meta) return false
+  if (meta.task && meta.task !== task) return true
+  if (meta.family && meta.family !== family) return true
+  return false
+}
+
+export type YoloWeightValidationResponse = {
+  weight_meta: YoloWeightMeta | null
+  weight_warnings: string[]
+}
+
+export function readWorkspaceWeightBinding(meta: Record<string, unknown> | undefined): {
+  weightMeta: YoloWeightMeta | null
+  savedFamily: string | null
+  savedTask: string | null
+  weightWarnings: string[]
+} {
+  if (!meta) return { weightMeta: null, savedFamily: null, savedTask: null, weightWarnings: [] }
+  const rawWarnings = meta.base_model_weight_warnings
+  const weightWarnings = Array.isArray(rawWarnings)
+    ? rawWarnings.filter((w): w is string => typeof w === "string" && w.trim().length > 0)
+    : []
+  const raw = meta.base_model_weight_meta
+  const weightMeta =
+    raw && typeof raw === "object"
+      ? ({
+          task: typeof (raw as YoloWeightMeta).task === "string" ? (raw as YoloWeightMeta).task : null,
+          family:
+            typeof (raw as YoloWeightMeta).family === "string" ? (raw as YoloWeightMeta).family : null,
+          model_name:
+            typeof (raw as YoloWeightMeta).model_name === "string"
+              ? (raw as YoloWeightMeta).model_name
+              : null,
+          source:
+            typeof (raw as YoloWeightMeta).source === "string" ? (raw as YoloWeightMeta).source : "",
+        } satisfies YoloWeightMeta)
+      : null
+  const savedFamily =
+    typeof meta.base_model_family === "string" && meta.base_model_family.trim()
+      ? meta.base_model_family
+      : null
+  const savedTask =
+    typeof meta.base_model_task === "string" && meta.base_model_task.trim() ? meta.base_model_task : null
+  return { weightMeta, savedFamily, savedTask, weightWarnings }
+}
+
+export async function selectYoloBaseModel(
+  jobSlug: string,
+  assetId: string,
+  family: YoloFamilyId,
+  task: YoloTaskId,
+): Promise<YoloWeightValidationResponse> {
   const res = await fetch(`${yoloRoot()}/base-model/select`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ job_slug: jobSlug, asset_id: assetId }),
+    body: JSON.stringify({ job_slug: jobSlug, asset_id: assetId, family, task }),
   })
   if (!res.ok) throw new Error(await readFetchError(res))
+  const data = (await res.json()) as {
+    weight_meta?: YoloWeightMeta | null
+    weight_warnings?: string[]
+  }
+  return {
+    weight_meta: data.weight_meta ?? null,
+    weight_warnings: data.weight_warnings ?? [],
+  }
 }
 
-export async function uploadYoloBaseModel(jobSlug: string, file: File): Promise<void> {
+export async function uploadYoloBaseModel(
+  jobSlug: string,
+  file: File,
+  family: YoloFamilyId,
+  task: YoloTaskId,
+): Promise<YoloWeightValidationResponse> {
   const form = new FormData()
   form.append("file", file)
-  const q = new URLSearchParams({ job_slug: jobSlug })
+  const q = new URLSearchParams({ job_slug: jobSlug, family, task })
   const res = await fetch(`${yoloRoot()}/base-model/upload?${q}`, { method: "POST", body: form })
   if (!res.ok) throw new Error(await readFetchError(res))
+  const data = (await res.json()) as {
+    weight_meta?: YoloWeightMeta | null
+    weight_warnings?: string[]
+  }
+  return {
+    weight_meta: data.weight_meta ?? null,
+    weight_warnings: data.weight_warnings ?? [],
+  }
+}
+
+export async function validateYoloBaseModel(
+  jobSlug: string,
+  family: YoloFamilyId,
+  task: YoloTaskId,
+): Promise<YoloWeightValidationResponse> {
+  const q = new URLSearchParams({ job_slug: jobSlug, family, task })
+  const res = await fetch(`${yoloRoot()}/base-model/validate?${q}`, { method: "POST" })
+  if (!res.ok) throw new Error(await readFetchError(res))
+  const data = (await res.json()) as YoloWeightValidationResponse
+  return {
+    weight_meta: data.weight_meta ?? null,
+    weight_warnings: data.weight_warnings ?? [],
+  }
+}
+
+export function formatWeightWarnings(warnings: string[]): string | null {
+  if (!warnings.length) return null
+  return warnings.join("；")
 }
 
 export async function startYoloTraining(
@@ -170,8 +349,13 @@ export async function startYoloTraining(
     epochs: number
     imgsz: number
     batch: number
+    workers: number
     device: string
-    patience: number
+    time_hours: number | null
+    use_custom_augment: boolean
+    augment: Record<string, unknown> | null
+    use_custom_optimizer: boolean
+    optimizer: Record<string, unknown> | null
   },
 ): Promise<void> {
   const res = await fetch(`${yoloRoot()}/start`, {

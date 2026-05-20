@@ -1,109 +1,263 @@
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  YoloAdvancedBoard,
+  YoloBoolSelect,
+  YoloFloatInput,
+  YoloParamField,
+  YoloSelectInput,
+  YoloTextInput,
+} from "@/components/yolo-advanced-board"
 import { ipc } from "@/gen/ipc"
 import { loadAppConfig } from "@/lib/app-config-storage"
+import {
+  augmentFieldVisible,
+  buildAugmentTrainPayload,
+  buildOptimizerTrainPayload,
+  defaultAugmentValues,
+  defaultOptimizerValues,
+  optimizerFieldVisible,
+  YOLO_AUGMENT_FIELDS,
+  YOLO_OPTIMIZER_FIELDS,
+} from "@/lib/yolo-train-advanced"
 import {
   fetchYoloDevices,
   fetchYoloModels,
   fetchYoloTrainStatus,
+  fetchYoloTrainingHistory,
   fetchYoloWorkspace,
+  formatWeightWarnings,
   prepareYoloTrainingJob,
   probeBackendHealth,
+  readWorkspaceWeightBinding,
   selectYoloBaseModel,
   startYoloTraining,
-  unpackYoloDataset,
+  trainingNameToJobSlug,
   uploadYoloBaseModel,
-  uploadYoloDatasetZip,
+  validateYoloBaseModel,
+  weightMetaHasMismatch,
   type YoloCatalogModel,
   type YoloFamilyId,
   type YoloTaskId,
+  type YoloWeightMeta,
+  type YoloWeightValidationResponse,
 } from "@/lib/training-yolo-api"
+import { useYoloTrainingMessages } from "@/lib/i18n"
+import {
+  formatYoloBackendEndpointLabel,
+  unpackYoloDatasetWithTimeout,
+  uploadYoloDatasetZipWithProgress,
+  type YoloDatasetUploadProgress,
+} from "@/lib/yolo-dataset-upload"
 import { cn } from "@/lib/utils"
-import { ArrowLeft, FolderArchive, LineChart, Play, Upload } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { ArrowLeft, Loader2, Plus, Upload } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
+
+const UPLOADED_WEIGHT_VALUE = "__uploaded_weight__"
 
 const FAMILIES: Array<{ id: YoloFamilyId; label: string }> = [
   { id: "yolov8", label: "YOLOv8" },
   { id: "yolo26", label: "YOLO26" },
 ]
 
-const TASKS: Array<{ id: YoloTaskId; label: string }> = [
-  { id: "detect", label: "Detect" },
-  { id: "segment", label: "Segment" },
-  { id: "pose", label: "Pose" },
-  { id: "obb", label: "OBB" },
-]
+const TASK_IDS: YoloTaskId[] = ["detect", "segment", "pose", "obb", "classify"]
+
+type ChecklistTone = "done" | "warn" | "error" | "pending"
+
+function applyWeightValidation(
+  result: YoloWeightValidationResponse,
+  family: YoloFamilyId,
+  task: YoloTaskId,
+  weightMismatchFallback: string,
+): {
+  weightMeta: YoloWeightMeta | null
+  baseModelValid: boolean
+  baseModelError: string | null
+  baseModelWarning: string | null
+} {
+  const weightMeta = result.weight_meta ?? null
+  const warningText = formatWeightWarnings(result.weight_warnings ?? [])
+
+  if (weightMetaHasMismatch(weightMeta, family, task)) {
+    return {
+      weightMeta,
+      baseModelValid: false,
+      baseModelError: warningText ?? weightMismatchFallback,
+      baseModelWarning: null,
+    }
+  }
+
+  return {
+    weightMeta,
+    baseModelValid: true,
+    baseModelError: null,
+    baseModelWarning: warningText,
+  }
+}
+
+function ChecklistRow({ label, tone }: { label: string; tone: ChecklistTone }) {
+  return (
+    <li className="flex items-start gap-2 text-sm">
+      <span
+        className={cn(
+          "mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full",
+          tone === "done" && "bg-emerald-500",
+          tone === "warn" && "bg-amber-500",
+          tone === "error" && "bg-red-500",
+          tone === "pending" && "bg-muted-foreground/40",
+        )}
+        aria-hidden
+      />
+      <span
+        className={cn(
+          tone === "done" && "text-foreground",
+          tone === "warn" && "text-amber-700 dark:text-amber-400",
+          tone === "error" && "text-destructive",
+          tone === "pending" && "text-muted-foreground",
+        )}
+      >
+        {label}
+      </span>
+    </li>
+  )
+}
 
 export default function ModelsTrainingYoloPage() {
+  const { m } = useYoloTrainingMessages()
+  const weightFileRef = useRef<HTMLInputElement>(null)
+  const datasetFileRef = useRef<HTMLInputElement>(null)
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
-  const [hint, setHint] = useState<string | null>(null)
 
   const [trainingName, setTrainingName] = useState("")
   const [jobSlug, setJobSlug] = useState("")
   const [prepareBusy, setPrepareBusy] = useState(false)
+  const [nameError, setNameError] = useState<string | null>(null)
+  const [historySlugs, setHistorySlugs] = useState<Set<string>>(new Set())
 
   const [family, setFamily] = useState<YoloFamilyId>("yolov8")
   const [task, setTask] = useState<YoloTaskId>("detect")
   const [models, setModels] = useState<YoloCatalogModel[]>([])
-  const [selectedAssetId, setSelectedAssetId] = useState("")
+  const [selectedWeightKey, setSelectedWeightKey] = useState("")
+  const [uploadedWeightLabel, setUploadedWeightLabel] = useState<string | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
 
-  const [workspaceReady, setWorkspaceReady] = useState(false)
-  const [dataYaml, setDataYaml] = useState<string | null>(null)
   const [baseModelReady, setBaseModelReady] = useState(false)
-
-  const [datasetBusy, setDatasetBusy] = useState(false)
+  const [baseModelValid, setBaseModelValid] = useState(false)
+  const [baseModelError, setBaseModelError] = useState<string | null>(null)
+  const [baseModelWarning, setBaseModelWarning] = useState<string | null>(null)
   const [baseModelBusy, setBaseModelBusy] = useState(false)
+
+  const [dataYaml, setDataYaml] = useState<string | null>(null)
+  const [datasetZipFilename, setDatasetZipFilename] = useState<string | null>(null)
+  const [datasetBusy, setDatasetBusy] = useState(false)
+  const [datasetUploadProgress, setDatasetUploadProgress] = useState<YoloDatasetUploadProgress | null>(
+    null,
+  )
+  const [datasetError, setDatasetError] = useState<string | null>(null)
+
   const [training, setTraining] = useState(false)
   const [trainProgress, setTrainProgress] = useState(0)
-  const [trainMessage, setTrainMessage] = useState("")
+  const [startError, setStartError] = useState<string | null>(null)
 
   const [epochs, setEpochs] = useState(100)
+  const [timeHours, setTimeHours] = useState("")
+  const [workers, setWorkers] = useState(2)
+  const [batch, setBatch] = useState(2)
   const [imgsz, setImgsz] = useState(640)
-  const [batch, setBatch] = useState(16)
-  const [patience, setPatience] = useState(50)
   const [device, setDevice] = useState("cpu")
   const [devices, setDevices] = useState<Array<{ id: string; label: string }>>([])
 
+  const [augmentEnabled, setAugmentEnabled] = useState(false)
+  const [optimizerEnabled, setOptimizerEnabled] = useState(false)
+  const [augmentValues, setAugmentValues] = useState(defaultAugmentValues)
+  const [optimizerValues, setOptimizerValues] = useState(defaultOptimizerValues)
+
   const isLocalBackend = !loadAppConfig().backend.remoteConnected
   const localBackendDir = loadAppConfig().backend.localBackendDir?.trim() ?? ""
+  const backendEndpoint = formatYoloBackendEndpointLabel()
 
   const refreshBackend = useCallback(() => {
     void probeBackendHealth().then(setBackendOk)
   }, [])
 
+  const loadHistorySlugs = useCallback(() => {
+    void fetchYoloTrainingHistory()
+      .then((items) => setHistorySlugs(new Set(items.map((i) => i.job_slug))))
+      .catch(() => setHistorySlugs(new Set()))
+  }, [])
+
+  const applyWorkspace = useCallback(
+    (ws: Awaited<ReturnType<typeof fetchYoloWorkspace>>) => {
+      setDataYaml(ws.data_yaml)
+      setDatasetZipFilename(ws.dataset_zip_filename ?? null)
+      setBaseModelReady(Boolean(ws.base_model))
+      const binding = readWorkspaceWeightBinding(ws.meta)
+      if (binding.weightMeta) {
+        const v = applyWeightValidation(
+          { weight_meta: binding.weightMeta, weight_warnings: binding.weightWarnings },
+          family,
+          task,
+          m.errors.weightMismatch,
+        )
+        setBaseModelValid(v.baseModelValid)
+        setBaseModelError(v.baseModelError)
+        setBaseModelWarning(v.baseModelWarning)
+      } else if (!ws.base_model) {
+        setBaseModelValid(false)
+        setBaseModelError(null)
+        setBaseModelWarning(null)
+      }
+      if (ws.base_model_asset_id) {
+        setSelectedWeightKey(ws.base_model_asset_id)
+        setUploadedWeightLabel(null)
+      } else if (ws.base_model) {
+        setSelectedWeightKey(UPLOADED_WEIGHT_VALUE)
+        setUploadedWeightLabel(ws.base_model_filename ?? m.errors.uploadedWeightFallback)
+      }
+      if (binding.savedFamily && binding.savedFamily in { yolov8: 1, yolo26: 1 }) {
+        setFamily(binding.savedFamily as YoloFamilyId)
+      }
+      if (
+        binding.savedTask &&
+        ["detect", "segment", "pose", "obb", "classify"].includes(binding.savedTask)
+      ) {
+        setTask(binding.savedTask as YoloTaskId)
+      }
+    },
+    [family, task, m.errors.weightMismatch, m.errors.uploadedWeightFallback],
+  )
+
   const refreshWorkspace = useCallback(() => {
     if (!jobSlug) return
     void fetchYoloWorkspace(jobSlug)
-      .then((ws) => {
-        setWorkspaceReady(Boolean(ws.dataset_dir || ws.data_yaml))
-        setDataYaml(ws.data_yaml)
-        setBaseModelReady(Boolean(ws.base_model))
-        if (ws.base_model_asset_id && typeof ws.base_model_asset_id === "string") {
-          setSelectedAssetId(ws.base_model_asset_id)
-        }
-      })
+      .then(applyWorkspace)
       .catch(() => {
         /* backend may be down */
       })
-  }, [jobSlug])
+  }, [jobSlug, applyWorkspace])
 
   useEffect(() => {
     refreshBackend()
+    loadHistorySlugs()
     const t = window.setInterval(refreshBackend, 2500)
     return () => window.clearInterval(t)
-  }, [refreshBackend])
+  }, [refreshBackend, loadHistorySlugs])
 
   useEffect(() => {
     if (!backendOk || !jobSlug) return
     refreshWorkspace()
     void fetchYoloDevices()
-      .then(setDevices)
+      .then((list) => {
+        setDevices(list)
+        if (list.length > 0 && !list.some((d) => d.id === device)) {
+          setDevice(list[0]?.id ?? "cpu")
+        }
+      })
       .catch(() => setDevices([{ id: "cpu", label: "CPU" }]))
-  }, [backendOk, jobSlug, refreshWorkspace])
+  }, [backendOk, jobSlug, refreshWorkspace, device])
 
   useEffect(() => {
     if (!backendOk) return
@@ -111,32 +265,48 @@ export default function ModelsTrainingYoloPage() {
     void fetchYoloModels(family, task)
       .then((list) => {
         setModels(list)
-        if (list.length > 0 && !list.some((m) => m.asset_id === selectedAssetId)) {
-          setSelectedAssetId(list[0]?.asset_id ?? "")
-        }
+        setSelectedWeightKey((prev) => {
+          if (prev === UPLOADED_WEIGHT_VALUE) return prev
+          if (list.some((m) => m.asset_id === prev)) return prev
+          return list[0]?.asset_id ?? ""
+        })
       })
-      .catch((e) => setHint(e instanceof Error ? e.message : String(e)))
+      .catch(() => setModels([]))
       .finally(() => setModelsLoading(false))
-  }, [backendOk, family, task, selectedAssetId])
+  }, [backendOk, family, task])
 
   useEffect(() => {
-    if (!jobSlug || !backendOk || baseModelReady || baseModelBusy || !selectedAssetId || modelsLoading) return
-    void handleSelectRegistryModel(selectedAssetId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only sync when catalog / job context changes
-  }, [jobSlug, backendOk, selectedAssetId, modelsLoading, family, task])
+    if (!jobSlug || !backendOk || !baseModelReady || baseModelBusy) return
+    void validateYoloBaseModel(jobSlug, family, task)
+      .then((result) => {
+        const v = applyWeightValidation(result, family, task, m.errors.weightMismatch)
+        setBaseModelValid(v.baseModelValid)
+        setBaseModelError(v.baseModelError)
+        setBaseModelWarning(v.baseModelWarning)
+      })
+      .catch((e) => {
+        setBaseModelValid(false)
+        setBaseModelError(e instanceof Error ? e.message : String(e))
+        setBaseModelWarning(null)
+      })
+  }, [jobSlug, backendOk, family, task, baseModelReady, baseModelBusy, m.errors.weightMismatch])
 
   useEffect(() => {
-    if (!training) return
+    if (!training || !jobSlug) return
     let alive = true
     const tick = () => {
       void fetchYoloTrainStatus(jobSlug)
         .then(({ job }) => {
           if (!alive) return
           setTrainProgress(job.progress)
-          setTrainMessage(job.message)
           if (job.status === "success" || job.status === "failed") {
             setTraining(false)
+            setTrainProgress(job.progress ?? (job.status === "success" ? 100 : 0))
+            if (job.status === "failed" && job.last_error) {
+              setStartError(job.last_error)
+            }
             refreshWorkspace()
+            loadHistorySlugs()
           } else {
             window.setTimeout(tick, 1000)
           }
@@ -149,68 +319,123 @@ export default function ModelsTrainingYoloPage() {
     return () => {
       alive = false
     }
-  }, [training, jobSlug, refreshWorkspace])
+  }, [training, jobSlug, refreshWorkspace, loadHistorySlugs])
+
+  const slugPreview = useMemo(() => trainingNameToJobSlug(trainingName), [trainingName])
+  const nameDuplicate = Boolean(slugPreview && historySlugs.has(slugPreview) && slugPreview !== jobSlug)
 
   const jobReady = Boolean(jobSlug)
+
   const canStart = useMemo(
-    () => jobReady && backendOk && baseModelReady && Boolean(dataYaml) && !training,
-    [jobReady, backendOk, baseModelReady, dataYaml, training],
+    () =>
+      Boolean(jobSlug) &&
+      Boolean(backendOk) &&
+      baseModelReady &&
+      baseModelValid &&
+      Boolean(dataYaml) &&
+      !training,
+    [jobSlug, backendOk, baseModelReady, baseModelValid, dataYaml, training],
   )
 
-  const startChecklist = useMemo(
-    () => [
-      { label: "后端 API 已连接", done: Boolean(backendOk) },
-      { label: "已创建本次训练任务", done: jobReady },
-      {
-        label: baseModelReady
-          ? "初始权重已就绪（registry 或上传 .pt）"
-          : models.length === 0
-            ? "初始权重：registry 无可用模型，请上传 .pt 或先 install-resources"
-            : "初始权重：在下拉框选择后点击「使用所选 registry 权重」，或上传 .pt",
-        done: baseModelReady,
-      },
-      {
-        label: dataYaml
-          ? "训练数据集已解压（含 data.yaml）"
-          : isLocalBackend
-            ? "训练数据：点击「选择 ZIP 数据集」并解压"
-            : "训练数据：上传 ZIP 数据集（远程后端）",
-        done: Boolean(dataYaml),
-      },
-    ],
-    [backendOk, jobReady, baseModelReady, dataYaml, models.length, isLocalBackend],
-  )
+  const backendChecklist = useMemo((): { label: string; tone: ChecklistTone } => {
+    if (backendOk === null) return { label: m.checklist.backendChecking, tone: "pending" }
+    if (!backendOk) return { label: m.checklist.backendDisconnected, tone: "error" }
+    return { label: m.checklist.backendConnected, tone: "done" }
+  }, [backendOk, m.checklist])
+
+  const jobChecklist = useMemo((): { label: string; tone: ChecklistTone } => {
+    if (nameError) return { label: nameError, tone: "error" }
+    if (nameDuplicate) return { label: m.checklist.nameDuplicate, tone: "error" }
+    if (jobReady) return { label: m.checklist.jobCreated(jobSlug), tone: "done" }
+    if (slugPreview) return { label: m.checklist.nameThenCreate, tone: "pending" }
+    return { label: m.checklist.createWorkspaceFirst, tone: "pending" }
+  }, [nameError, nameDuplicate, jobReady, jobSlug, slugPreview, m.checklist])
+
+  const weightChecklist = useMemo((): { label: string; tone: ChecklistTone } => {
+    if (!jobReady) return { label: m.checklist.weightNeedWorkspace, tone: "pending" }
+    if (baseModelBusy) return { label: m.checklist.weightBinding, tone: "pending" }
+    if (baseModelError) return { label: baseModelError, tone: "error" }
+    if (!baseModelReady) {
+      if (models.length === 0) {
+        return { label: m.checklist.weightNoRegistry, tone: "pending" }
+      }
+      return { label: m.checklist.weightSelectOrUpload, tone: "pending" }
+    }
+    if (!baseModelValid) return { label: m.checklist.weightInvalid, tone: "error" }
+    if (baseModelWarning) return { label: baseModelWarning, tone: "warn" }
+    return { label: m.checklist.weightReady, tone: "done" }
+  }, [jobReady, baseModelBusy, baseModelError, baseModelReady, baseModelValid, baseModelWarning, models.length, m.checklist])
+
+  const datasetChecklist = useMemo((): { label: string; tone: ChecklistTone } => {
+    if (!jobReady) return { label: m.checklist.datasetNeedWorkspace, tone: "pending" }
+    if (datasetError) return { label: datasetError, tone: "error" }
+    if (dataYaml) {
+      return { label: m.checklist.datasetReady(datasetZipFilename), tone: "done" }
+    }
+    if (isLocalBackend) {
+      return { label: m.checklist.datasetPickZip, tone: "pending" }
+    }
+    return { label: m.checklist.datasetUploadZip, tone: "pending" }
+  }, [jobReady, datasetError, dataYaml, datasetZipFilename, isLocalBackend, m.checklist])
+
+  const startChecklistExtra = useMemo((): { label: string; tone: ChecklistTone } | null => {
+    if (!startError) return null
+    return { label: startError, tone: "error" }
+  }, [startError])
 
   async function handlePrepareJob() {
     const name = trainingName.trim()
     if (!name) {
-      setHint("请填写本次训练名称")
+      setNameError(m.errors.nameRequired)
+      return
+    }
+    const slug = trainingNameToJobSlug(name)
+    if (!slug) {
+      setNameError(m.errors.nameInvalid)
+      return
+    }
+    if (historySlugs.has(slug)) {
+      setNameError(m.errors.nameDuplicate)
+      return
+    }
+    if (!backendOk) {
+      setNameError(m.errors.connectBackend)
       return
     }
     setPrepareBusy(true)
-    setHint(null)
+    setNameError(null)
+    setDatasetError(null)
+    setStartError(null)
     try {
       const prepared = await prepareYoloTrainingJob(name)
       setJobSlug(prepared.job_slug)
-      setHint(`已创建训练目录：external/temp/${prepared.job_slug}`)
+      setHistorySlugs((prev) => new Set(prev).add(prepared.job_slug))
     } catch (e) {
-      setHint(e instanceof Error ? e.message : String(e))
+      setNameError(e instanceof Error ? e.message : String(e))
     } finally {
       setPrepareBusy(false)
     }
   }
 
-  async function handleSelectRegistryModel(assetId = selectedAssetId) {
-    if (!jobSlug || !assetId) return
+  async function handleSelectRegistryWeight(assetId: string) {
+    if (!jobSlug || !assetId || assetId === UPLOADED_WEIGHT_VALUE) return
     setBaseModelBusy(true)
-    setHint(null)
+    setBaseModelError(null)
+    setBaseModelWarning(null)
     try {
-      await selectYoloBaseModel(jobSlug, assetId)
+      const result = await selectYoloBaseModel(jobSlug, assetId, family, task)
+      const v = applyWeightValidation(result, family, task, m.errors.weightMismatch)
+      setBaseModelValid(v.baseModelValid)
+      setBaseModelError(v.baseModelError)
+      setBaseModelWarning(v.baseModelWarning)
       setBaseModelReady(true)
-      setHint("已选用 registry 初始权重")
+      setUploadedWeightLabel(null)
       refreshWorkspace()
     } catch (e) {
-      setHint(e instanceof Error ? e.message : String(e))
+      setBaseModelReady(false)
+      setBaseModelValid(false)
+      setBaseModelError(e instanceof Error ? e.message : String(e))
+      setBaseModelWarning(null)
     } finally {
       setBaseModelBusy(false)
     }
@@ -219,402 +444,570 @@ export default function ModelsTrainingYoloPage() {
   async function handleUploadBaseModel(file: File | null) {
     if (!jobSlug || !file) return
     setBaseModelBusy(true)
-    setHint(null)
+    setBaseModelError(null)
+    setBaseModelWarning(null)
     try {
-      await uploadYoloBaseModel(jobSlug, file)
+      const result = await uploadYoloBaseModel(jobSlug, file, family, task)
+      const v = applyWeightValidation(result, family, task, m.errors.weightMismatch)
+      setBaseModelValid(v.baseModelValid)
+      setBaseModelError(v.baseModelError)
+      setBaseModelWarning(v.baseModelWarning)
       setBaseModelReady(true)
-      setHint("已上传自定义权重")
+      setSelectedWeightKey(UPLOADED_WEIGHT_VALUE)
+      setUploadedWeightLabel(file.name)
       refreshWorkspace()
     } catch (e) {
-      setHint(e instanceof Error ? e.message : String(e))
+      setBaseModelReady(false)
+      setBaseModelValid(false)
+      setBaseModelError(e instanceof Error ? e.message : String(e))
+      setBaseModelWarning(null)
     } finally {
       setBaseModelBusy(false)
+      if (weightFileRef.current) weightFileRef.current.value = ""
+    }
+  }
+
+  function handleWeightSelectChange(value: string) {
+    setSelectedWeightKey(value)
+    if (value !== UPLOADED_WEIGHT_VALUE) {
+      void handleSelectRegistryWeight(value)
     }
   }
 
   async function handlePickDatasetZip() {
     if (!jobSlug) {
-      setHint("请先创建训练任务")
+      setDatasetError(m.errors.createWorkspaceFirst)
       return
     }
     if (!isLocalBackend) {
-      setHint("远程后端请使用下方「上传 ZIP 数据集」")
+      setDatasetError(m.errors.remoteZipUpload)
+      return
+    }
+    if (!localBackendDir) {
+      setDatasetError(m.errors.pickBackendDir)
       return
     }
     setDatasetBusy(true)
-    setHint(null)
+    setDatasetError(null)
     try {
       const picked = await ipc.app.SelectFiles({
-        title: "选择训练数据集（ZIP）",
+        title: m.ipc.pickDatasetZipTitle,
         defaultPath: "",
       })
       if (picked.canceled || !picked.paths[0]) return
-      if (!localBackendDir) {
-        setHint("请先在设置中配置本地 backend 目录")
-        return
-      }
+      const sourcePath = picked.paths[0]
+      const originalName = sourcePath.split(/[/\\]/).pop() ?? "dataset.zip"
       const copy = await ipc.app.CopyYoloTrainingDatasetZip({
         backendDirectory: localBackendDir,
-        sourceZipPath: picked.paths[0],
+        sourceZipPath: sourcePath,
         trainingName: trainingName.trim() || jobSlug,
       })
       if (!copy.ok) {
-        setHint(copy.errorMessage || "复制数据集失败")
+        setDatasetError(copy.errorMessage || m.errors.copyDatasetFailed)
         return
       }
-      const unpacked = await unpackYoloDataset(jobSlug)
+      setDatasetUploadProgress({ phase: "unpacking", percent: 35 })
+      const unpacked = await unpackYoloDatasetWithTimeout(jobSlug, originalName)
       setDataYaml(unpacked.data_yaml)
-      setWorkspaceReady(true)
-      setHint(`数据集已写入 external/temp/${jobSlug} 并解压`)
+      setDatasetZipFilename(unpacked.dataset_zip_filename ?? originalName)
       refreshWorkspace()
     } catch (e) {
-      setHint(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      setDatasetError(
+        msg.includes("??") ? m.errors.datasetUnpackTimeout : msg || m.errors.copyDatasetFailed,
+      )
     } finally {
       setDatasetBusy(false)
+      setDatasetUploadProgress(null)
+    }
+  }
+
+  function handleDatasetUploadClick() {
+    if (isLocalBackend) {
+      void handlePickDatasetZip()
+    } else {
+      datasetFileRef.current?.click()
     }
   }
 
   async function handleUploadDatasetZip(file: File | null) {
     if (!jobSlug || !file) return
     setDatasetBusy(true)
-    setHint(null)
+    setDatasetError(null)
+    setDatasetUploadProgress({ phase: "uploading", percent: 0 })
     try {
-      const uploaded = await uploadYoloDatasetZip(jobSlug, file)
+      const uploaded = await uploadYoloDatasetZipWithProgress(jobSlug, file, {
+        onProgress: setDatasetUploadProgress,
+      })
       setDataYaml(uploaded.data_yaml)
-      setWorkspaceReady(true)
-      setHint(`数据集已上传至 external/temp/${jobSlug} 并解压`)
+      setDatasetZipFilename(uploaded.dataset_zip_filename ?? file.name)
       refreshWorkspace()
     } catch (e) {
-      setHint(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes("??")) {
+        setDatasetError(m.errors.datasetUploadTimeout)
+      } else if (msg.includes("??") || msg.includes("??")) {
+        setDatasetError(m.errors.datasetUploadNetwork)
+      } else if (msg.includes("??")) {
+        setDatasetError(m.errors.datasetUnpackTimeout)
+      } else {
+        setDatasetError(msg)
+      }
     } finally {
       setDatasetBusy(false)
+      setDatasetUploadProgress(null)
+      if (datasetFileRef.current) datasetFileRef.current.value = ""
     }
   }
 
   async function handleStartTraining() {
-    if (!jobSlug) return
+    if (!jobSlug || !canStart) return
     setTraining(true)
     setTrainProgress(0)
-    setTrainMessage("正在启动训练…")
-    setHint(null)
+    setStartError(null)
+    const parsedHours = timeHours.trim() === "" ? null : Number(timeHours)
+    const time_hours =
+      parsedHours !== null && Number.isFinite(parsedHours) && parsedHours > 0 ? parsedHours : null
     try {
-      await startYoloTraining(jobSlug, { epochs, imgsz, batch, device, patience })
+      await startYoloTraining(jobSlug, {
+        epochs,
+        imgsz,
+        batch,
+        workers,
+        device,
+        time_hours,
+        use_custom_augment: augmentEnabled,
+        augment: augmentEnabled ? buildAugmentTrainPayload(augmentValues, task) : null,
+        use_custom_optimizer: optimizerEnabled,
+        optimizer: optimizerEnabled ? buildOptimizerTrainPayload(optimizerValues, task) : null,
+      })
     } catch (e) {
       setTraining(false)
-      setHint(e instanceof Error ? e.message : String(e))
+      setStartError(e instanceof Error ? e.message : String(e))
     }
   }
+
+  const visibleAugmentFields = YOLO_AUGMENT_FIELDS.filter((f) => augmentFieldVisible(f, task))
+  const visibleOptimizerFields = YOLO_OPTIMIZER_FIELDS.filter((f) => optimizerFieldVisible(f, task))
+
+  const nameFieldError =
+    nameError ?? (nameDuplicate ? m.errors.nameDuplicate : null)
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none overscroll-contain">
         <div className="mx-auto w-full max-w-3xl space-y-6 px-6 py-8 pb-12">
           <div className="flex items-center gap-3">
-            <Button asChild variant="ghost" size="icon" className="shrink-0" aria-label="返回模型训练">
+            <Button asChild variant="ghost" size="icon" className="shrink-0" aria-label={m.backAria}>
               <Link to="/models/training">
                 <ArrowLeft className="h-4 w-4" />
               </Link>
             </Button>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">YOLO 训练</h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                每次训练在 <code className="text-xs">external/temp/&lt;训练名&gt;/</code> 独立目录
-              </p>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-2xl font-semibold tracking-tight text-foreground">{m.pageTitle}</h1>
+              <p className="mt-1 text-sm text-muted-foreground">{m.pageSubtitle}</p>
             </div>
+            <span
+              className={cn(
+                "shrink-0 rounded-md border px-2 py-1 text-xs font-medium",
+                backendEndpoint.mode === "remote"
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-border/70 bg-muted/50 text-muted-foreground",
+              )}
+              title={backendEndpoint.label}
+            >
+              {backendEndpoint.mode === "remote"
+                ? m.backendModeRemote(backendEndpoint.label)
+                : m.backendModeLocal}
+            </span>
           </div>
 
-      <Card className={cn("border-border/80", backendOk === false && "border-destructive/50")}>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base font-medium">后端连接</CardTitle>
-          <CardDescription>
-            {isLocalBackend
-              ? "当前为本地后端（127.0.0.1:8000），请先在设置中启动本地 API"
-              : "当前为远程后端，训练数据与 temp 目录在远程机器上"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex items-center gap-2 text-sm">
-          <span
-            className={cn(
-              "inline-block h-2 w-2 rounded-full",
-              backendOk === null ? "bg-muted-foreground/50" : backendOk ? "bg-emerald-500" : "bg-red-500",
-            )}
-          />
-          {backendOk === null ? "检测中…" : backendOk ? "后端已连接" : "后端不可用"}
-          <Button type="button" variant="outline" size="sm" className="ml-auto" asChild>
-            <Link to="/settings">打开设置</Link>
-          </Button>
-        </CardContent>
-      </Card>
+          <Card className="border-border/80 shadow-sm">
+            <CardContent className="pt-6">
+              <div className="flex gap-2">
+                <Input
+                  className="min-w-0 flex-1"
+                  value={trainingName}
+                  onChange={(e) => {
+                    setTrainingName(e.target.value)
+                    setNameError(null)
+                  }}
+                  placeholder={m.trainingNamePlaceholder}
+                  disabled={Boolean(jobSlug) || prepareBusy}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-9 w-9 shrink-0"
+                  aria-label={m.createJobAria}
+                  disabled={
+                    !backendOk ||
+                    prepareBusy ||
+                    Boolean(jobSlug) ||
+                    !trainingName.trim() ||
+                    nameDuplicate
+                  }
+                  onClick={() => void handlePrepareJob()}
+                >
+                  {prepareBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plus className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+              {nameFieldError ? (
+                <p className="mt-2 text-sm text-destructive">{nameFieldError}</p>
+              ) : null}
+            </CardContent>
+          </Card>
 
-      <Card className="border-border/80 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">本次训练</CardTitle>
-          <CardDescription>名称用作 temp 子文件夹名；同名已存在时需更换</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-end">
-          <label className="flex-1 space-y-1 text-sm">
-            <span className="text-muted-foreground">训练名称</span>
-            <Input
-              value={trainingName}
-              onChange={(e) => setTrainingName(e.target.value)}
-              placeholder="例如 retail-counter-v1"
-              disabled={Boolean(jobSlug) || prepareBusy}
-            />
-          </label>
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={!backendOk || prepareBusy || Boolean(jobSlug) || !trainingName.trim()}
-            onClick={() => void handlePrepareJob()}
+          <Card className={cn("border-border/80 shadow-sm", !jobReady && "opacity-60")}>
+            <CardContent className="space-y-4 pt-6">
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">{m.labelFamily}</p>
+                <ToggleGroup
+                  type="single"
+                  value={family}
+                  onValueChange={(v) => v && setFamily(v as YoloFamilyId)}
+                  className="flex flex-wrap justify-start gap-2"
+                  disabled={!jobReady}
+                >
+                  {FAMILIES.map((f) => (
+                    <ToggleGroupItem key={f.id} value={f.id} className="px-4">
+                      {f.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">{m.labelTask}</p>
+                <ToggleGroup
+                  type="single"
+                  value={task}
+                  onValueChange={(v) => v && setTask(v as YoloTaskId)}
+                  className="flex flex-wrap justify-start gap-2"
+                  disabled={!jobReady}
+                >
+                  {TASK_IDS.map((id) => (
+                    <ToggleGroupItem key={id} value={id} className="px-3">
+                      {m.tasks[id]}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">{m.labelBaseWeight}</p>
+                <div className="flex gap-2">
+                  <select
+                    className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+                    value={selectedWeightKey}
+                    onChange={(e) => handleWeightSelectChange(e.target.value)}
+                    disabled={!jobReady || !backendOk || modelsLoading || baseModelBusy}
+                  >
+                    {models.length === 0 && selectedWeightKey !== UPLOADED_WEIGHT_VALUE ? (
+                      <option value="">{m.noModelsOption}</option>
+                    ) : null}
+                    {uploadedWeightLabel && baseModelReady ? (
+                      <option value={UPLOADED_WEIGHT_VALUE}>{m.uploadedWeightOption(uploadedWeightLabel)}</option>
+                    ) : null}
+                    {models.map((m) => (
+                      <option key={m.asset_id} value={m.asset_id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    ref={weightFileRef}
+                    type="file"
+                    accept=".pt"
+                    className="hidden"
+                    disabled={!jobReady || !backendOk || baseModelBusy}
+                    onChange={(e) => void handleUploadBaseModel(e.target.files?.[0] ?? null)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0"
+                    aria-label={m.uploadWeightAria}
+                    disabled={!jobReady || !backendOk || baseModelBusy}
+                    onClick={() => weightFileRef.current?.click()}
+                  >
+                    {baseModelBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Upload className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={cn("border-border/80 shadow-sm", !jobReady && "opacity-60")}>
+            <CardContent className="space-y-3 pt-6">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-medium text-muted-foreground">{m.labelZipData}</p>
+                {!isLocalBackend ? (
+                  <span className="text-[11px] text-muted-foreground">HTTP ?????</span>
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">????? ? tar ??</span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  readOnly
+                  className="h-9 min-w-0 flex-1 bg-muted/30"
+                  value={datasetZipFilename ?? ""}
+                  placeholder={m.zipPlaceholder}
+                />
+                <input
+                  ref={datasetFileRef}
+                  type="file"
+                  accept=".zip"
+                  className="hidden"
+                  disabled={!jobReady || !backendOk || datasetBusy}
+                  onChange={(e) => void handleUploadDatasetZip(e.target.files?.[0] ?? null)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0"
+                  aria-label={m.uploadZipAria}
+                  disabled={!jobReady || !backendOk || datasetBusy}
+                  onClick={handleDatasetUploadClick}
+                >
+                  {datasetBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Upload className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+              {datasetUploadProgress ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span>
+                      {datasetUploadProgress.phase === "uploading"
+                        ? m.datasetUploading(datasetUploadProgress.percent)
+                        : m.datasetUnpacking}
+                    </span>
+                    <span className="tabular-nums">{datasetUploadProgress.percent}%</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted/90">
+                    <div
+                      className="h-full rounded-full bg-primary/90 transition-[width] duration-300"
+                      style={{ width: `${datasetUploadProgress.percent}%` }}
+                      role="progressbar"
+                      aria-valuenow={datasetUploadProgress.percent}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                    />
+                  </div>
+                </div>
+              ) : null}
+              {datasetError ? <p className="text-sm text-destructive">{datasetError}</p> : null}
+            </CardContent>
+          </Card>
+
+          <Card className={cn("border-border/80 shadow-sm", !jobReady && "opacity-60")}>
+            <CardContent className="space-y-4 pt-6">
+              <p className="text-xs font-medium text-muted-foreground">{m.labelCommonParams}</p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1 text-sm">
+                  <span className="text-muted-foreground">{m.paramEpochs}</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={epochs}
+                    onChange={(e) => setEpochs(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="text-muted-foreground" title={m.paramTimeHoursTitle}>
+                    {m.paramTimeHours}
+                  </span>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={timeHours}
+                    placeholder={m.paramTimePlaceholder}
+                    onChange={(e) => setTimeHours(e.target.value)}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="text-muted-foreground">{m.paramWorkers}</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={workers}
+                    onChange={(e) => setWorkers(Math.max(0, Number(e.target.value) || 0))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="text-muted-foreground">{m.paramBatch}</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={batch}
+                    onChange={(e) => setBatch(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="text-muted-foreground">{m.paramImgsz}</span>
+                  <Input
+                    type="number"
+                    min={32}
+                    step={32}
+                    value={imgsz}
+                    onChange={(e) => setImgsz(Math.max(32, Number(e.target.value) || 640))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="text-muted-foreground">{m.paramDevice}</span>
+                  <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={device}
+                    onChange={(e) => setDevice(e.target.value)}
+                  >
+                    {devices.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </CardContent>
+          </Card>
+
+          <YoloAdvancedBoard
+            title={m.boardAugment}
+            enabled={augmentEnabled}
+            onEnabledChange={setAugmentEnabled}
+            dimmed={!jobReady}
+            switchOnLabel={m.switchOn}
+            switchOffLabel={m.switchOff}
           >
-            {prepareBusy ? "创建中…" : jobSlug ? "已创建" : "创建训练任务"}
-          </Button>
-        </CardContent>
-        {jobSlug ? (
-          <p className="px-6 pb-4 text-xs text-muted-foreground">
-            当前目录：<span className="font-mono">external/temp/{jobSlug}</span>
-          </p>
-        ) : null}
-      </Card>
+            {visibleAugmentFields.map((field) => (
+              <YoloParamField key={field.key} label={field.label} hint={field.hint}>
+                {field.type === "float" ? (
+                  <YoloFloatInput
+                    value={augmentValues[field.key] ?? field.default}
+                    min={field.min}
+                    max={field.max}
+                    step={field.step}
+                    onChange={(n) => setAugmentValues((prev) => ({ ...prev, [field.key]: n }))}
+                  />
+                ) : (
+                  <YoloSelectInput
+                    value={String(augmentValues[field.key] ?? field.default)}
+                    options={field.options ?? []}
+                    onChange={(v) => setAugmentValues((prev) => ({ ...prev, [field.key]: v }))}
+                  />
+                )}
+              </YoloParamField>
+            ))}
+          </YoloAdvancedBoard>
 
-      <Card className={cn("border-border/80 shadow-sm", !jobReady && "opacity-60")}>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">模型</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">模型族</p>
-            <ToggleGroup
-              type="single"
-              value={family}
-              onValueChange={(v) => v && setFamily(v as YoloFamilyId)}
-              className="flex flex-wrap justify-start gap-2"
-            >
-              {FAMILIES.map((f) => (
-                <ToggleGroupItem key={f.id} value={f.id} className="px-4">
-                  {f.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-          </div>
+          <YoloAdvancedBoard
+            title={m.boardOptimizer}
+            enabled={optimizerEnabled}
+            onEnabledChange={setOptimizerEnabled}
+            dimmed={!jobReady}
+            switchOnLabel={m.switchOn}
+            switchOffLabel={m.switchOff}
+          >
+            {visibleOptimizerFields.map((field) => (
+              <YoloParamField key={field.key} label={field.label} hint={field.hint}>
+                {field.type === "float" ? (
+                  <YoloFloatInput
+                    value={optimizerValues[field.key] ?? field.default}
+                    min={field.min}
+                    max={field.max}
+                    step={field.step}
+                    onChange={(n) => setOptimizerValues((prev) => ({ ...prev, [field.key]: n }))}
+                  />
+                ) : field.type === "int" ? (
+                  <YoloFloatInput
+                    value={optimizerValues[field.key] ?? field.default}
+                    min={field.min}
+                    max={field.max}
+                    step={1}
+                    onChange={(n) =>
+                      setOptimizerValues((prev) => ({ ...prev, [field.key]: Math.round(n) }))
+                    }
+                  />
+                ) : field.type === "bool" ? (
+                  <YoloBoolSelect
+                    value={optimizerValues[field.key] ?? field.default}
+                    noLabel={m.boolNo}
+                    yesLabel={m.boolYes}
+                    onChange={(on) =>
+                      setOptimizerValues((prev) => ({ ...prev, [field.key]: on ? 1 : 0 }))
+                    }
+                  />
+                ) : field.type === "text" ? (
+                  <YoloTextInput
+                    value={String(optimizerValues[field.key] ?? field.default)}
+                    placeholder={field.placeholder}
+                    onChange={(v) => setOptimizerValues((prev) => ({ ...prev, [field.key]: v }))}
+                  />
+                ) : (
+                  <YoloSelectInput
+                    value={String(optimizerValues[field.key] ?? field.default)}
+                    options={field.options ?? []}
+                    onChange={(v) => setOptimizerValues((prev) => ({ ...prev, [field.key]: v }))}
+                  />
+                )}
+              </YoloParamField>
+            ))}
+          </YoloAdvancedBoard>
 
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">任务</p>
-            <ToggleGroup
-              type="single"
-              value={task}
-              onValueChange={(v) => v && setTask(v as YoloTaskId)}
-              className="flex flex-wrap justify-start gap-2"
-            >
-              {TASKS.map((t) => (
-                <ToggleGroupItem key={t.id} value={t.id} className="px-3">
-                  {t.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-          </div>
-
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">初始权重（resources/ultralytics）</p>
-            <select
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              value={selectedAssetId}
-              onChange={(e) => setSelectedAssetId(e.target.value)}
-              disabled={!jobReady || !backendOk || modelsLoading || models.length === 0 || baseModelBusy}
-            >
-              {models.length === 0 ? <option value="">无可用模型（请先 install-resources）</option> : null}
-              {models.map((m) => (
-                <option key={m.asset_id} value={m.asset_id}>
-                  {m.label} ({m.asset_id})
-                </option>
-              ))}
-            </select>
-            <div className="flex flex-wrap gap-2">
+          <Card className="border-border/80 shadow-sm">
+            <CardContent className="flex flex-col gap-4 py-4">
+              <ul className="space-y-2">
+                <ChecklistRow {...backendChecklist} />
+                <ChecklistRow {...jobChecklist} />
+                <ChecklistRow {...weightChecklist} />
+                <ChecklistRow {...datasetChecklist} />
+                {startChecklistExtra ? <ChecklistRow {...startChecklistExtra} /> : null}
+              </ul>
               <Button
                 type="button"
-                variant="outline"
-                size="sm"
-                disabled={!jobReady || !backendOk || !selectedAssetId || baseModelBusy}
-                onClick={() => void handleSelectRegistryModel()}
+                className="gap-2"
+                disabled={!canStart || training}
+                onClick={() => void handleStartTraining()}
               >
-                使用所选 registry 权重
-              </Button>
-              <label className="inline-flex cursor-pointer items-center">
-                <input
-                  type="file"
-                  accept=".pt"
-                  className="sr-only"
-                  disabled={!jobReady || !backendOk || baseModelBusy}
-                  onChange={(e) => void handleUploadBaseModel(e.target.files?.[0] ?? null)}
-                />
-                <span
-                  className={cn(
-                    "inline-flex h-8 items-center rounded-md border border-input bg-background px-3 text-xs font-medium",
-                    (!backendOk || baseModelBusy) && "pointer-events-none opacity-50",
-                  )}
-                >
-                  <Upload className="mr-1 h-3.5 w-3.5" />
-                  上传 .pt
-                </span>
-              </label>
-            </div>
-            {baseModelReady ? <p className="text-xs text-emerald-600 dark:text-emerald-400">基础模型已就绪</p> : null}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className={cn("border-border/80 shadow-sm", !jobReady && "opacity-60")}>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">训练数据</CardTitle>
-          <CardDescription>仅支持 ZIP；解压到本次训练目录（需含 data.yaml）</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {isLocalBackend ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="gap-2"
-              disabled={!jobReady || !backendOk || datasetBusy}
-              onClick={() => void handlePickDatasetZip()}
-            >
-              <FolderArchive className="h-4 w-4" />
-              {datasetBusy ? "处理中…" : "选择 ZIP 数据集"}
-            </Button>
-          ) : (
-            <label className="inline-flex cursor-pointer items-center">
-              <input
-                type="file"
-                accept=".zip"
-                className="sr-only"
-                disabled={!jobReady || !backendOk || datasetBusy}
-                onChange={(e) => void handleUploadDatasetZip(e.target.files?.[0] ?? null)}
-              />
-              <span
-                className={cn(
-                  "inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm font-medium",
-                  (!jobReady || !backendOk || datasetBusy) && "pointer-events-none opacity-50",
+                {training ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {m.trainingInProgress}
+                  </>
+                ) : (
+                  m.startTraining
                 )}
-              >
-                <FolderArchive className="h-4 w-4" />
-                {datasetBusy ? "处理中…" : "上传 ZIP 数据集"}
-              </span>
-            </label>
-          )}
-          {dataYaml ? <p className="break-all text-xs text-emerald-600 dark:text-emerald-400">data.yaml: {dataYaml}</p> : null}
-        </CardContent>
-      </Card>
-
-      <Card className={cn("border-border/80 shadow-sm", !jobReady && "opacity-60")}>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base font-medium">高级参数</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <label className="space-y-1 text-sm">
-            <span className="text-muted-foreground">训练轮数 epochs</span>
-            <Input
-              type="number"
-              min={1}
-              value={epochs}
-              onChange={(e) => setEpochs(Math.max(1, Number(e.target.value) || 1))}
-            />
-          </label>
-          <label className="space-y-1 text-sm">
-            <span className="text-muted-foreground">图像尺寸 imgsz</span>
-            <Input
-              type="number"
-              min={32}
-              step={32}
-              value={imgsz}
-              onChange={(e) => setImgsz(Math.max(32, Number(e.target.value) || 640))}
-            />
-          </label>
-          <label className="space-y-1 text-sm">
-            <span className="text-muted-foreground">batch</span>
-            <Input
-              type="number"
-              min={1}
-              value={batch}
-              onChange={(e) => setBatch(Math.max(1, Number(e.target.value) || 1))}
-            />
-          </label>
-          <label className="space-y-1 text-sm">
-            <span className="text-muted-foreground">早停 patience</span>
-            <Input
-              type="number"
-              min={0}
-              value={patience}
-              onChange={(e) => setPatience(Math.max(0, Number(e.target.value) || 0))}
-            />
-          </label>
-          <label className="space-y-1 text-sm sm:col-span-2">
-            <span className="text-muted-foreground">设备</span>
-            <select
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              value={device}
-              onChange={(e) => setDevice(e.target.value)}
-            >
-              {devices.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/80 shadow-sm">
-        <CardContent className="flex flex-col gap-4 py-4">
-          <ul className="space-y-1.5 text-xs text-muted-foreground">
-            {startChecklist.map((item) => (
-              <li key={item.label} className="flex items-start gap-2">
-                <span
-                  className={cn(
-                    "mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-                    item.done ? "bg-emerald-500" : "bg-muted-foreground/40",
-                  )}
-                  aria-hidden
-                />
-                <span className={item.done ? "text-foreground/80" : undefined}>{item.label}</span>
-              </li>
-            ))}
-          </ul>
-          <Button type="button" className="gap-2" disabled={!canStart} onClick={() => void handleStartTraining()}>
-            <Play className="h-4 w-4" />
-            {training ? "训练中…" : "开始训练"}
-          </Button>
-          {training || trainMessage ? (
-            <div className="space-y-1.5">
-              <div className="h-2.5 overflow-hidden rounded-full bg-muted/90">
-                <div
-                  className="h-full rounded-full bg-primary/90 transition-[width] duration-300"
-                  style={{ width: `${trainProgress}%` }}
-                  role="progressbar"
-                  aria-valuenow={trainProgress}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">{trainMessage || "…"}</p>
+              </Button>
               {training ? (
-                <p className="text-xs text-muted-foreground/90">
-                  首轮开始前会校验数据集，可能需数分钟；无进展时请查看{" "}
-                  <code className="text-[11px]">external/temp/{jobSlug}/train.log</code>
-                  {jobSlug ? (
-                    <>
-                      {" "}
-                      或{" "}
-                      <Link to={`/models/training/history/${jobSlug}`} className="underline underline-offset-2">
-                        训练历史日志
-                      </Link>
-                    </>
-                  ) : null}
-                </p>
+                <div className="h-2.5 overflow-hidden rounded-full bg-muted/90">
+                  <div
+                    className="h-full rounded-full bg-primary/90 transition-[width] duration-300"
+                    style={{ width: `${trainProgress}%` }}
+                    role="progressbar"
+                    aria-valuenow={trainProgress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  />
+                </div>
               ) : null}
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      {hint ? <p className="text-sm text-destructive">{hint}</p> : null}
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>

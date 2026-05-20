@@ -1,3 +1,4 @@
+import { LocaleProvider } from "@/components/locale-provider"
 import { ThemeProvider } from "@/components/theme-provider"
 import { STORAGE_KEYS } from "@/lib/storage/keys"
 import { AppLayout } from "@/components/app-layout"
@@ -13,6 +14,7 @@ import ModelsPlaceholderAnnotationPage from "@/pages/models-placeholder-annotati
 import ModelsSam2AnnotationPage from "@/pages/models-sam2-annotation"
 import ModelsTrainingPage from "@/pages/models-training"
 import ModelsTrainingYoloPage from "@/pages/models-training-yolo"
+import ModelsTrainingHistoryPage from "@/pages/models-training-history"
 import ModelsTrainingHistoryDetailPage from "@/pages/models-training-history-detail"
 import ProjectDetailPage from "@/pages/project-detail"
 import ProjectExportPage from "@/pages/project-export"
@@ -46,6 +48,7 @@ export default function App() {
 
   return (
     <ThemeProvider storageKey={STORAGE_KEYS.theme}>
+      <LocaleProvider>
       {!configReady ? (
         <div className="flex min-h-[calc(100vh-var(--ea-titlebar-height,36px))] items-center justify-center bg-background text-muted-foreground">
           <Loader2 className="h-8 w-8 animate-spin" aria-hidden />
@@ -83,6 +86,7 @@ export default function App() {
             <Route path="annotation/:placeholderSlug" element={<ModelsPlaceholderAnnotationPage />} />
             <Route path="training" element={<ModelsTrainingPage />} />
             <Route path="training/yolo" element={<ModelsTrainingYoloPage />} />
+            <Route path="training/history" element={<ModelsTrainingHistoryPage />} />
             <Route path="training/history/:jobSlug" element={<ModelsTrainingHistoryDetailPage />} />
           </Route>
           <Route path="monitor" element={<MonitorOutlet />}>
@@ -99,6 +103,7 @@ export default function App() {
         </Route>
       </Routes>
       )}
+      </LocaleProvider>
     </ThemeProvider>
   )
 }

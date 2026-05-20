@@ -1,4 +1,4 @@
-"""Ultralytics YOLO 训练任务（后台线程 + 按 job_slug 隔离）。"""
+"""Ultralytics YOLO 训练任务（后台线程 + 按 job_slug 隔离，支持多任务并行）。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from app.train.yolo_workspace import (
     append_train_log,
-    base_model_path,
+    resolve_base_model_path,
     find_data_yaml,
     load_meta,
     runs_dir_path,
@@ -36,27 +36,47 @@ class YoloTrainJob:
 
 
 _lock = threading.Lock()
-_job = YoloTrainJob()
+_jobs: dict[str, YoloTrainJob] = {}
 
 
-def get_job() -> dict[str, Any]:
+def _job_to_dict(job: YoloTrainJob) -> dict[str, Any]:
+    return {
+        "job_slug": job.job_slug,
+        "status": job.status,
+        "progress": job.progress,
+        "message": job.message,
+        "epoch": job.epoch,
+        "epochs": job.epochs,
+        "runs_dir": job.runs_dir,
+        "last_error": job.last_error,
+    }
+
+
+def get_job(job_slug: str) -> dict[str, Any]:
+    slug = (job_slug or "").strip()
     with _lock:
-        return {
-            "job_slug": _job.job_slug,
-            "status": _job.status,
-            "progress": _job.progress,
-            "message": _job.message,
-            "epoch": _job.epoch,
-            "epochs": _job.epochs,
-            "runs_dir": _job.runs_dir,
-            "last_error": _job.last_error,
-        }
+        job = _jobs.get(slug)
+        if job is None:
+            return _job_to_dict(YoloTrainJob(job_slug=slug))
+        return _job_to_dict(job)
 
 
-def _set_job(**kwargs: Any) -> None:
+def is_job_running(job_slug: str) -> bool:
+    slug = (job_slug or "").strip()
     with _lock:
+        job = _jobs.get(slug)
+        return job is not None and job.status == "running"
+
+
+def _set_job(job_slug: str, **kwargs: Any) -> None:
+    slug = (job_slug or "").strip()
+    with _lock:
+        job = _jobs.get(slug)
+        if job is None:
+            job = YoloTrainJob(job_slug=slug)
+            _jobs[slug] = job
         for k, v in kwargs.items():
-            setattr(_job, k, v)
+            setattr(job, k, v)
 
 
 def _resolve_train_device(device: str, job_slug: str) -> str:
@@ -84,14 +104,48 @@ def _newest_run_dir(runs_root: Path) -> Path:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def _apply_custom_train_kwargs(
+    train_kwargs: dict[str, Any],
+    *,
+    use_custom_augment: bool,
+    augment: dict[str, Any] | None,
+    use_custom_optimizer: bool,
+    optimizer: dict[str, Any] | None,
+) -> None:
+    if use_custom_augment and augment:
+        for k, v in augment.items():
+            if v is not None:
+                train_kwargs[k] = v
+    if use_custom_optimizer and optimizer:
+        opt = dict(optimizer)
+        patience = opt.pop("patience", None)
+        _BOOL_KEYS = frozenset({"cos_lr", "overlap_mask"})
+        for k in list(opt.keys()):
+            if k in _BOOL_KEYS and opt[k] is not None:
+                opt[k] = bool(opt[k])
+        train_kwargs.update(opt)
+        if patience is not None:
+            try:
+                p = int(patience)
+                if p > 0:
+                    train_kwargs["patience"] = p
+            except (TypeError, ValueError):
+                pass
+
+
 def _training_thread(
     job_slug: str,
     *,
     epochs: int,
     imgsz: int,
     batch: int,
+    workers: int,
     device: str,
-    patience: int | None,
+    time_hours: float | None,
+    use_custom_augment: bool,
+    augment: dict[str, Any] | None,
+    use_custom_optimizer: bool,
+    optimizer: dict[str, Any] | None,
 ) -> None:
     try:
         from ultralytics import YOLO
@@ -99,6 +153,7 @@ def _training_thread(
         msg = "未安装 ultralytics，请在 backend 目录执行 install-ml-gpu-deps.ps1"
         append_train_log(job_slug, msg)
         _set_job(
+            job_slug,
             status="failed",
             progress=100,
             message=msg,
@@ -108,11 +163,18 @@ def _training_thread(
         save_meta(job_slug, {"status": "failed", "last_error": str(e)})
         return
 
-    weights = base_model_path(job_slug)
-    if not weights.is_file():
-        msg = "未设置基础模型（base_model.pt）"
+    weights = resolve_base_model_path(job_slug)
+    if weights is None or not weights.is_file():
+        msg = "未设置基础模型权重（请从下拉框选择或上传 .pt）"
         append_train_log(job_slug, msg)
-        _set_job(status="failed", progress=100, message=msg, last_error="missing base_model.pt", finished_at=time.time())
+        _set_job(
+            job_slug,
+            status="failed",
+            progress=100,
+            message=msg,
+            last_error="missing base model weights",
+            finished_at=time.time(),
+        )
         save_meta(job_slug, {"status": "failed", "last_error": msg})
         return
 
@@ -128,7 +190,14 @@ def _training_thread(
     if data_yaml is None or not data_yaml.is_file():
         msg = "未找到 data.yaml，请先上传并解压数据集"
         append_train_log(job_slug, msg)
-        _set_job(status="failed", progress=100, message=msg, last_error="missing data.yaml", finished_at=time.time())
+        _set_job(
+            job_slug,
+            status="failed",
+            progress=100,
+            message=msg,
+            last_error="missing data.yaml",
+            finished_at=time.time(),
+        )
         save_meta(job_slug, {"status": "failed", "last_error": msg})
         return
 
@@ -138,7 +207,7 @@ def _training_thread(
 
     def on_train_start(trainer: Any) -> None:
         append_train_log(job_slug, "Ultralytics 已进入训练流程（校验数据集 / 写入 runs）")
-        _set_job(message="校验数据集并写入 runs…", progress=2)
+        _set_job(job_slug, message="校验数据集并写入 runs…", progress=2)
 
     def on_train_epoch_end(trainer: Any) -> None:
         ep = int(getattr(trainer, "epoch", 0)) + 1
@@ -146,7 +215,11 @@ def _training_thread(
         pct = min(99, max(1, int(ep / max(1, total) * 100)))
         line = f"epoch {ep}/{total}"
         append_train_log(job_slug, line)
-        _set_job(epoch=ep, epochs=total, progress=pct, message=f"训练中 {line}")
+        _set_job(job_slug, epoch=ep, epochs=total, progress=pct, message=f"训练中 {line}")
+        save_meta(
+            job_slug,
+            {"train_progress": pct, "train_epoch": ep, "train_epochs": total},
+        )
 
     try:
         data_yaml_abs = data_yaml.resolve()
@@ -167,32 +240,47 @@ def _training_thread(
             "exist_ok": True,
             "verbose": True,
         }
-        if patience is not None and patience > 0:
-            train_kwargs["patience"] = patience
+        if time_hours is not None and time_hours > 0:
+            train_kwargs["time"] = float(time_hours)
+        _apply_custom_train_kwargs(
+            train_kwargs,
+            use_custom_augment=use_custom_augment,
+            augment=augment,
+            use_custom_optimizer=use_custom_optimizer,
+            optimizer=optimizer,
+        )
         if sys.platform == "win32":
+            if workers != 0:
+                append_train_log(job_slug, f"Windows：workers 由 {workers} 调整为 0，避免 DataLoader 子进程卡死")
             train_kwargs["workers"] = 0
-            append_train_log(job_slug, "Windows：已设置 workers=0，避免 DataLoader 子进程卡死")
+        else:
+            train_kwargs["workers"] = workers
 
         model.add_callback("on_train_start", on_train_start)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
-        _set_job(message="正在启动 Ultralytics（首轮前可能较慢）…", progress=1)
+        _set_job(job_slug, message="正在启动 Ultralytics（首轮前可能较慢）…", progress=1)
         append_train_log(job_slug, f"调用 model.train({train_kwargs})")
         model.train(**train_kwargs)
         run_dir = _newest_run_dir(runs_root)
         done_msg = f"训练完成：{run_dir}"
         append_train_log(job_slug, done_msg)
         _set_job(
+            job_slug,
             status="success",
             progress=100,
             message=done_msg,
             runs_dir=str(run_dir),
             finished_at=time.time(),
         )
-        save_meta(job_slug, {"last_run": str(run_dir), "status": "success"})
+        save_meta(
+            job_slug,
+            {"last_run": str(run_dir), "status": "success", "train_progress": 100},
+        )
     except Exception as e:
         err_msg = f"训练失败：{e}"
         append_train_log(job_slug, err_msg)
         _set_job(
+            job_slug,
             status="failed",
             progress=100,
             message=err_msg,
@@ -208,22 +296,31 @@ def start_training(
     epochs: int,
     imgsz: int,
     batch: int,
+    workers: int = 2,
     device: str,
-    patience: int | None = None,
+    time_hours: float | None = None,
+    use_custom_augment: bool = False,
+    augment: dict[str, Any] | None = None,
+    use_custom_optimizer: bool = False,
+    optimizer: dict[str, Any] | None = None,
 ) -> None:
+    slug = (job_slug or "").strip()
     with _lock:
-        if _job.status == "running":
-            raise RuntimeError("已有训练任务正在运行")
-        _job.job_slug = job_slug
-        _job.status = "running"
-        _job.progress = 0
-        _job.message = "排队中…"
-        _job.epoch = 0
-        _job.epochs = epochs
-        _job.started_at = time.time()
-        _job.finished_at = None
-        _job.last_error = None
-        _job.runs_dir = None
+        existing = _jobs.get(slug)
+        if existing is not None and existing.status == "running":
+            raise RuntimeError("该训练任务已在运行")
+        _jobs[slug] = YoloTrainJob(
+            job_slug=slug,
+            status="running",
+            progress=0,
+            message="排队中…",
+            epoch=0,
+            epochs=epochs,
+            started_at=time.time(),
+            finished_at=None,
+            last_error=None,
+            runs_dir=None,
+        )
 
     save_meta(
         job_slug,
@@ -232,10 +329,18 @@ def start_training(
                 "epochs": epochs,
                 "imgsz": imgsz,
                 "batch": batch,
+                "workers": workers,
                 "device": device,
-                "patience": patience,
+                "time_hours": time_hours,
+                "use_custom_augment": use_custom_augment,
+                "augment": augment,
+                "use_custom_optimizer": use_custom_optimizer,
+                "optimizer": optimizer,
             },
             "status": "running",
+            "train_progress": 0,
+            "train_epoch": 0,
+            "train_epochs": epochs,
         },
     )
     append_train_log(job_slug, "训练任务已启动")
@@ -247,13 +352,19 @@ def start_training(
                 epochs=epochs,
                 imgsz=imgsz,
                 batch=batch,
+                workers=workers,
                 device=device,
-                patience=patience,
+                time_hours=time_hours,
+                use_custom_augment=use_custom_augment,
+                augment=augment,
+                use_custom_optimizer=use_custom_optimizer,
+                optimizer=optimizer,
             )
         except Exception as e:
             err_msg = f"训练线程异常：{e}"
             append_train_log(job_slug, err_msg)
             _set_job(
+                job_slug,
                 status="failed",
                 progress=100,
                 message=err_msg,

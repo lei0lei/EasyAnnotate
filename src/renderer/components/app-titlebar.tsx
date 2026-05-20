@@ -1,3 +1,4 @@
+import { LocaleToggle } from "@/components/locale-toggle"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Button } from "@/components/ui/button"
 import { ipc } from "@/gen/ipc"
@@ -67,6 +68,7 @@ export function AppTitlebar({ sidebarCollapsed, onToggleSidebar, onHeightChange 
       </span>
       <div className="min-h-0 min-w-0 flex-1" aria-hidden />
       <div className="titlebar-no-drag flex shrink-0 items-center gap-1">
+        <LocaleToggle />
         <ThemeToggle />
         {!isMac && (
           <>

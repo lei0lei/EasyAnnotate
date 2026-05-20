@@ -1,50 +1,23 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { fetchYoloTrainingHistory, probeBackendHealth, type YoloHistoryItem } from "@/lib/training-yolo-api"
+import { probeBackendHealth } from "@/lib/training-yolo-api"
 import { cn } from "@/lib/utils"
-import { ArrowLeft, Box, ChevronRight, History, LineChart, Loader2 } from "lucide-react"
+import { ArrowLeft, Box, ChevronRight, History, LineChart } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 
-function formatTrainingTime(iso: string | undefined): string {
-  if (!iso) return "—"
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString()
-}
-
 export default function ModelsTrainingPage() {
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [historyError, setHistoryError] = useState<string | null>(null)
-  const [historyItems, setHistoryItems] = useState<YoloHistoryItem[]>([])
 
   const refreshBackend = useCallback(() => {
     void probeBackendHealth().then(setBackendOk)
   }, [])
-
-  const loadHistory = useCallback(() => {
-    if (!backendOk) {
-      setHistoryItems([])
-      return
-    }
-    setHistoryLoading(true)
-    setHistoryError(null)
-    void fetchYoloTrainingHistory()
-      .then(setHistoryItems)
-      .catch((e) => setHistoryError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setHistoryLoading(false))
-  }, [backendOk])
 
   useEffect(() => {
     refreshBackend()
     const t = window.setInterval(refreshBackend, 2500)
     return () => window.clearInterval(t)
   }, [refreshBackend])
-
-  useEffect(() => {
-    loadHistory()
-  }, [loadHistory])
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 px-6 py-8 pb-12">
@@ -107,51 +80,30 @@ export default function ModelsTrainingPage() {
         </Card>
       </div>
 
-      <Card className="border-border/80 shadow-sm">
-        <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
-          <div>
-            <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-muted/80 text-foreground">
+      <Link
+        to="/models/training/history"
+        className={cn(
+          "block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          backendOk === false && "pointer-events-none opacity-60",
+        )}
+        aria-disabled={backendOk === false}
+        onClick={(e) => {
+          if (backendOk === false) e.preventDefault()
+        }}
+      >
+        <Card className="border-border/80 shadow-sm transition-colors hover:bg-muted/20">
+          <CardContent className="flex items-center gap-4 py-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted/80 text-foreground">
               <History className="h-5 w-5" aria-hidden />
             </div>
-            <CardTitle className="text-lg">训练历史</CardTitle>
-            <CardDescription className="mt-1">
-              扫描 <code className="text-xs">backend/external/temp</code>，每次进入本页重新解析
-            </CardDescription>
-          </div>
-          <Button type="button" variant="outline" size="sm" disabled={!backendOk || historyLoading} onClick={loadHistory}>
-            刷新
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-2 pt-0">
-          {historyLoading ? (
-            <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在解析训练目录…
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-foreground">训练历史</p>
+              <p className="mt-0.5 text-sm text-muted-foreground">查看历次 YOLO 训练任务与日志</p>
             </div>
-          ) : historyError ? (
-            <p className="py-4 text-sm text-destructive">{historyError}</p>
-          ) : historyItems.length === 0 ? (
-            <p className="py-4 text-sm text-muted-foreground">暂无训练记录</p>
-          ) : (
-            historyItems.map((item) => (
-              <Link
-                key={item.job_slug}
-                to={`/models/training/history/${encodeURIComponent(item.job_slug)}`}
-                className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/10 px-4 py-3 transition-colors hover:bg-muted/25"
-              >
-                <div className="min-w-0">
-                  <p className="truncate font-medium text-foreground">{item.display_name}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {formatTrainingTime(item.created_at)}
-                    {item.status ? ` · ${item.status}` : ""}
-                  </p>
-                </div>
-                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-              </Link>
-            ))
-          )}
-        </CardContent>
-      </Card>
+            <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground" />
+          </CardContent>
+        </Card>
+      </Link>
     </div>
   )
 }
