@@ -39,6 +39,7 @@ import {
   validateYoloBaseModel,
   weightMetaHasMismatch,
   type YoloCatalogModel,
+  type YoloDeviceOption,
   type YoloFamilyId,
   type YoloTaskId,
   type YoloWeightMeta,
@@ -54,6 +55,7 @@ import {
 import { cn } from "@/lib/utils"
 import { ArrowLeft, Loader2, Plus, Upload } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { flushSync } from "react-dom"
 import { Link } from "react-router-dom"
 
 const UPLOADED_WEIGHT_VALUE = "__uploaded_weight__"
@@ -168,7 +170,7 @@ export default function ModelsTrainingYoloPage() {
   const [batch, setBatch] = useState(2)
   const [imgsz, setImgsz] = useState(640)
   const [device, setDevice] = useState("cpu")
-  const [devices, setDevices] = useState<Array<{ id: string; label: string }>>([])
+  const [devices, setDevices] = useState<YoloDeviceOption[]>([])
 
   const [augmentEnabled, setAugmentEnabled] = useState(false)
   const [optimizerEnabled, setOptimizerEnabled] = useState(false)
@@ -246,18 +248,58 @@ export default function ModelsTrainingYoloPage() {
     return () => window.clearInterval(t)
   }, [refreshBackend, loadHistorySlugs])
 
+  const devicesInflightRef = useRef<Promise<YoloDeviceOption[]> | null>(null)
+
+  const fetchDevicesList = useCallback((): Promise<YoloDeviceOption[]> => {
+    if (!backendOk) {
+      return Promise.resolve([{ id: "cpu", label: "CPU" }])
+    }
+    if (devicesInflightRef.current) return devicesInflightRef.current
+    const p = fetchYoloDevices()
+      .catch(() => [{ id: "cpu", label: "CPU" }])
+      .finally(() => {
+        devicesInflightRef.current = null
+      })
+    devicesInflightRef.current = p
+    return p
+  }, [backendOk])
+
+  const applyDevicesList = useCallback((list: YoloDeviceOption[]) => {
+    setDevices(list)
+    setDevice((prev) => {
+      if (list.length > 0 && !list.some((d) => d.id === prev)) {
+        return list[0]?.id ?? "cpu"
+      }
+      return prev
+    })
+  }, [])
+
+  const refreshDevices = useCallback(() => {
+    void fetchDevicesList().then(applyDevicesList)
+  }, [fetchDevicesList, applyDevicesList])
+
+  const openDevicePicker = useCallback(
+    async (select: HTMLSelectElement) => {
+      const list = await fetchDevicesList()
+      flushSync(() => applyDevicesList(list))
+      if (typeof select.showPicker === "function") {
+        try {
+          select.showPicker()
+        } catch {
+          select.focus()
+        }
+      } else {
+        select.focus()
+      }
+    },
+    [fetchDevicesList, applyDevicesList],
+  )
+
   useEffect(() => {
     if (!backendOk || !jobSlug) return
     refreshWorkspace()
-    void fetchYoloDevices()
-      .then((list) => {
-        setDevices(list)
-        if (list.length > 0 && !list.some((d) => d.id === device)) {
-          setDevice(list[0]?.id ?? "cpu")
-        }
-      })
-      .catch(() => setDevices([{ id: "cpu", label: "CPU" }]))
-  }, [backendOk, jobSlug, refreshWorkspace, device])
+    refreshDevices()
+  }, [backendOk, jobSlug, refreshWorkspace, refreshDevices])
 
   useEffect(() => {
     if (!backendOk) return
@@ -874,10 +916,23 @@ export default function ModelsTrainingYoloPage() {
                   <select
                     className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
                     value={device}
+                    onMouseDown={(e) => {
+                      if (!backendOk) return
+                      e.preventDefault()
+                      void openDevicePicker(e.currentTarget)
+                    }}
+                    onKeyDown={(e) => {
+                      if (!backendOk) return
+                      if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== " " && e.key !== "Enter") {
+                        return
+                      }
+                      e.preventDefault()
+                      void openDevicePicker(e.currentTarget)
+                    }}
                     onChange={(e) => setDevice(e.target.value)}
                   >
                     {devices.map((d) => (
-                      <option key={d.id} value={d.id}>
+                      <option key={d.id} value={d.id} title={d.label}>
                         {d.label}
                       </option>
                     ))}

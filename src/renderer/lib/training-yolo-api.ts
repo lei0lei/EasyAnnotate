@@ -36,7 +36,12 @@ export type YoloTrainJob = {
   last_error: string | null
 }
 
-export type YoloDeviceOption = { id: string; label: string }
+export type YoloDeviceOption = {
+  id: string
+  label: string
+  memory_total_bytes?: number | null
+  memory_used_bytes?: number | null
+}
 
 export type YoloHistoryItem = {
   job_slug: string

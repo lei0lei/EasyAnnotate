@@ -381,8 +381,31 @@ def start_training(
     thread.start()
 
 
-def list_devices() -> list[dict[str, str]]:
-    devices: list[dict[str, str]] = [{"id": "cpu", "label": "CPU"}]
+def _bytes_to_gib(value: int) -> float:
+    return max(0, value) / (1024**3)
+
+
+def _gpu_memory_bytes(device_index: int) -> tuple[int | None, int | None]:
+    """返回 (total_bytes, used_bytes)；不可用时为 (None, None)。"""
+    try:
+        import torch
+
+        free_b, total_b = torch.cuda.mem_get_info(device_index)
+        total_i = int(total_b)
+        used_i = max(0, total_i - int(free_b))
+        return total_i, used_i
+    except Exception:
+        try:
+            import torch
+
+            props = torch.cuda.get_device_properties(device_index)
+            return int(props.total_memory), None
+        except Exception:
+            return None, None
+
+
+def list_devices() -> list[dict[str, Any]]:
+    devices: list[dict[str, Any]] = [{"id": "cpu", "label": "CPU"}]
     try:
         import torch
 
@@ -390,7 +413,22 @@ def list_devices() -> list[dict[str, str]]:
             n = torch.cuda.device_count()
             for i in range(n):
                 name = torch.cuda.get_device_name(i)
-                devices.append({"id": str(i), "label": f"GPU {i}: {name}"})
+                total_b, used_b = _gpu_memory_bytes(i)
+                if total_b is not None and used_b is not None:
+                    label = (
+                        f"GPU {i}: {name} "
+                        f"({_bytes_to_gib(used_b):.1f}/{_bytes_to_gib(total_b):.1f} GB)"
+                    )
+                elif total_b is not None:
+                    label = f"GPU {i}: {name} (共 {_bytes_to_gib(total_b):.1f} GB)"
+                else:
+                    label = f"GPU {i}: {name}"
+                entry: dict[str, Any] = {"id": str(i), "label": label}
+                if total_b is not None:
+                    entry["memory_total_bytes"] = total_b
+                if used_b is not None:
+                    entry["memory_used_bytes"] = used_b
+                devices.append(entry)
     except Exception:
         pass
     return devices
