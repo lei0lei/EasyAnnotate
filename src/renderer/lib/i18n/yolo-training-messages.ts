@@ -79,12 +79,24 @@ export type YoloTrainingMessages = {
     datasetUploadZip: string
   }
   historyDetail: {
+    tabLogs: string
+    tabParams: string
+    tabResults: string
+    tabModels: string
     loadingLogs: string
     loadingParams: string
     loadingResults: string
+    loadingModels: string
+    modelsEmpty: string
+    modelsRefreshing: string
+    downloadModel: string
+    downloadingModel: string
+    modelSavedTo: (path: string) => string
+    modelDownloadFailed: (detail: string) => string
     backendDisconnected: string
     requestFailed: (detail: string) => string
     resultsApiMissing: string
+    modelsApiMissing: string
   }
 }
 
@@ -173,12 +185,24 @@ const zhCN: YoloTrainingMessages = {
     datasetUploadZip: "请上传 ZIP 数据集",
   },
   historyDetail: {
+    tabLogs: "日志",
+    tabParams: "参数",
+    tabResults: "结果",
+    tabModels: "模型下载",
     loadingLogs: "正在读取…",
     loadingParams: "正在加载参数…",
     loadingResults: "正在扫描结果图…",
+    loadingModels: "正在扫描模型文件…",
+    modelsEmpty: "暂无 .pt 或 .onnx 文件；训练完成并导出后会出现 best.pt、last.pt 等权重。",
+    modelsRefreshing: "训练中，模型列表将自动刷新",
+    downloadModel: "下载",
+    downloadingModel: "下载中…",
+    modelSavedTo: (path) => `已保存至 ${path}`,
+    modelDownloadFailed: (detail) => `下载失败：${detail}`,
     backendDisconnected: "后端未连接，无法加载。请先在设置中连接远程或启动本地后端。",
     requestFailed: (detail) => `加载失败：${detail}`,
     resultsApiMissing: "远程后端可能未更新，缺少结果图接口（/history/.../results）",
+    modelsApiMissing: "远程后端可能未更新，缺少模型下载接口（/history/.../models）",
   },
 }
 
@@ -267,12 +291,24 @@ const en: YoloTrainingMessages = {
     datasetUploadZip: "Upload a ZIP dataset",
   },
   historyDetail: {
+    tabLogs: "Logs",
+    tabParams: "Parameters",
+    tabResults: "Results",
+    tabModels: "Models",
     loadingLogs: "Loading logs…",
     loadingParams: "Loading parameters…",
     loadingResults: "Scanning result images…",
+    loadingModels: "Scanning model files…",
+    modelsEmpty: "No .pt or .onnx files yet. Weights such as best.pt appear after training finishes.",
+    modelsRefreshing: "Training in progress; model list refreshes automatically",
+    downloadModel: "Download",
+    downloadingModel: "Downloading…",
+    modelSavedTo: (path) => `Saved to ${path}`,
+    modelDownloadFailed: (detail) => `Download failed: ${detail}`,
     backendDisconnected: "Backend is not connected. Connect remote or start local backend in Settings.",
     requestFailed: (detail) => `Failed to load: ${detail}`,
     resultsApiMissing: "Remote backend may be outdated (missing /history/.../results API)",
+    modelsApiMissing: "Remote backend may be outdated (missing /history/.../models API)",
   },
 }
 

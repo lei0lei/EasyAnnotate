@@ -96,6 +96,33 @@ def history_result_image(job_slug: str, path: str = Query(..., description="相�
     )
 
 
+@router.get("/history/{job_slug}/models")
+def history_models(job_slug: str) -> dict[str, Any]:
+    try:
+        return yolo_workspace.list_training_model_files(job_slug)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/history/{job_slug}/models/file")
+def history_model_file(
+    job_slug: str, path: str = Query(..., description="相对训练任务目录的模型路径")
+) -> FileResponse:
+    try:
+        file_path = yolo_workspace.resolve_training_model_file(job_slug, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    media_type, _ = mimetypes.guess_type(str(file_path))
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_type or "application/octet-stream",
+        filename=file_path.name,
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
+
+
 @router.get("/history/{job_slug}/logs")
 def history_logs(job_slug: str) -> dict[str, Any]:
     try:

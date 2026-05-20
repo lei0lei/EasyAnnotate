@@ -1,3 +1,4 @@
+import { ipc } from "@/gen/ipc"
 import { loadAppConfig } from "@/lib/app-config-storage"
 import { apiV1Root, encodeUrlPathSegments, fetchWithTimeout, readFetchError } from "@/lib/backend-http"
 
@@ -149,6 +150,53 @@ export function yoloTrainingResultImageUrl(jobSlug: string, imagePath: string, m
   const q = new URLSearchParams({ path: imagePath })
   if (mtime != null && mtime > 0) q.set("t", String(mtime))
   return `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results/image?${q}`
+}
+
+export type YoloTrainingModelFile = {
+  path: string
+  name: string
+  kind: string
+  mtime: number
+  size: number
+}
+
+export type YoloTrainingModelFilesResponse = {
+  job_slug: string
+  job_dir: string
+  items: YoloTrainingModelFile[]
+}
+
+export async function fetchYoloTrainingModelFiles(
+  jobSlug: string,
+): Promise<YoloTrainingModelFilesResponse> {
+  const res = await fetchWithTimeout(
+    `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/models`,
+    undefined,
+    YOLO_FETCH_TIMEOUT_MS,
+  )
+  if (!res.ok) throw new Error(await readFetchError(res))
+  return res.json() as Promise<YoloTrainingModelFilesResponse>
+}
+
+export function yoloTrainingModelDownloadUrl(jobSlug: string, filePath: string, mtime?: number): string {
+  const q = new URLSearchParams({ path: filePath })
+  if (mtime != null && mtime > 0) q.set("t", String(mtime))
+  return `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/models/file?${q}`
+}
+
+export async function downloadYoloTrainingModelWithSaveDialog(
+  jobSlug: string,
+  file: YoloTrainingModelFile,
+): Promise<{ canceled: boolean; savedPath: string; errorMessage: string }> {
+  const response = await ipc.app.DownloadYoloTrainingModel({
+    downloadUrl: yoloTrainingModelDownloadUrl(jobSlug, file.path, file.mtime),
+    suggestedFileName: file.name,
+  })
+  return {
+    canceled: response.canceled,
+    savedPath: response.savedPath || "",
+    errorMessage: response.errorMessage || "",
+  }
 }
 
 export async function deleteYoloTrainingJob(jobSlug: string): Promise<void> {

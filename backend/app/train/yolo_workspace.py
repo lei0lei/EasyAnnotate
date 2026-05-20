@@ -748,6 +748,72 @@ def resolve_training_result_image(job_slug: str, rel_path: str) -> Path:
     return full
 
 
+_MODEL_FILE_SUFFIXES = frozenset({".pt", ".onnx"})
+_MODEL_FILE_PRIORITY = ("best.pt", "last.pt", "best.onnx", "last.onnx")
+
+
+def _model_file_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    name = str(item.get("name") or "").lower()
+    try:
+        prio = _MODEL_FILE_PRIORITY.index(name)
+    except ValueError:
+        prio = len(_MODEL_FILE_PRIORITY)
+    return (prio, str(item.get("path") or ""))
+
+
+def list_training_model_files(job_slug: str) -> dict[str, Any]:
+    """扫描训练任务目录下全部 ``.pt`` / ``.onnx`` 权重文件。"""
+    slug = assert_safe_job_slug(job_slug)
+    job_dir = get_job_dir(slug)
+    if not job_dir.is_dir():
+        raise FileNotFoundError(f"训练目录不存在：{slug}")
+    job_root = job_dir.resolve()
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in sorted(job_root.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in _MODEL_FILE_SUFFIXES:
+            continue
+        try:
+            rel = path.resolve().relative_to(job_root).as_posix()
+        except ValueError:
+            continue
+        if rel in seen:
+            continue
+        seen.add(rel)
+        stat = path.stat()
+        items.append(
+            {
+                "path": rel,
+                "name": path.name,
+                "kind": path.suffix.lower().lstrip("."),
+                "mtime": int(stat.st_mtime),
+                "size": stat.st_size,
+            }
+        )
+    items.sort(key=_model_file_sort_key)
+    return {"job_slug": slug, "job_dir": str(job_root), "items": items}
+
+
+def resolve_training_model_file(job_slug: str, rel_path: str) -> Path:
+    slug = assert_safe_job_slug(job_slug)
+    rel = (rel_path or "").strip().replace("\\", "/").lstrip("/")
+    if not rel or ".." in rel.split("/"):
+        raise ValueError("无效的模型路径")
+    job_dir = get_job_dir(slug).resolve()
+    if not job_dir.is_dir():
+        raise FileNotFoundError(f"训练目录不存在：{slug}")
+    full = (job_dir / rel).resolve()
+    try:
+        full.relative_to(job_dir)
+    except ValueError as e:
+        raise ValueError("无效的模型路径") from e
+    if not full.is_file() or full.suffix.lower() not in _MODEL_FILE_SUFFIXES:
+        raise FileNotFoundError(f"模型文件不存在：{rel}")
+    return full
+
+
 def read_training_logs(job_slug: str, *, tail_bytes: int = 512_000) -> str:
     job_dir = get_job_dir(job_slug)
     if not job_dir.is_dir():

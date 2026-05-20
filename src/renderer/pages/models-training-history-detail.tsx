@@ -1,15 +1,18 @@
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { PageTabs, type PageTabItem } from "@/components/page-tabs"
 import { TrainParamsPanel } from "@/components/train-params-panel"
+import { TrainModelsDownloadList } from "@/components/train-models-download-list"
 import { TrainResultsGallery } from "@/components/train-results-gallery"
 import { Button } from "@/components/ui/button"
 import {
   deleteYoloTrainingJob,
   fetchYoloTrainStatus,
   fetchYoloTrainingLogs,
+  fetchYoloTrainingModelFiles,
   fetchYoloTrainingResultImages,
   probeBackendHealth,
   YOLO_ACTIVE_JOB_STORAGE_KEY,
+  type YoloTrainingModelFile,
   type YoloTrainingResultImage,
   type YoloWorkspaceSnapshot,
 } from "@/lib/training-yolo-api"
@@ -21,13 +24,7 @@ import { ArrowLeft, Loader2, Trash2 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 
-const DETAIL_TABS = [
-  { id: "logs", label: "日志" },
-  { id: "params", label: "参数" },
-  { id: "results", label: "结果" },
-] as const satisfies PageTabItem[]
-
-type DetailTabId = (typeof DETAIL_TABS)[number]["id"]
+type DetailTabId = "logs" | "params" | "results" | "models"
 
 export default function ModelsTrainingHistoryDetailPage() {
   const { m } = useYoloTrainingMessages()
@@ -47,6 +44,9 @@ export default function ModelsTrainingHistoryDetailPage() {
   const [resultImages, setResultImages] = useState<YoloTrainingResultImage[]>([])
   const [resultsLoading, setResultsLoading] = useState(false)
   const [resultsError, setResultsError] = useState<string | null>(null)
+  const [modelFiles, setModelFiles] = useState<YoloTrainingModelFile[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -114,7 +114,18 @@ export default function ModelsTrainingHistoryDetailPage() {
     setLoading(false)
     setWorkspaceLoading(false)
     setResultsLoading(false)
+    setModelsLoading(false)
   }, [])
+
+  const detailTabs = useMemo(
+    (): PageTabItem[] => [
+      { id: "logs", label: m.historyDetail.tabLogs },
+      { id: "params", label: m.historyDetail.tabParams },
+      { id: "results", label: m.historyDetail.tabResults },
+      { id: "models", label: m.historyDetail.tabModels },
+    ],
+    [m.historyDetail],
+  )
 
   const loadResults = useCallback(
     (opts?: { silent?: boolean }) => {
@@ -145,6 +156,35 @@ export default function ModelsTrainingHistoryDetailPage() {
     [jobSlug, m.historyDetail],
   )
 
+  const loadModels = useCallback(
+    (opts?: { silent?: boolean }) => {
+      if (!jobSlug) return
+      if (!opts?.silent) {
+        setModelsLoading(true)
+        setModelsError(null)
+      }
+      void fetchYoloTrainingModelFiles(jobSlug)
+        .then((data) => {
+          setModelFiles(data.items ?? [])
+          if (!opts?.silent) setModelsError(null)
+        })
+        .catch((e) => {
+          if (!opts?.silent) {
+            const msg = e instanceof Error ? e.message : String(e)
+            setModelsError(
+              msg.includes("404") || msg.includes("Not Found")
+                ? m.historyDetail.modelsApiMissing
+                : m.historyDetail.requestFailed(msg),
+            )
+          }
+        })
+        .finally(() => {
+          if (!opts?.silent) setModelsLoading(false)
+        })
+    },
+    [jobSlug, m.historyDetail],
+  )
+
   useEffect(() => {
     if (backendOk === null) return
     if (!backendOk) {
@@ -153,15 +193,18 @@ export default function ModelsTrainingHistoryDetailPage() {
       setError(disconnected)
       setWorkspaceError(disconnected)
       setResultsError(disconnected)
+      setModelsError(disconnected)
       return
     }
     setError(null)
     setWorkspaceError(null)
     setResultsError(null)
+    setModelsError(null)
     refreshJobState()
     loadLogs()
     loadResults()
-  }, [backendOk, refreshJobState, loadLogs, loadResults, resetDetailLoading, m.historyDetail])
+    loadModels()
+  }, [backendOk, refreshJobState, loadLogs, loadResults, loadModels, resetDetailLoading, m.historyDetail])
 
   useEffect(() => {
     if (!backendOk || !jobSlug || !isRunning) return
@@ -180,6 +223,12 @@ export default function ModelsTrainingHistoryDetailPage() {
     const t = window.setInterval(() => loadResults({ silent: true }), 5000)
     return () => window.clearInterval(t)
   }, [backendOk, jobSlug, isRunning, activeTab, loadResults])
+
+  useEffect(() => {
+    if (!backendOk || !jobSlug || !isRunning || activeTab !== "models") return
+    const t = window.setInterval(() => loadModels({ silent: true }), 5000)
+    return () => window.clearInterval(t)
+  }, [backendOk, jobSlug, isRunning, activeTab, loadModels])
 
   const pageTitle = useMemo(() => displayName || jobSlug || "训练任务", [displayName, jobSlug])
 
@@ -282,7 +331,7 @@ export default function ModelsTrainingHistoryDetailPage() {
 
       <PageTabs
         className="mt-6 shrink-0"
-        tabs={[...DETAIL_TABS]}
+        tabs={detailTabs}
         activeId={activeTab}
         onChange={(id) => setActiveTab(id as DetailTabId)}
       />
@@ -386,6 +435,52 @@ export default function ModelsTrainingHistoryDetailPage() {
               <p className="text-sm text-destructive">{resultsError}</p>
             ) : (
               <TrainResultsGallery jobSlug={jobSlug} items={resultImages} />
+            )}
+          </section>
+        ) : null}
+
+        {activeTab === "models" ? (
+          <section
+            id="tabpanel-models"
+            role="tabpanel"
+            aria-labelledby="tab-models"
+            className="min-h-[min(50vh,480px)]"
+          >
+            <div className="mb-3 flex shrink-0 items-center justify-end gap-2">
+              {isRunning ? (
+                <span className="mr-auto text-xs text-muted-foreground">
+                  {m.historyDetail.modelsRefreshing}
+                </span>
+              ) : (
+                <span className="mr-auto" />
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={modelsLoading}
+                onClick={() => loadModels()}
+              >
+                重新加载
+              </Button>
+            </div>
+            {modelsLoading && !modelsError && modelFiles.length === 0 ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {m.historyDetail.loadingModels}
+              </div>
+            ) : modelsError ? (
+              <p className="text-sm text-destructive">{modelsError}</p>
+            ) : (
+              <TrainModelsDownloadList
+                jobSlug={jobSlug}
+                items={modelFiles}
+                emptyMessage={m.historyDetail.modelsEmpty}
+                downloadLabel={m.historyDetail.downloadModel}
+                downloadingLabel={m.historyDetail.downloadingModel}
+                savedTo={m.historyDetail.modelSavedTo}
+                downloadFailed={m.historyDetail.modelDownloadFailed}
+              />
             )}
           </section>
         ) : null}

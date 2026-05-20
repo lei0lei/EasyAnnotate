@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
@@ -13,6 +14,8 @@ import {
   DeleteTaskImageResponse,
   DownloadTaskImageRequest,
   DownloadTaskImageResponse,
+  DownloadYoloTrainingModelRequest,
+  DownloadYoloTrainingModelResponse,
   GetImageFileInfoRequest,
   GetImageFileInfoResponse,
   DeleteImageAnnotationRequest,
@@ -119,6 +122,30 @@ function buildUniqueFilePath(dir: string, fileName: string): string {
     index += 1
   }
   return candidate
+}
+
+const YOLO_MODEL_DOWNLOAD_TIMEOUT_MS = 7_200_000
+
+function sanitizeModelDownloadFileName(name: string): string {
+  const base = path.basename((name || "").replace(/\\/g, "/")).trim()
+  if (!base || base === "." || base === "..") return "model.pt"
+  return base
+}
+
+async function downloadUrlToTempFile(url: string, destPath: string): Promise<void> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(YOLO_MODEL_DOWNLOAD_TIMEOUT_MS) })
+  if (!res.ok) {
+    let detail = ""
+    try {
+      detail = (await res.text()).trim()
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail || `下载失败（HTTP ${res.status}）`)
+  }
+  const buffer = Buffer.from(await res.arrayBuffer())
+  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  fs.writeFileSync(destPath, buffer)
 }
 
 function collectTaskFiles(taskRootDir: string): Array<{ subset: string; filePath: string; createdAt: string }> {
@@ -1110,6 +1137,58 @@ ipc.registerService(AppService({
       message: stopped
         ? ""
         : "当前没有由本应用拉起的本地后端进程。若接口仍可用，可能是手动启动或其它程序占用端口。",
+    }
+  },
+  async DownloadYoloTrainingModel(
+    request: DownloadYoloTrainingModelRequest,
+  ): Promise<DownloadYoloTrainingModelResponse> {
+    const url = (request.downloadUrl || "").trim()
+    const fileName = sanitizeModelDownloadFileName(request.suggestedFileName || "")
+    let tempPath = ""
+    try {
+      if (!url) {
+        return { canceled: true, savedPath: "", errorMessage: "下载地址为空。" }
+      }
+      tempPath = path.join(os.tmpdir(), `ea-yolo-model-${Date.now()}-${fileName}`)
+      await downloadUrlToTempFile(url, tempPath)
+
+      const downloadsDir = path.join(os.homedir(), "Downloads")
+      const defaultPath = fs.existsSync(downloadsDir)
+        ? path.join(downloadsDir, fileName)
+        : path.join(os.homedir(), fileName)
+
+      const dialogResult = await app.showOpenDialog({
+        parentWindow: win,
+        title: "选择模型保存目录",
+        defaultPath,
+        selectionPolicy: "directories",
+        features: {
+          allowMultiple: false,
+          canCreateDirectories: true,
+        },
+      })
+      if (dialogResult.canceled || !dialogResult.paths[0]) {
+        return { canceled: true, savedPath: "", errorMessage: "" }
+      }
+
+      const targetPath = buildUniqueFilePath(dialogResult.paths[0], fileName)
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+      fs.copyFileSync(tempPath, targetPath)
+      return { canceled: false, savedPath: targetPath, errorMessage: "" }
+    } catch (error) {
+      return {
+        canceled: true,
+        savedPath: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    } finally {
+      if (tempPath && fs.existsSync(tempPath)) {
+        try {
+          fs.unlinkSync(tempPath)
+        } catch {
+          /* ignore */
+        }
+      }
     }
   },
   async CopyYoloTrainingDatasetZip(request) {

@@ -489,6 +489,18 @@ message CopyYoloTrainingDatasetZipResponse {
   string dataset_zip_path = 3;
 }
 
+/** 从训练后端 URL 下载模型到临时文件，再让用户选择保存目录 */
+message DownloadYoloTrainingModelRequest {
+  string download_url = 1;
+  string suggested_file_name = 2;
+}
+
+message DownloadYoloTrainingModelResponse {
+  bool canceled = 1;
+  string saved_path = 2;
+  string error_message = 3;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -534,4 +546,5 @@ service AppService {
   rpc StopLocalBackend(google.protobuf.Empty) returns (StopLocalBackendResponse);
   rpc GetLocalBackendStatus(google.protobuf.Empty) returns (LocalBackendStatusResponse);
   rpc CopyYoloTrainingDatasetZip(CopyYoloTrainingDatasetZipRequest) returns (CopyYoloTrainingDatasetZipResponse);
+  rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);
 }
