@@ -188,9 +188,13 @@ export async function downloadYoloTrainingModelWithSaveDialog(
   jobSlug: string,
   file: YoloTrainingModelFile,
 ): Promise<{ canceled: boolean; savedPath: string; errorMessage: string }> {
+  const { localBackendDir, remoteConnected } = loadAppConfig().backend
   const response = await ipc.app.DownloadYoloTrainingModel({
     downloadUrl: yoloTrainingModelDownloadUrl(jobSlug, file.path, file.mtime),
     suggestedFileName: file.name,
+    backendDirectory: remoteConnected ? "" : localBackendDir.trim(),
+    jobSlug,
+    modelRelPath: file.path,
   })
   return {
     canceled: response.canceled,

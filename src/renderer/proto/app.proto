@@ -489,10 +489,14 @@ message CopyYoloTrainingDatasetZipResponse {
   string dataset_zip_path = 3;
 }
 
-/** 从训练后端 URL 下载模型到临时文件，再让用户选择保存目录 */
+/** 选择保存目录后写入模型：本地优先磁盘复制，远程走 HTTP 流式下载 */
 message DownloadYoloTrainingModelRequest {
   string download_url = 1;
   string suggested_file_name = 2;
+  /** 本地 backend 根目录；配合 job_slug / model_rel_path 时从磁盘复制，避免主进程 HTTP 拉取大文件崩溃 */
+  string backend_directory = 3;
+  string job_slug = 4;
+  string model_rel_path = 5;
 }
 
 message DownloadYoloTrainingModelResponse {

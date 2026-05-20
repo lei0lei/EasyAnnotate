@@ -1,6 +1,9 @@
-import fs from "node:fs";
+import fs, { createReadStream, createWriteStream } from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
 import {
@@ -132,20 +135,77 @@ function sanitizeModelDownloadFileName(name: string): string {
   return base
 }
 
-async function downloadUrlToTempFile(url: string, destPath: string): Promise<void> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(YOLO_MODEL_DOWNLOAD_TIMEOUT_MS) })
-  if (!res.ok) {
-    let detail = ""
-    try {
-      detail = (await res.text()).trim()
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail || `下载失败（HTTP ${res.status}）`)
+function sanitizeJobSlugForPath(jobSlug: string): string | null {
+  const slug = jobSlug
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 120)
+  return slug || null
+}
+
+function resolveLocalYoloModelPath(
+  backendDirectory: string,
+  jobSlug: string,
+  modelRelPath: string,
+): string | null {
+  const backendDir = path.normalize(backendDirectory.trim())
+  if (!backendDir) return null
+  const slug = sanitizeJobSlugForPath(jobSlug.trim())
+  if (!slug) return null
+  const rel = modelRelPath.trim().replace(/\\/g, "/").replace(/^\/+/, "")
+  if (!rel || rel.split("/").some((seg) => seg === "..")) return null
+  const jobDir = path.resolve(path.join(backendDir, "external", "temp", slug))
+  const full = path.resolve(path.join(jobDir, rel))
+  const relToJob = path.relative(jobDir, full)
+  if (!relToJob || relToJob === ".." || relToJob.startsWith(`..${path.sep}`) || path.isAbsolute(relToJob)) {
+    return null
   }
-  const buffer = Buffer.from(await res.arrayBuffer())
+  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) return null
+  return full
+}
+
+async function copyFileStreaming(srcPath: string, destPath: string): Promise<void> {
   fs.mkdirSync(path.dirname(destPath), { recursive: true })
-  fs.writeFileSync(destPath, buffer)
+  await pipeline(createReadStream(srcPath), createWriteStream(destPath))
+}
+
+async function downloadUrlToFile(url: string, destPath: string, redirectLeft = 3): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      reject(new Error("无效的下载地址"))
+      return
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      reject(new Error("仅支持 http/https 下载地址"))
+      return
+    }
+    const lib = parsed.protocol === "https:" ? https : http
+    const req = lib.get(url, (res) => {
+      const status = res.statusCode ?? 0
+      if (status >= 300 && status < 400 && res.headers.location && redirectLeft > 0) {
+        res.resume()
+        void downloadUrlToFile(res.headers.location, destPath, redirectLeft - 1).then(resolve).catch(reject)
+        return
+      }
+      if (status >= 400) {
+        res.resume()
+        reject(new Error(`下载失败（HTTP ${status}）`))
+        return
+      }
+      fs.mkdirSync(path.dirname(destPath), { recursive: true })
+      pipeline(res, createWriteStream(destPath))
+        .then(() => resolve())
+        .catch(reject)
+    })
+    req.setTimeout(YOLO_MODEL_DOWNLOAD_TIMEOUT_MS, () => {
+      req.destroy(new Error("下载超时"))
+    })
+    req.on("error", reject)
+  })
 }
 
 function collectTaskFiles(taskRootDir: string): Array<{ subset: string; filePath: string; createdAt: string }> {
@@ -1144,23 +1204,18 @@ ipc.registerService(AppService({
   ): Promise<DownloadYoloTrainingModelResponse> {
     const url = (request.downloadUrl || "").trim()
     const fileName = sanitizeModelDownloadFileName(request.suggestedFileName || "")
-    let tempPath = ""
-    try {
-      if (!url) {
-        return { canceled: true, savedPath: "", errorMessage: "下载地址为空。" }
-      }
-      tempPath = path.join(os.tmpdir(), `ea-yolo-model-${Date.now()}-${fileName}`)
-      await downloadUrlToTempFile(url, tempPath)
+    const backendDirectory = (request.backendDirectory || "").trim()
+    const jobSlug = (request.jobSlug || "").trim()
+    const modelRelPath = (request.modelRelPath || "").trim()
 
+    try {
       const downloadsDir = path.join(os.homedir(), "Downloads")
-      const defaultPath = fs.existsSync(downloadsDir)
-        ? path.join(downloadsDir, fileName)
-        : path.join(os.homedir(), fileName)
+      const defaultDir = fs.existsSync(downloadsDir) ? downloadsDir : os.homedir()
 
       const dialogResult = await app.showOpenDialog({
         parentWindow: win,
         title: "选择模型保存目录",
-        defaultPath,
+        defaultPath: defaultDir,
         selectionPolicy: "directories",
         features: {
           allowMultiple: false,
@@ -1172,22 +1227,26 @@ ipc.registerService(AppService({
       }
 
       const targetPath = buildUniqueFilePath(dialogResult.paths[0], fileName)
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true })
-      fs.copyFileSync(tempPath, targetPath)
+      const localSource =
+        backendDirectory && jobSlug && modelRelPath
+          ? resolveLocalYoloModelPath(backendDirectory, jobSlug, modelRelPath)
+          : null
+
+      if (localSource) {
+        await copyFileStreaming(localSource, targetPath)
+      } else {
+        if (!url) {
+          return { canceled: true, savedPath: "", errorMessage: "下载地址为空。" }
+        }
+        await downloadUrlToFile(url, targetPath)
+      }
+
       return { canceled: false, savedPath: targetPath, errorMessage: "" }
     } catch (error) {
       return {
         canceled: true,
         savedPath: "",
         errorMessage: error instanceof Error ? error.message : String(error),
-      }
-    } finally {
-      if (tempPath && fs.existsSync(tempPath)) {
-        try {
-          fs.unlinkSync(tempPath)
-        } catch {
-          /* ignore */
-        }
       }
     }
   },
