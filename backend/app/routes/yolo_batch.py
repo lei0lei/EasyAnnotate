@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -285,10 +288,34 @@ def delete_model(model_slug: str) -> dict[str, Any]:
 @router.post("/models/{model_slug}/predict")
 def predict_one(
     model_slug: str,
-    image_path: str = Query(..., description="本地图片绝对路径"),
+    image_path: str = Query(..., description="本地图片绝对路径（仅后端可访问该路径时）"),
 ) -> dict[str, Any]:
     slug = _require_slug(model_slug)
     try:
         return yolo_batch_runner.predict_image(slug, image_path.strip())
     except (RuntimeError, FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/models/{model_slug}/predict-upload")
+async def predict_upload(model_slug: str, image: UploadFile = File(...)) -> dict[str, Any]:
+    """远程后端：由客户端上传图片字节后推理。"""
+    slug = _require_slug(model_slug)
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="图片为空")
+    suffix = Path(image.filename or "image.bin").suffix or ".jpg"
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(prefix="ea-yolo-batch-", suffix=suffix, delete=False) as f:
+            f.write(raw)
+            tmp_path = f.name
+        return yolo_batch_runner.predict_image(slug, tmp_path)
+    except (RuntimeError, FileNotFoundError, ValueError, ImportError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass

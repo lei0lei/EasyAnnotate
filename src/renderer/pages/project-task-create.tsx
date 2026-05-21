@@ -2,17 +2,16 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { createTask } from "@/lib/project-tasks-storage"
-import { getProject, saveTaskFiles, type ProjectItem } from "@/lib/projects-api"
+import { getProject, type ProjectItem } from "@/lib/projects-api"
+import {
+  candidatesFromBrowserFiles,
+  pickTaskUploadFilesViaDialog,
+  saveTaskUploadCandidates,
+  type TaskUploadCandidate,
+} from "@/lib/task-file-upload"
 import { ArrowLeft, Upload } from "lucide-react"
 import { DragEvent, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-
-type UploadCandidate = {
-  id: string
-  name: string
-  sourcePath: string
-  file?: File
-}
 
 function generateId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -28,10 +27,11 @@ export default function ProjectTaskCreatePage() {
   const [loadingProject, setLoadingProject] = useState(false)
   const [name, setName] = useState("")
   const [subset, setSubset] = useState("")
-  const [files, setFiles] = useState<UploadCandidate[]>([])
+  const [files, setFiles] = useState<TaskUploadCandidate[]>([])
   const [dragActive, setDragActive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [pathHint, setPathHint] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -56,31 +56,39 @@ export default function ProjectTaskCreatePage() {
     [name, project, projectId],
   )
 
-  function appendFiles(input: FileList | File[]) {
-    const incoming = Array.from(input)
+  function mergeCandidates(incoming: TaskUploadCandidate[]) {
     if (incoming.length === 0) return
-    const existedKeys = new Set(files.map((item) => `${item.name}-${item.sourcePath}`))
-    const next = [...files]
-    for (const file of incoming) {
-      const sourcePath = ((file as File & { path?: string }).path ?? "").trim()
-      const key = `${file.name}-${sourcePath || `${file.size}-${file.lastModified}`}`
-      if (existedKeys.has(key)) continue
-      existedKeys.add(key)
-      next.push({
-        id: generateId(),
-        name: file.name,
-        sourcePath,
-        file,
-      })
-    }
-    setFiles(next)
+    setFiles((prev) => {
+      const existedKeys = new Set(prev.map((item) => `${item.name}-${item.sourcePath}`))
+      const next = [...prev]
+      for (const item of incoming) {
+        const key = `${item.name}-${item.sourcePath || item.id}`
+        if (existedKeys.has(key)) continue
+        existedKeys.add(key)
+        next.push(item)
+      }
+      return next
+    })
+  }
+
+  async function handlePickFiles() {
+    setPathHint(null)
+    const picked = await pickTaskUploadFilesViaDialog("选择任务图片")
+    mergeCandidates(picked)
   }
 
   function handleDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault()
     setDragActive(false)
-    if (e.dataTransfer.files?.length) {
-      appendFiles(e.dataTransfer.files)
+    if (!e.dataTransfer.files?.length) return
+    const { accepted, skippedWithoutPath } = candidatesFromBrowserFiles(e.dataTransfer.files)
+    mergeCandidates(accepted)
+    if (skippedWithoutPath.length > 0) {
+      setPathHint(
+        `有 ${skippedWithoutPath.length} 个文件因无本地路径未加入（请用「选择文件」按钮，或改用点击选图）。`,
+      )
+    } else {
+      setPathHint(null)
     }
   }
 
@@ -91,26 +99,11 @@ export default function ProjectTaskCreatePage() {
     try {
       const taskId = generateId()
       if (files.length > 0) {
-        const payloadFiles = await Promise.all(
-          files.map(async (item) => {
-            if (item.file) {
-              return {
-                sourcePath: item.sourcePath,
-                fileName: item.name,
-                content: new Uint8Array(await item.file.arrayBuffer()),
-              }
-            }
-            return {
-              sourcePath: item.sourcePath,
-              fileName: item.name,
-            }
-          }),
-        )
-        const result = await saveTaskFiles({
+        const result = await saveTaskUploadCandidates({
           projectId,
           taskId,
           subset: subset.trim(),
-          files: payloadFiles,
+          files,
         })
         if (result.errorMessage) {
           setErrorMessage(`上传文件失败：${result.errorMessage}`)
@@ -165,7 +158,7 @@ export default function ProjectTaskCreatePage() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault()
-                  handleCreate()
+                  void handleCreate()
                 }
               }}
             />
@@ -199,6 +192,14 @@ export default function ProjectTaskCreatePage() {
 
           <div className="space-y-2">
             <p className="text-sm font-medium text-foreground">文件上传</p>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="default" size="sm" onClick={() => void handlePickFiles()}>
+                选择文件
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                浏览器选图（需带路径）
+              </Button>
+            </div>
             <div
               className={`rounded-lg border border-dashed p-6 text-center transition-colors ${
                 dragActive ? "border-primary bg-primary/5" : "border-border bg-muted/20"
@@ -216,21 +217,12 @@ export default function ProjectTaskCreatePage() {
                 setDragActive(false)
               }}
               onDrop={handleDrop}
-              onClick={() => {
-                fileInputRef.current?.click()
-              }}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault()
-                  fileInputRef.current?.click()
-                }
-              }}
             >
               <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
-              <p className="mt-2 text-sm text-foreground">拖拽文件到这里，或点击选择文件</p>
-              <p className="mt-1 text-xs text-muted-foreground">可多选，提交时会复制到项目数据目录</p>
+              <p className="mt-2 text-sm text-foreground">或将已有本地路径的文件拖拽到此处</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                推荐使用「选择文件」：由主进程直接复制，避免大图经 IPC 传字节导致闪退
+              </p>
             </div>
             <input
               ref={fileInputRef}
@@ -238,17 +230,25 @@ export default function ProjectTaskCreatePage() {
               multiple
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) {
-                  appendFiles(e.target.files)
-                  e.target.value = ""
+                if (!e.target.files) return
+                const { accepted, skippedWithoutPath } = candidatesFromBrowserFiles(e.target.files)
+                mergeCandidates(accepted)
+                if (skippedWithoutPath.length > 0) {
+                  setPathHint(
+                    `有 ${skippedWithoutPath.length} 个文件无本地路径未加入，请改用「选择文件」。`,
+                  )
                 }
+                e.target.value = ""
               }}
             />
+            {pathHint ? <p className="text-xs text-amber-600 dark:text-amber-400">{pathHint}</p> : null}
             {files.length > 0 ? (
               <ul className="max-h-40 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
                 {files.map((item) => (
                   <li key={item.id} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-muted-foreground">{item.name}</span>
+                    <span className="truncate text-muted-foreground" title={item.sourcePath || item.name}>
+                      {item.name}
+                    </span>
                     <Button
                       type="button"
                       variant="ghost"
@@ -267,7 +267,7 @@ export default function ProjectTaskCreatePage() {
           {errorMessage ? <p className="text-xs text-destructive">{errorMessage}</p> : null}
 
           <div className="flex flex-wrap gap-2">
-            <Button type="button" onClick={handleCreate} disabled={!canCreate || submitting}>
+            <Button type="button" onClick={() => void handleCreate()} disabled={!canCreate || submitting}>
               {submitting ? "提交中..." : "提交"}
             </Button>
             <Button type="button" variant="outline" asChild>

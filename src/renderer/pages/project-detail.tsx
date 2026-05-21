@@ -1,5 +1,9 @@
 import { Button } from "@/components/ui/button"
 import { ProjectTagsEditor } from "@/components/project-tags-editor"
+import {
+  TaskYoloAutoAnnotateBadge,
+  TaskYoloAutoAnnotatePanel,
+} from "@/components/task-yolo-auto-annotate-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { listAnnotationsByProject } from "@/lib/annotation-db-storage"
@@ -10,10 +14,30 @@ import {
 import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
 import { removeLegacyExportVersionsStorageKey } from "@/lib/project-export-storage"
 import { deleteTask, formatTaskTime, loadTasks, persistTasks, removeLegacyTasksStorageKey, type TaskItem } from "@/lib/project-tasks-storage"
+import {
+  runYoloBatchAutoAnnotate,
+  type YoloAutoAnnotateProgress,
+} from "@/lib/yolo-batch-auto-annotate"
 import { deleteProject, deleteTaskAnnotations, deleteTaskData, getProject, listTaskFiles, readImageFile, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
-import { ArrowLeft, ArrowRight, ArrowUpDown, Check, Clock3, Download, FolderOpen, MoreHorizontal, Pencil, Plus, Save, Trash2, Upload, X } from "lucide-react"
+import {
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpDown,
+  Check,
+  Clock3,
+  Download,
+  FolderOpen,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Save,
+  Sparkles,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 
@@ -113,6 +137,12 @@ export default function ProjectDetailPage() {
   const [taskCoverById, setTaskCoverById] = useState<Record<string, string>>({})
   const saveFlashTimerRef = useRef<number | undefined>(undefined)
   const taskCoverByIdRef = useRef<Record<string, string>>({})
+  const autoAnnotateAbortRef = useRef<Record<string, AbortController>>({})
+  const [autoAnnotatePanelTaskId, setAutoAnnotatePanelTaskId] = useState<string | null>(null)
+  const [autoAnnotateModelSlug, setAutoAnnotateModelSlug] = useState("")
+  const [autoAnnotateProgressByTaskId, setAutoAnnotateProgressByTaskId] = useState<
+    Record<string, YoloAutoAnnotateProgress>
+  >({})
 
   function flashSaveStatus(status: "success" | "error") {
     if (saveFlashTimerRef.current) {
@@ -291,6 +321,58 @@ export default function ProjectDetailPage() {
   }, [])
 
   const currentTags = useMemo(() => normalizeTags(tags), [tags])
+
+  useEffect(() => {
+    return () => {
+      for (const ac of Object.values(autoAnnotateAbortRef.current)) {
+        ac.abort()
+      }
+      autoAnnotateAbortRef.current = {}
+    }
+  }, [])
+
+  function openAutoAnnotatePanel(task: TaskItem) {
+    setAutoAnnotatePanelTaskId(task.id)
+  }
+
+  function closeAutoAnnotatePanel() {
+    setAutoAnnotatePanelTaskId(null)
+  }
+
+  function stopAutoAnnotateForTask(taskId: string) {
+    autoAnnotateAbortRef.current[taskId]?.abort()
+    delete autoAnnotateAbortRef.current[taskId]
+  }
+
+  function startAutoAnnotateForTask(task: TaskItem) {
+    if (!projectId) return
+    const modelSlug = autoAnnotateModelSlug.trim()
+    if (!modelSlug) {
+      window.alert("请先选择已启动的 YOLO 模型")
+      return
+    }
+    stopAutoAnnotateForTask(task.id)
+    const controller = new AbortController()
+    autoAnnotateAbortRef.current[task.id] = controller
+    setAutoAnnotateProgressByTaskId((prev) => ({
+      ...prev,
+      [task.id]: { phase: "running", done: 0, total: 0 },
+    }))
+    void runYoloBatchAutoAnnotate({
+      projectId,
+      taskId: task.id,
+      modelSlug,
+      projectTags: currentTags,
+      signal: controller.signal,
+      onProgress: (progress) => {
+        setAutoAnnotateProgressByTaskId((prev) => ({ ...prev, [task.id]: progress }))
+        if (progress.phase === "done" || progress.phase === "error" || progress.phase === "cancelled") {
+          delete autoAnnotateAbortRef.current[task.id]
+          setAnnotationStatsTick((t) => t + 1)
+        }
+      },
+    })
+  }
   const initialTags = useMemo(() => normalizeTags(project?.tags ?? []), [project?.tags])
   const totalTaskPages = useMemo(() => Math.max(1, Math.ceil(tasks.length / TASK_PAGE_SIZE)), [tasks.length])
   const currentTaskPage = useMemo(() => Math.min(taskPage, totalTaskPages - 1), [taskPage, totalTaskPages])
@@ -797,6 +879,7 @@ export default function ProjectDetailPage() {
                         </button>
                       </div>
                       <div className="flex items-center justify-end gap-1">
+                        <TaskYoloAutoAnnotateBadge progress={autoAnnotateProgressByTaskId[task.id] ?? null} />
                         <Link
                           to={`/projects/${projectId}/tasks/${task.id}`}
                           className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -829,6 +912,13 @@ export default function ProjectDetailPage() {
                               >
                                 <Upload className="h-3.5 w-3.5" aria-hidden />
                                 补充图片
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Item
+                                className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-highlighted:bg-accent"
+                                onSelect={() => openAutoAnnotatePanel(task)}
+                              >
+                                <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                                自动标注
                               </DropdownMenu.Item>
                               <DropdownMenu.Item className="flex cursor-default select-none items-center gap-2 whitespace-nowrap rounded-sm px-2 py-1.5 outline-hidden data-highlighted:bg-accent">
                                 <Upload className="h-3.5 w-3.5" aria-hidden />
@@ -983,6 +1073,22 @@ export default function ProjectDetailPage() {
             </CardContent>
           </Card>
         </div>
+      ) : null}
+
+      {autoAnnotatePanelTaskId ? (
+        <TaskYoloAutoAnnotatePanel
+          open
+          taskName={tasks.find((t) => t.id === autoAnnotatePanelTaskId)?.name ?? ""}
+          progress={autoAnnotateProgressByTaskId[autoAnnotatePanelTaskId] ?? null}
+          selectedModelSlug={autoAnnotateModelSlug}
+          onSelectedModelSlugChange={setAutoAnnotateModelSlug}
+          onClose={closeAutoAnnotatePanel}
+          onStart={() => {
+            const task = tasks.find((t) => t.id === autoAnnotatePanelTaskId)
+            if (task) startAutoAnnotateForTask(task)
+          }}
+          onStop={() => stopAutoAnnotateForTask(autoAnnotatePanelTaskId)}
+        />
       ) : null}
     </div>
   )

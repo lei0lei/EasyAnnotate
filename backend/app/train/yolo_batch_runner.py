@@ -146,19 +146,11 @@ def predict_image(model_slug: str, image_path: str, *, device: str | int | None 
     if not results:
         return {"model_slug": slug, "task": task, "results": []}
 
-    from app.models.impl.yolo_ultralytics import _detection_dict
+    from app.train.yolo_batch_predict_export import export_ultralytics_result
 
     out: list[dict[str, Any]] = []
     for r in results:
-        d = _detection_dict(r)
-        d["shape"] = list(r.orig_shape) if r.orig_shape else None
-        if task == "segment" and r.masks is not None:
-            d["has_masks"] = True
-        if task == "pose" and r.keypoints is not None:
-            d["has_keypoints"] = True
-        if task == "obb" and r.obb is not None:
-            d["has_obb"] = True
-        out.append(d)
+        out.append(export_ultralytics_result(r, task))
     return {"model_slug": slug, "task": task, "results": out}
 
 

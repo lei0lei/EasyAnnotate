@@ -36,9 +36,48 @@ export function encodeUrlPathSegments(id: string): string {
   return id.split("/").map(encodeURIComponent).join("/")
 }
 
+/** 解析 FastAPI 错误体（如 `{"detail":"Not Found"}` 或 `{"detail":"未找到模型：x"}`）。 */
+export function formatFetchError(res: Response, rawBody: string): string {
+  const trimmed = rawBody.trim()
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed) as { detail?: unknown; message?: unknown }
+      const detail = parsed.detail
+      if (typeof detail === "string" && detail.trim()) {
+        if (res.status === 404 && detail === "Not Found") {
+          return `HTTP 404：接口不存在（${res.url || "请求 URL 无效"}）。若使用远程后端，请用最新代码重启该后端。`
+        }
+        return detail.trim()
+      }
+      if (Array.isArray(detail)) {
+        const parts = detail
+          .map((item) => {
+            if (typeof item === "string") return item
+            if (item && typeof item === "object" && "msg" in item) {
+              return String((item as { msg?: unknown }).msg ?? "")
+            }
+            return ""
+          })
+          .filter(Boolean)
+        if (parts.length > 0) return parts.join("；")
+      }
+      if (typeof parsed.message === "string" && parsed.message.trim()) {
+        return parsed.message.trim()
+      }
+    } catch {
+      /* 非 JSON，使用原文 */
+    }
+    return trimmed
+  }
+  if (res.status === 404) {
+    return `HTTP 404：接口不存在（${res.url || ""}）。请确认当前连接的后端已包含 YOLO 批量标注 API 并已重启。`
+  }
+  return res.statusText || `HTTP ${res.status}`
+}
+
 export async function readFetchError(res: Response): Promise<string> {
   const text = await res.text().catch(() => "")
-  return text || res.statusText || "unknown"
+  return formatFetchError(res, text)
 }
 
 /** 避免远程慢连/无响应时前端一直停在「正在加载」。 */

@@ -1,4 +1,6 @@
+import { postLocalImageAsMultipart } from "@/lib/backend-image-upload"
 import { apiV1Root, encodeUrlPathSegments, fetchWithTimeout, readFetchError } from "@/lib/backend-http"
+import type { YoloBatchPredictResult } from "@/lib/yolo-predict-to-annotation"
 import { uploadYoloBatchFileWithProgress, type YoloBatchUploadProgress } from "@/lib/yolo-batch-chunk-transfer"
 import { getYoloBatchLocalBackendDir, isYoloBatchRemoteBackend } from "@/lib/yolo-batch-backend"
 import { probeBackendHealth } from "@/lib/training-yolo-api"
@@ -48,6 +50,25 @@ export async function fetchYoloBatchCatalog(): Promise<{
   const res = await fetchWithTimeout(`${yoloBatchRoot()}/catalog`, undefined, FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
   return res.json()
+}
+
+/** 检测当前连接的后端是否已挂载 `/api/v1/yolo-batch`（避免 404 Not Found）。 */
+export async function probeYoloBatchApiAvailable(): Promise<boolean> {
+  try {
+    const res = await fetchWithTimeout(`${yoloBatchRoot()}/catalog`, undefined, 10_000)
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** 若内存中未加载则先启动（自动标注前调用，避免「模型未启动」）。 */
+export async function ensureYoloBatchModelRunning(modelSlug: string): Promise<void> {
+  const slug = modelSlug.trim()
+  if (!slug) throw new Error("未选择模型")
+  const status = await fetchYoloBatchStatus()
+  if (status.running_models.includes(slug)) return
+  await startYoloBatchModel(slug)
 }
 
 export async function fetchYoloBatchModels(): Promise<YoloBatchModel[]> {
@@ -232,6 +253,26 @@ export async function stopYoloBatchModel(modelSlug: string): Promise<void> {
     FETCH_TIMEOUT_MS,
   )
   if (!res.ok) throw new Error(await readFetchError(res))
+}
+
+export async function predictYoloBatchImage(
+  modelSlug: string,
+  imagePath: string,
+): Promise<YoloBatchPredictResult> {
+  const slug = modelSlug.trim()
+  const path = imagePath.trim()
+  const base = `${yoloBatchRoot()}/models/${encodeUrlPathSegments(slug)}`
+  if (isYoloBatchRemoteBackend()) {
+    const res = await postLocalImageAsMultipart(`${base}/predict-upload`, path, undefined, FETCH_TIMEOUT_MS)
+    return res.json() as Promise<YoloBatchPredictResult>
+  }
+  const res = await fetchWithTimeout(
+    `${base}/predict?${new URLSearchParams({ image_path: path })}`,
+    { method: "POST" },
+    FETCH_TIMEOUT_MS,
+  )
+  if (!res.ok) throw new Error(await readFetchError(res))
+  return res.json() as Promise<YoloBatchPredictResult>
 }
 
 export async function deleteYoloBatchModel(modelSlug: string): Promise<void> {

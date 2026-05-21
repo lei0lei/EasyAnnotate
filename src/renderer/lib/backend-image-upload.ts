@@ -1,3 +1,4 @@
+import { fetchWithTimeout, readFetchError } from "@/lib/backend-http"
 import { readImageFile } from "@/lib/projects-api"
 
 function fileNameFromPath(path: string): string {
@@ -25,6 +26,7 @@ export async function postLocalImageAsMultipart(
   url: string,
   imagePath: string,
   payload?: Record<string, unknown>,
+  timeoutMs = 120_000,
 ): Promise<Response> {
   const path = imagePath.trim()
   const file = await readImageFile(path)
@@ -41,9 +43,17 @@ export async function postLocalImageAsMultipart(
   if (payload && Object.keys(payload).length > 0) {
     form.set("payload_json", JSON.stringify(payload))
   }
-  return fetch(url, {
-    method: "POST",
-    headers: { Accept: "application/json" },
-    body: form,
-  })
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body: form,
+    },
+    timeoutMs,
+  )
+  if (!res.ok) {
+    throw new Error(await readFetchError(res))
+  }
+  return res
 }

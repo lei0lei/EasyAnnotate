@@ -6,6 +6,7 @@ import {
   deleteYoloBatchModel,
   fetchYoloBatchModels,
   probeBackendHealth,
+  probeYoloBatchApiAvailable,
   resolveYoloBatchBackendContext,
   startYoloBatchModel,
   stopYoloBatchModel,
@@ -146,10 +147,12 @@ export default function ModelsYoloBatchPage() {
   const [task, setTask] = useState<YoloBatchTaskId>("detect")
   const [models, setModels] = useState<YoloBatchModel[]>([])
   const [loading, setLoading] = useState(false)
+  const [yoloApiOk, setYoloApiOk] = useState<boolean | null>(null)
 
   const refreshBackend = useCallback(() => {
     void probeBackendHealth().then(setBackendOk)
     void resolveYoloBatchBackendContext().then(setBackendCtx)
+    void probeYoloBatchApiAvailable().then(setYoloApiOk)
   }, [])
 
   const loadModels = useCallback(() => {
@@ -202,7 +205,12 @@ export default function ModelsYoloBatchPage() {
         </span>
       </div>
 
-      <Card className={cn("border-border/80", backendOk === false && "border-destructive/40")}>
+      <Card
+        className={cn(
+          "border-border/80",
+          (backendOk === false || yoloApiOk === false) && "border-destructive/40",
+        )}
+      >
         <CardContent className="flex flex-col gap-1 py-4 text-sm sm:flex-row sm:items-center sm:gap-2">
           <div className="flex items-center gap-2">
             <span
@@ -214,9 +222,11 @@ export default function ModelsYoloBatchPage() {
             {backendOk === null
               ? "正在检测后端…"
               : backendOk
-                ? backendEndpoint.mode === "remote"
-                  ? `远程后端已就绪（${backendEndpoint.label}）`
-                  : "本地后端已就绪"
+                ? yoloApiOk === false
+                  ? "后端已连通，但缺少 YOLO 批量标注 API（请重启后端）"
+                  : backendEndpoint.mode === "remote"
+                    ? `远程后端已就绪（${backendEndpoint.label}）`
+                    : "本地后端已就绪"
                 : "后端未连接，请先在设置中启动本地或连接远程后端"}
           </div>
           {backendCtx ? (
