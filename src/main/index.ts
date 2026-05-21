@@ -1327,6 +1327,54 @@ ipc.registerService(AppService({
       errorMessage: job.errorMessage,
     }
   },
+  async CopyYoloBatchModelFile(request) {
+    const backendDir = request.backendDirectory?.trim() ?? ""
+    const modelSlug = request.modelSlug?.trim() ?? ""
+    const sourcePath = request.sourcePath?.trim() ?? ""
+    const kind = request.kind?.trim() ?? ""
+    if (!backendDir) {
+      return { ok: false, errorMessage: "未配置本地 backend 目录", destPath: "" }
+    }
+    if (!modelSlug) {
+      return { ok: false, errorMessage: "缺少模型标识", destPath: "" }
+    }
+    if (!sourcePath) {
+      return { ok: false, errorMessage: "未选择源文件", destPath: "" }
+    }
+    if (!fs.existsSync(sourcePath)) {
+      return { ok: false, errorMessage: `源文件不存在：${sourcePath}`, destPath: "" }
+    }
+    const lower = sourcePath.toLowerCase()
+    let destName = ""
+    if (kind === "data_yaml") {
+      if (!lower.endsWith(".yaml") && !lower.endsWith(".yml")) {
+        return { ok: false, errorMessage: "仅支持 .yaml / .yml", destPath: "" }
+      }
+      destName = "data.yaml"
+    } else if (kind === "weights") {
+      if (!lower.endsWith(".pt")) {
+        return { ok: false, errorMessage: "仅支持 .pt 权重", destPath: "" }
+      }
+      destName = "weights.pt"
+    } else {
+      return { ok: false, errorMessage: `未知文件类型：${kind}`, destPath: "" }
+    }
+    try {
+      const modelDir = path.join(path.normalize(backendDir), "external", "model_temp", modelSlug)
+      if (!fs.existsSync(modelDir)) {
+        return { ok: false, errorMessage: "请先创建模型工作区（填写名称并准备新建）", destPath: "" }
+      }
+      const dest = path.join(modelDir, destName)
+      fs.copyFileSync(sourcePath, dest)
+      return { ok: true, errorMessage: "", destPath: dest }
+    } catch (error) {
+      return {
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        destPath: "",
+      }
+    }
+  },
   async CopyYoloTrainingDatasetZip(request) {
     const backendDir = request.backendDirectory?.trim() ?? ""
     const sourceZip = request.sourceZipPath?.trim() ?? ""

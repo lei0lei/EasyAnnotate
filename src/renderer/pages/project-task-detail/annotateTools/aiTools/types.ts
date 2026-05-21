@@ -81,6 +81,8 @@ export type TaskAiToolPaletteProps = {
   onDiffusionSimilarityThresholdChange: (value: number) => void
   diffusionMaxInstances: number
   onDiffusionMaxInstancesChange: (value: number) => void
+  diffusionShowProcessAnimation: boolean
+  onDiffusionShowProcessAnimationChange: (enabled: boolean) => void
   /** 面板 OK：未开始时进入画框；已画种子框后执行搜索与 SAM 精化 */
   onDiffusionPanelOk: () => void
 }

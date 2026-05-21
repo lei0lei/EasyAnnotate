@@ -69,6 +69,8 @@ export function TaskAiToolPalette(props: TaskAiToolPaletteProps) {
     onDiffusionSimilarityThresholdChange,
     diffusionMaxInstances,
     onDiffusionMaxInstancesChange,
+    diffusionShowProcessAnimation,
+    onDiffusionShowProcessAnimationChange,
     onDiffusionPanelOk,
   } = props
 
@@ -273,6 +275,8 @@ export function TaskAiToolPalette(props: TaskAiToolPaletteProps) {
         onSimilarityThresholdChange={onDiffusionSimilarityThresholdChange}
         maxInstances={diffusionMaxInstances}
         onMaxInstancesChange={onDiffusionMaxInstancesChange}
+        showProcessAnimation={diffusionShowProcessAnimation}
+        onShowProcessAnimationChange={onDiffusionShowProcessAnimationChange}
         onCancel={() => onDiffusionDialogOpenChange(false)}
         onPanelOk={onDiffusionPanelOk}
       />

@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { LineChart, Server, Sparkles } from "lucide-react"
+import { Layers, LineChart, Server, Sparkles } from "lucide-react"
 import { Link } from "react-router-dom"
 
 export default function ModelsHubPage() {
@@ -50,6 +50,20 @@ export default function ModelsHubPage() {
           <CardContent>
             <Button asChild variant="outline" className="w-full sm:w-auto">
               <Link to="/models/training">进入</Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Layers className="h-5 w-5" aria-hidden />
+            </div>
+            <CardTitle className="text-lg">YOLO 批量标注工具</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Button asChild variant="outline" className="w-full sm:w-auto">
+              <Link to="/models/yolo-batch">进入</Link>
             </Button>
           </CardContent>
         </Card>

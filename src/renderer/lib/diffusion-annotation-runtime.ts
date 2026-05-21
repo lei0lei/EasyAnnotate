@@ -2,11 +2,21 @@
  * 扩散式标注编排：SAM encode 一次 → 种子 decode → DINOv2 特征 → 前端相似搜索 → 批量 SAM decode。
  */
 import { fetchDinov2PatchFeatures } from "@/lib/dinov2-patch-features-api"
-import { decodeSamBboxOnEncodeCache } from "@/lib/diffusion-sam-decode"
+import { buildSeedDinoPrototype } from "@/lib/diffusion-dino-embedding"
 import {
-  searchSimilarFromPatchFeatures,
-  type DiffusionSimilarityCandidate,
-} from "@/lib/diffusion-similarity"
+  refineDiffusionCandidates,
+  searchDiffusionSimilarCandidates,
+  type DiffusionCandidateBoxStrategy,
+  type DiffusionCandidateResult,
+  type DiffusionRefinePostStrategy,
+  type DiffusionSeedBbox,
+} from "@/lib/diffusion-pipeline-strategies"
+import {
+  refinePostStrategyUsesDinoMaskFilter,
+  type DiffusionPipelineVisualStep,
+} from "@/lib/diffusion-process-visual"
+import type { DiffusionSimilarityCandidate } from "@/lib/diffusion-similarity"
+import { decodeSamBboxOnEncodeCache } from "@/lib/diffusion-sam-decode"
 import {
   decodeRowMajorRleToBinary,
   foregroundBBoxInclusive,
@@ -14,15 +24,11 @@ import {
 import { fetchSamImageEmbeddings, type Sam2EmbedCache } from "@/lib/sam2-encode-api"
 import { isSamCvatsFeatureLayout, loadSamDecoderSession } from "@/lib/sam2-cvat-onnx"
 
-export type DiffusionSeedBbox = { x1: number; y1: number; x2: number; y2: number }
-
-export type DiffusionCandidateResult = {
-  id: string
-  bbox: DiffusionSeedBbox
-  score: number
-  rle: { counts: number[]; w: number; h: number } | null
-  selected: boolean
-}
+export type { DiffusionCandidateResult, DiffusionSeedBbox } from "@/lib/diffusion-pipeline-strategies"
+export type {
+  DiffusionCandidateBoxStrategy,
+  DiffusionRefinePostStrategy,
+} from "@/lib/diffusion-pipeline-strategies"
 
 export type RunDiffusionPipelineParams = {
   imagePath: string
@@ -38,8 +44,17 @@ export type RunDiffusionPipelineParams = {
   nmsIou?: number
   /** 候选 SAM 精化并发数（默认 4，建议 1~6） */
   refineConcurrency?: number
+  /** 相似峰 → 候选框算法 */
+  candidateBoxStrategy?: DiffusionCandidateBoxStrategy
+  /** SAM 精化与后处理算法 */
+  refinePostStrategy?: DiffusionRefinePostStrategy
+  /** 为 true 时通过 onVisualStep 推送中间候选框叠加（需配合对话框开关） */
+  animateProcess?: boolean
+  onVisualStep?: (step: DiffusionPipelineVisualStep) => void | Promise<void>
   onProgress?: (message: string) => void
 }
+
+export type { DiffusionPipelineVisualStep } from "@/lib/diffusion-process-visual"
 
 export type RunDiffusionPipelineResult = {
   embedCache: Sam2EmbedCache
@@ -48,6 +63,10 @@ export type RunDiffusionPipelineResult = {
   similarityCandidates: DiffusionSimilarityCandidate[]
   refinedSuccessCount: number
   refinedFailedCount: number
+  /** SAM 有 mask 但被 DINO 相似度过滤掉的数量 */
+  dinoFilteredCount: number
+  /** DINO 通过但被 mask IoU NMS 去掉的数量 */
+  maskNmsFilteredCount: number
 }
 
 function bboxFromMaskRle(rle: { counts: number[]; w: number; h: number }): DiffusionSeedBbox | null {
@@ -55,14 +74,6 @@ function bboxFromMaskRle(rle: { counts: number[]; w: number; h: number }): Diffu
   const fb = foregroundBBoxInclusive(bin, rle.w, rle.h)
   if (!fb) return null
   return { x1: fb.minX, y1: fb.minY, x2: fb.maxX + 1, y2: fb.maxY + 1 }
-}
-
-function newCandidateId(): string {
-  try {
-    return crypto.randomUUID()
-  } catch {
-    return `dc-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  }
 }
 
 export async function ensureSamEmbedCache(
@@ -116,63 +127,51 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
   onProgress?.("DINOv2 提取 patch 特征…")
   const patchFeatures = await fetchDinov2PatchFeatures(dinov2ModelId, path)
 
+  const { proto: seedDinoProto, gridPack } = buildSeedDinoPrototype(patchFeatures, {
+    seedBbox: querySeedBbox,
+    seedMaskRle: querySeedMaskRle,
+  })
+
   onProgress?.("前端相似搜索…")
-  const similarityCandidates = searchSimilarFromPatchFeatures(patchFeatures, {
+  const similarityCandidates = searchDiffusionSimilarCandidates(patchFeatures, {
     seedBbox: querySeedBbox,
     seedMaskRle: querySeedMaskRle,
     similarityThreshold: params.similarityThreshold,
     maxInstances: params.maxInstances,
     nmsIou: params.nmsIou,
+    boxStrategy: params.candidateBoxStrategy ?? "peak_score_extent",
   })
 
-  const total = similarityCandidates.length
-  const candidates: DiffusionCandidateResult[] = new Array(total)
-  if (total > 0) {
-    const concurrency = Math.max(1, Math.min(6, Math.floor(params.refineConcurrency ?? 4)))
-    let nextIndex = 0
-    let done = 0
-    let refinedSuccessCount = 0
-    let refinedFailedCount = 0
-    onProgress?.(`SAM 精化候选 0/${total}（并发 ${Math.min(concurrency, total)}）…`)
+  const refinePostStrategy = params.refinePostStrategy ?? "center_point_dino_mask_iou"
+  if (params.animateProcess && params.onVisualStep) {
+    await params.onVisualStep({ kind: "similarity_boxes", similarityCandidates })
+  }
 
-    const worker = async (): Promise<void> => {
-      while (true) {
-        const i = nextIndex
-        nextIndex += 1
-        if (i >= total) return
-        const c = similarityCandidates[i]!
-        const [x1, y1, x2, y2] = c.bbox
-        const bbox = { x1, y1, x2, y2 }
-        let rle: { counts: number[]; w: number; h: number } | null = null
-        try {
-          rle = await decodeSamBboxOnEncodeCache(embedCache.response, bbox)
-        } catch {
-          rle = null
-        }
-        if (rle) refinedSuccessCount += 1
-        else refinedFailedCount += 1
-        const refinedBbox = rle ? (bboxFromMaskRle(rle) ?? bbox) : bbox
-        candidates[i] = {
-          id: newCandidateId(),
-          bbox: refinedBbox,
-          score: c.score,
-          rle,
-          selected: true,
-        }
-        done += 1
-        onProgress?.(`SAM 精化候选 ${done}/${total}…`)
-      }
-    }
+  const refineResult = await refineDiffusionCandidates({
+    encodeResponse: embedCache.response,
+    similarityCandidates,
+    postStrategy: refinePostStrategy,
+    seedDinoProto,
+    gridPack,
+    similarityThreshold: params.similarityThreshold,
+    nmsIou: params.nmsIou,
+    refineConcurrency: params.refineConcurrency,
+    onProgress,
+  })
 
-    const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker())
-    await Promise.all(workers)
-    return {
-      embedCache,
-      seedMaskRle: seedRle,
-      candidates,
-      similarityCandidates,
-      refinedSuccessCount,
-      refinedFailedCount,
+  const {
+    candidates,
+    refinedSuccessCount,
+    refinedFailedCount,
+    dinoFilteredCount,
+    maskNmsFilteredCount,
+  } = refineResult
+
+  if (params.animateProcess && params.onVisualStep) {
+    await params.onVisualStep({ kind: "clear" })
+    if (refinePostStrategyUsesDinoMaskFilter(refinePostStrategy) && candidates.length > 0) {
+      await params.onVisualStep({ kind: "refined_boxes", candidates })
+      await params.onVisualStep({ kind: "clear" })
     }
   }
 
@@ -181,7 +180,9 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
     seedMaskRle: seedRle,
     candidates,
     similarityCandidates,
-    refinedSuccessCount: 0,
-    refinedFailedCount: 0,
+    refinedSuccessCount,
+    refinedFailedCount,
+    dinoFilteredCount,
+    maskNmsFilteredCount,
   }
 }

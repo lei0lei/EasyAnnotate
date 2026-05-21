@@ -1,9 +1,8 @@
 /**
  * 扩散式标注：在浏览器端对 DINOv2 patch 特征做相似搜索（后端仅提供特征张量）。
  */
-import { decodeBase64ToUint8Array } from "@/lib/base64-binary"
+import { buildSeedDinoPrototype } from "@/lib/diffusion-dino-embedding"
 import type { Dinov2LetterboxMeta, Dinov2PatchFeaturesResponse } from "@/lib/dinov2-patch-features-api"
-import { decodeRowMajorRleToBinary } from "@/lib/mask-raster-rle"
 
 export type DiffusionSimilarityCandidate = {
   bbox: [number, number, number, number]
@@ -12,6 +11,9 @@ export type DiffusionSimilarityCandidate = {
   peak_y: number
 }
 
+/** DINO 相似峰 → 候选 bbox 的生成方式 */
+export type DiffusionCandidateBoxStrategy = "peak_score_extent" | "peak_fixed_seed" | "score_connected"
+
 export type DiffusionSimilaritySearchOptions = {
   seedBbox: [number, number, number, number]
   seedMaskRle?: { counts: number[]; w: number; h: number }
@@ -19,51 +21,7 @@ export type DiffusionSimilaritySearchOptions = {
   maxInstances?: number
   nmsIou?: number
   minPeakDistance?: number
-}
-
-function unpackPatchGrid(resp: Dinov2PatchFeaturesResponse): Float32Array {
-  const pf = resp.patch_features
-  const bytes = decodeBase64ToUint8Array(pf.data_base64)
-  const expected = resp.grid_h * resp.grid_w * resp.dim
-  const floats = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
-  if (floats.length < expected) {
-    throw new Error(`patch_features size mismatch: got ${floats.length}, expected ${expected}`)
-  }
-  return floats
-}
-
-function patchWeightsFromSeed(
-  meta: Dinov2LetterboxMeta,
-  gh: number,
-  gw: number,
-  seedBbox: [number, number, number, number],
-  seedMask: Uint8Array | null,
-  maskW: number,
-  maskH: number,
-): Float32Array {
-  const weights = new Float32Array(gh * gw)
-  const [x1, y1, x2, y2] = seedBbox
-  const patchPx = meta.img_size / Math.max(gh, 1)
-
-  for (let gy = 0; gy < gh; gy += 1) {
-    for (let gx = 0; gx < gw; gx += 1) {
-      const cxL = (gx + 0.5) * patchPx
-      const cyL = (gy + 0.5) * patchPx
-      const fx = (cxL - meta.pad_x) / meta.scale
-      const fy = (cyL - meta.pad_y) / meta.scale
-      if (fx < 0 || fy < 0 || fx >= meta.orig_w || fy >= meta.orig_h) continue
-      if (seedMask) {
-        const ix = Math.min(meta.orig_w - 1, Math.max(0, Math.floor(fx)))
-        const iy = Math.min(meta.orig_h - 1, Math.max(0, Math.floor(fy)))
-        if (ix < maskW && iy < maskH) {
-          weights[gy * gw + gx] = seedMask[iy * maskW + ix]! ? 1 : 0
-        }
-      } else if (fx >= x1 && fx <= x2 && fy >= y1 && fy <= y2) {
-        weights[gy * gw + gx] = 1
-      }
-    }
-  }
-  return weights
+  boxStrategy?: DiffusionCandidateBoxStrategy
 }
 
 function bboxIou(a: [number, number, number, number], b: [number, number, number, number]): number {
@@ -122,7 +80,8 @@ function isLocalPeak(scores: Float32Array, gh: number, gw: number, gy: number, g
   return true
 }
 
-function adaptiveBoxFromPeak(
+/** 从峰值邻域高分 patch 连通块估计 bbox（不按种子尺寸强制缩放）。 */
+function boxFromPeakScoreExtent(
   scores: Float32Array,
   gh: number,
   gw: number,
@@ -149,8 +108,8 @@ function adaptiveBoxFromPeak(
   let minGy = peakGy
   let maxGy = peakGy
   let region = 0
-  const maxRegion = Math.max(9, Math.floor(gh * gw * 0.1))
-  const maxRadius = Math.max(2, Math.ceil(Math.max(seedW, seedH) * meta.scale / patchPx * 1.25))
+  const maxRegion = Math.max(9, Math.floor(gh * gw * 0.12))
+  const maxRadius = Math.max(3, Math.ceil((Math.max(seedW, seedH) * meta.scale) / patchPx * 2.5))
 
   while (qHead < q.length) {
     const idx = q[qHead++]!
@@ -177,7 +136,7 @@ function adaptiveBoxFromPeak(
   }
 
   if (region <= 0) return null
-  const patchPad = 0.2
+  const patchPad = 0.15
   const lx1 = (minGx - patchPad) * patchPx
   const ly1 = (minGy - patchPad) * patchPx
   const lx2 = (maxGx + 1 + patchPad) * patchPx
@@ -193,24 +152,176 @@ function adaptiveBoxFromPeak(
   y2 = Math.max(0, Math.min(oh - 1, y2))
   if (x2 < x1) [x1, x2] = [x2, x1]
   if (y2 < y1) [y1, y2] = [y2, y1]
+  if (x2 - x1 < 4) {
+    const cx = (x1 + x2) * 0.5
+    x1 = Math.max(0, cx - 2)
+    x2 = Math.min(ow - 1, cx + 2)
+  }
+  if (y2 - y1 < 4) {
+    const cy = (y1 + y2) * 0.5
+    y1 = Math.max(0, cy - 2)
+    y2 = Math.min(oh - 1, cy + 2)
+  }
+  return [x1, y1, x2, y2]
+}
 
-  const cx = (x1 + x2) * 0.5
-  const cy = (y1 + y2) * 0.5
-  const w = Math.max(2, x2 - x1)
-  const h = Math.max(2, y2 - y1)
-  const minW = Math.max(4, seedW * 0.6)
-  const minH = Math.max(4, seedH * 0.6)
-  const maxW = Math.max(minW, seedW * 2.2)
-  const maxH = Math.max(minH, seedH * 2.2)
-  const cw = Math.max(minW, Math.min(maxW, w))
-  const ch = Math.max(minH, Math.min(maxH, h))
+function patchUnionToImageBbox(
+  minGx: number,
+  maxGx: number,
+  minGy: number,
+  maxGy: number,
+  patchPx: number,
+  meta: Dinov2LetterboxMeta,
+  ow: number,
+  oh: number,
+  padPatches: number,
+): [number, number, number, number] {
+  const lx1 = (minGx - padPatches) * patchPx
+  const ly1 = (minGy - padPatches) * patchPx
+  const lx2 = (maxGx + 1 + padPatches) * patchPx
+  const ly2 = (maxGy + 1 + padPatches) * patchPx
+  let x1 = (lx1 - meta.pad_x) / meta.scale
+  let y1 = (ly1 - meta.pad_y) / meta.scale
+  let x2 = (lx2 - meta.pad_x) / meta.scale
+  let y2 = (ly2 - meta.pad_y) / meta.scale
+  x1 = Math.max(0, Math.min(ow - 1, x1))
+  y1 = Math.max(0, Math.min(oh - 1, y1))
+  x2 = Math.max(0, Math.min(ow - 1, x2))
+  y2 = Math.max(0, Math.min(oh - 1, y2))
+  if (x2 < x1) [x1, x2] = [x2, x1]
+  if (y2 < y1) [y1, y2] = [y2, y1]
+  return [x1, y1, x2, y2]
+}
 
-  return [
-    Math.max(0, cx - cw * 0.5),
-    Math.max(0, cy - ch * 0.5),
-    Math.min(ow - 1, cx + cw * 0.5),
-    Math.min(oh - 1, cy + ch * 0.5),
-  ]
+/** 全图 score≥阈值 的 4-连通域，每域一个 bbox（利于合并同一物体上的多个峰）。 */
+function boxesFromScoreConnectedComponents(
+  scores: Float32Array,
+  gh: number,
+  gw: number,
+  similarityThreshold: number,
+  patchPx: number,
+  meta: Dinov2LetterboxMeta,
+  ow: number,
+  oh: number,
+  maxComponents: number,
+): { boxes: [number, number, number, number][]; scores: number[]; peakXy: [number, number][] } {
+  const visited = new Uint8Array(gh * gw)
+  const components: { minGx: number; maxGx: number; minGy: number; maxGy: number; maxScore: number }[] = []
+
+  for (let gy = 0; gy < gh; gy += 1) {
+    for (let gx = 0; gx < gw; gx += 1) {
+      const idx = gy * gw + gx
+      if (visited[idx] || scores[idx]! < similarityThreshold) continue
+      let minGx = gx
+      let maxGx = gx
+      let minGy = gy
+      let maxGy = gy
+      let maxScore = scores[idx]!
+      const q: number[] = [idx]
+      visited[idx] = 1
+      let qHead = 0
+      while (qHead < q.length) {
+        const cur = q[qHead++]!
+        const cy = Math.floor(cur / gw)
+        const cx = cur % gw
+        const s = scores[cur]!
+        if (s > maxScore) maxScore = s
+        if (cx < minGx) minGx = cx
+        if (cx > maxGx) maxGx = cx
+        if (cy < minGy) minGy = cy
+        if (cy > maxGy) maxGy = cy
+        for (let yy = Math.max(0, cy - 1); yy <= Math.min(gh - 1, cy + 1); yy += 1) {
+          for (let xx = Math.max(0, cx - 1); xx <= Math.min(gw - 1, cx + 1); xx += 1) {
+            const nIdx = yy * gw + xx
+            if (visited[nIdx] || scores[nIdx]! < similarityThreshold) continue
+            visited[nIdx] = 1
+            q.push(nIdx)
+          }
+        }
+      }
+      components.push({ minGx, maxGx, minGy, maxGy, maxScore })
+    }
+  }
+
+  components.sort((a, b) => b.maxScore - a.maxScore)
+  const boxes: [number, number, number, number][] = []
+  const peakScores: number[] = []
+  const peakXy: [number, number][] = []
+  for (const c of components.slice(0, maxComponents * 3)) {
+    const b = patchUnionToImageBbox(c.minGx, c.maxGx, c.minGy, c.maxGy, patchPx, meta, ow, oh, 0.15)
+    const w = b[2] - b[0]
+    const h = b[3] - b[1]
+    if (w < 3 || h < 3) continue
+    const cx = (b[0] + b[2]) * 0.5
+    const cy = (b[1] + b[3]) * 0.5
+    boxes.push(b)
+    peakScores.push(c.maxScore)
+    peakXy.push([cx, cy])
+  }
+  return { boxes, scores: peakScores, peakXy }
+}
+
+/** 合并中心过近且 IoU 偏高的框，缓解同一物体多个峰。 */
+function mergeOverlappingCandidateBoxes(
+  boxes: [number, number, number, number][],
+  scores: number[],
+  peakXy: [number, number][],
+): { boxes: [number, number, number, number][]; scores: number[]; peakXy: [number, number][] } {
+  const order = scores.map((_, i) => i).sort((a, b) => scores[b]! - scores[a]!)
+  const keep: number[] = []
+  for (const i of order) {
+    const bi = boxes[i]!
+    const [cxi, cyi] = peakXy[i]!
+    const wi = bi[2] - bi[0]
+    const hi = bi[3] - bi[1]
+    const dup = keep.some((j) => {
+      const bj = boxes[j]!
+      const [cxj, cyj] = peakXy[j]!
+      const wj = bj[2] - bj[0]
+      const hj = bj[3] - bj[1]
+      const dist = Math.hypot(cxi - cxj, cyi - cyj)
+      const minSpan = Math.min(Math.max(wi, hi), Math.max(wj, hj))
+      if (dist > minSpan * 0.55) return false
+      return bboxIou(bi, bj) >= 0.2
+    })
+    if (!dup) keep.push(i)
+  }
+  return {
+    boxes: keep.map((i) => boxes[i]!),
+    scores: keep.map((i) => scores[i]!),
+    peakXy: keep.map((i) => peakXy[i]!),
+  }
+}
+
+function collectSimilarityPeaks(
+  scores: Float32Array,
+  gh: number,
+  gw: number,
+  similarityThreshold: number,
+  minDistPatches: number,
+  maxPeaks: number,
+): { gy: number; gx: number; score: number }[] {
+  const localPeakIdxs: number[] = []
+  for (let gy = 0; gy < gh; gy += 1) {
+    for (let gx = 0; gx < gw; gx += 1) {
+      const idx = gy * gw + gx
+      if (scores[idx]! < similarityThreshold) continue
+      if (!isLocalPeak(scores, gh, gw, gy, gx)) continue
+      localPeakIdxs.push(idx)
+    }
+  }
+  const order = localPeakIdxs.sort((a, b) => scores[b]! - scores[a]!)
+  const peaks: { gy: number; gx: number; score: number }[] = []
+  for (const idx of order) {
+    const score = scores[idx]!
+    if (score < similarityThreshold) break
+    const gy = Math.floor(idx / gw)
+    const gx = idx % gw
+    if (peaks.some((p) => (gy - p.gy) ** 2 + (gx - p.gx) ** 2 < minDistPatches ** 2)) continue
+    peaks.push({ gy, gx, score })
+    if (peaks.length >= maxPeaks) break
+  }
+  return peaks
 }
 
 /** 在已解码的 patch 特征上做全图相似搜索，返回候选 bbox 列表。 */
@@ -218,11 +329,11 @@ export function searchSimilarFromPatchFeatures(
   features: Dinov2PatchFeaturesResponse,
   options: DiffusionSimilaritySearchOptions,
 ): DiffusionSimilarityCandidate[] {
-  const meta = features.letterbox
-  const gh = features.grid_h
-  const gw = features.grid_w
-  const dim = features.dim
-  const grid = unpackPatchGrid(features)
+  const { proto, gridPack } = buildSeedDinoPrototype(features, {
+    seedBbox: options.seedBbox,
+    seedMaskRle: options.seedMaskRle,
+  })
+  const { grid, meta, gh, gw, dim } = gridPack
 
   const ow = meta.orig_w
   const oh = meta.orig_h
@@ -241,50 +352,6 @@ export function searchSimilarFromPatchFeatures(
     y1 = y2
     y2 = t
   }
-  const normBbox: [number, number, number, number] = [x1, y1, x2, y2]
-
-  let seedMask: Uint8Array | null = null
-  let maskW = 0
-  let maskH = 0
-  const rle = options.seedMaskRle
-  if (rle && rle.w === ow && rle.h === oh) {
-    seedMask = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-    maskW = rle.w
-    maskH = rle.h
-  }
-
-  const weights = patchWeightsFromSeed(meta, gh, gw, normBbox, seedMask, maskW, maskH)
-  let wSum = 0
-  for (let i = 0; i < weights.length; i += 1) wSum += weights[i]!
-  if (wSum < 1e-6) {
-    const cx = (x1 + x2) * 0.5
-    const cy = (y1 + y2) * 0.5
-    const hit = patchIndexFromFullXY(cx, cy, meta, gh, gw)
-    if (hit) {
-      weights[hit.gy * gw + hit.gx] = 1
-      wSum = 1
-    } else {
-      throw new Error("种子区域为空，请调整种子框")
-    }
-  }
-
-  const proto = new Float32Array(dim)
-  for (let gy = 0; gy < gh; gy += 1) {
-    for (let gx = 0; gx < gw; gx += 1) {
-      const w = weights[gy * gw + gx]!
-      if (w <= 0) continue
-      const base = (gy * gw + gx) * dim
-      for (let d = 0; d < dim; d += 1) {
-        proto[d] = (proto[d] ?? 0) + grid[base + d]! * w
-      }
-    }
-  }
-  for (let d = 0; d < dim; d += 1) proto[d] = proto[d]! / wSum
-  let pNorm = 0
-  for (let d = 0; d < dim; d += 1) pNorm += proto[d]! * proto[d]!
-  pNorm = Math.sqrt(pNorm)
-  if (pNorm < 1e-8) throw new Error("无法从种子构建 DINOv2 原型向量")
-  for (let d = 0; d < dim; d += 1) proto[d] = proto[d]! / pNorm
 
   const scores = new Float32Array(gh * gw)
   for (let gy = 0; gy < gh; gy += 1) {
@@ -320,64 +387,77 @@ export function searchSimilarFromPatchFeatures(
   const bh = Math.max(4, y2 - y1)
   const patchPx = meta.img_size / Math.max(gh, 1)
   const minDistPatches = Math.max(1, (minPeakDistance * Math.max(bw, bh)) / patchPx * meta.scale)
+  const boxStrategy = options.boxStrategy ?? "peak_score_extent"
 
-  const localPeakIdxs: number[] = []
-  for (let gy = 0; gy < gh; gy += 1) {
-    for (let gx = 0; gx < gw; gx += 1) {
-      const idx = gy * gw + gx
-      if (scores[idx]! < similarityThreshold) continue
-      if (!isLocalPeak(scores, gh, gw, gy, gx)) continue
-      localPeakIdxs.push(idx)
-    }
-  }
-  const order = localPeakIdxs.sort((a, b) => scores[b]! - scores[a]!)
-  const peaks: { gy: number; gx: number; score: number }[] = []
-  for (const idx of order) {
-    const score = scores[idx]!
-    if (score < similarityThreshold) break
-    const gy = Math.floor(idx / gw)
-    const gx = idx % gw
-    if (peaks.some((p) => (gy - p.gy) ** 2 + (gx - p.gx) ** 2 < minDistPatches ** 2)) continue
-    peaks.push({ gy, gx, score })
-    if (peaks.length >= maxInstances * 3) break
-  }
+  let boxes: [number, number, number, number][] = []
+  let peakScores: number[] = []
+  let peakXy: [number, number][] = []
 
-  const boxes: [number, number, number, number][] = []
-  const peakScores: number[] = []
-  const peakXy: [number, number][] = []
-  const halfW = bw * 0.5
-  const halfH = bh * 0.5
-
-  for (const { gy, gx, score } of peaks) {
-    const cxL = (gx + 0.5) * patchPx
-    const cyL = (gy + 0.5) * patchPx
-    const cx = (cxL - meta.pad_x) / meta.scale
-    const cy = (cyL - meta.pad_y) / meta.scale
-    const adaptive = adaptiveBoxFromPeak(
+  if (boxStrategy === "score_connected") {
+    const cc = boxesFromScoreConnectedComponents(
       scores,
       gh,
       gw,
-      gy,
-      gx,
-      score,
       similarityThreshold,
       patchPx,
       meta,
       ow,
       oh,
-      bw,
-      bh,
+      maxInstances,
     )
-    boxes.push(
-      adaptive ?? [
-        Math.max(0, cx - halfW),
-        Math.max(0, cy - halfH),
-        Math.min(ow - 1, cx + halfW),
-        Math.min(oh - 1, cy + halfH),
-      ],
-    )
-    peakScores.push(score)
-    peakXy.push([cx, cy])
+    boxes = cc.boxes
+    peakScores = cc.scores
+    peakXy = cc.peakXy
+  } else {
+    const peaks = collectSimilarityPeaks(scores, gh, gw, similarityThreshold, minDistPatches, maxInstances * 3)
+    const halfW = bw * 0.5
+    const halfH = bh * 0.5
+    const useFixedSeed = boxStrategy === "peak_fixed_seed"
+
+    for (const { gy, gx, score } of peaks) {
+      const cxL = (gx + 0.5) * patchPx
+      const cyL = (gy + 0.5) * patchPx
+      const cx = (cxL - meta.pad_x) / meta.scale
+      const cy = (cyL - meta.pad_y) / meta.scale
+      let b: [number, number, number, number]
+      if (useFixedSeed) {
+        b = [
+          Math.max(0, cx - halfW),
+          Math.max(0, cy - halfH),
+          Math.min(ow - 1, cx + halfW),
+          Math.min(oh - 1, cy + halfH),
+        ]
+      } else {
+        b =
+          boxFromPeakScoreExtent(
+            scores,
+            gh,
+            gw,
+            gy,
+            gx,
+            score,
+            similarityThreshold,
+            patchPx,
+            meta,
+            ow,
+            oh,
+            bw,
+            bh,
+          ) ?? [
+            Math.max(0, cx - halfW),
+            Math.max(0, cy - halfH),
+            Math.min(ow - 1, cx + halfW),
+            Math.min(oh - 1, cy + halfH),
+          ]
+      }
+      boxes.push(b)
+      peakScores.push(score)
+      peakXy.push([cx, cy])
+    }
+    const merged = mergeOverlappingCandidateBoxes(boxes, peakScores, peakXy)
+    boxes = merged.boxes
+    peakScores = merged.scores
+    peakXy = merged.peakXy
   }
 
   const keep = nmsBoxes(boxes, peakScores, nmsIou).slice(0, maxInstances)

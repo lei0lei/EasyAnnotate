@@ -21,3 +21,21 @@ export async function decodeSamBboxOnEncodeCache(
   if (!rle) return null
   return upscaleSam2DecoderRleToFullImageIfNeeded(rle, enc)
 }
+
+/** 候选框中心前景点 prompt（更接近手动画点 SAM）。 */
+export async function decodeSamCenterPointOnEncodeCache(
+  enc: Sam2EncodeImageResponse,
+  bbox: DiffusionSamBbox,
+): Promise<{ counts: number[]; w: number; h: number } | null> {
+  const cx = (bbox.x1 + bbox.x2) * 0.5
+  const cy = (bbox.y1 + bbox.y2) * 0.5
+  const prompt = mapFullImageSam2PromptToEncode(enc, {
+    promptMode: "point",
+    points: [{ x: cx, y: cy, label: 1 }],
+    bbox: null,
+  })
+  if (!prompt) return null
+  const rle = await runSamCvatsDecoder(enc, prompt)
+  if (!rle) return null
+  return upscaleSam2DecoderRleToFullImageIfNeeded(rle, enc)
+}

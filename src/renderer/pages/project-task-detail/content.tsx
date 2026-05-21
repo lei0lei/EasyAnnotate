@@ -37,8 +37,19 @@ import {
 import {
   runDiffusionPipeline,
   type DiffusionCandidateResult,
+  type DiffusionPipelineVisualStep,
   type DiffusionSeedBbox,
 } from "@/lib/diffusion-annotation-runtime"
+import { diffusionProcessAnimationPrefs } from "@/lib/diffusion-process-animation-prefs"
+import {
+  buildRefinedProcessOverlay,
+  buildSimilarityProcessOverlay,
+  DIFFUSION_PROCESS_ANIM_MS,
+  diffusionProcessOverlayToStageRects,
+  sleepMs,
+  type DiffusionProcessOverlay,
+} from "@/lib/diffusion-process-visual"
+import { diffusionPipelinePrefs } from "@/lib/diffusion-pipeline-prefs"
 import {
   getSam2AiToolbarEnabledSnapshot,
   subscribeSam2AiToolbarEnabled,
@@ -228,6 +239,12 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const [diffusionBusy, setDiffusionBusy] = useState(false)
   const [diffusionSimilarityThreshold, setDiffusionSimilarityThreshold] = useState(0.45)
   const [diffusionMaxInstances, setDiffusionMaxInstances] = useState(32)
+  const [diffusionProcessOverlay, setDiffusionProcessOverlay] = useState<DiffusionProcessOverlay | null>(null)
+  const diffusionShowProcessAnimation = useSyncExternalStore(
+    diffusionProcessAnimationPrefs.subscribe,
+    () => diffusionProcessAnimationPrefs.getEnabled(),
+    () => false,
+  )
   const [diffusionSessionNonce, setDiffusionSessionNonce] = useState(0)
   const [diffusionToast, setDiffusionToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
   const diffusionSamModelIdRef = useRef("sam2/sam2.1_hiera_tiny")
@@ -873,6 +890,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setDiffusionSeedBbox(null)
     setDiffusionCandidates([])
     setDiffusionPhase("seed")
+    setDiffusionProcessOverlay(null)
     if (diffusionAnnotatingActive) {
       sam2EmbedCacheRef.current = null
     }
@@ -884,11 +902,32 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     return () => window.clearTimeout(t)
   }, [diffusionToast])
 
+  const handleDiffusionVisualStep = useCallback(
+    async (step: DiffusionPipelineVisualStep) => {
+      if (!diffusionShowProcessAnimation) return
+      if (step.kind === "clear") {
+        setDiffusionProcessOverlay(null)
+        return
+      }
+      if (step.kind === "similarity_boxes") {
+        setDiffusionProcessOverlay(buildSimilarityProcessOverlay(step.similarityCandidates))
+        setDiffusionToast({ kind: "ok", text: `DINO 候选 ${step.similarityCandidates.length} 个…` })
+        await sleepMs(DIFFUSION_PROCESS_ANIM_MS)
+        return
+      }
+      setDiffusionProcessOverlay(buildRefinedProcessOverlay(step.candidates))
+      setDiffusionToast({ kind: "ok", text: `后处理保留 ${step.candidates.length} 个…` })
+      await sleepMs(DIFFUSION_PROCESS_ANIM_MS)
+    },
+    [diffusionShowProcessAnimation],
+  )
+
   const handleDiffusionConfirm = useCallback(() => {
     setSam2AnnotatingActive(false)
     setSam2DialogOpen(false)
     setDiffusionSeedBbox(null)
     setDiffusionCandidates([])
+    setDiffusionProcessOverlay(null)
     setDiffusionPhase("seed")
     setDiffusionSessionNonce((n) => n + 1)
     void fetchModelRuntimeCatalog()
@@ -925,6 +964,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setDiffusionBusy(true)
     setDiffusionPhase("searching")
     setDiffusionCandidates([])
+    setDiffusionProcessOverlay(null)
     void runDiffusionPipeline({
       imagePath: path,
       samModelId: diffusionSamModelIdRef.current,
@@ -935,10 +975,15 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       embedCache: sam2EmbedCacheRef.current,
       similarityThreshold: diffusionSimilarityThreshold,
       maxInstances: diffusionMaxInstances,
+      candidateBoxStrategy: diffusionPipelinePrefs.getCandidateBoxStrategy(),
+      refinePostStrategy: diffusionPipelinePrefs.getRefinePostStrategy(),
+      animateProcess: diffusionShowProcessAnimation,
+      onVisualStep: handleDiffusionVisualStep,
       onProgress: (msg) => setDiffusionToast({ kind: "ok", text: msg }),
     })
       .then((result) => {
         sam2EmbedCacheRef.current = result.embedCache
+        setDiffusionProcessOverlay(null)
         setDiffusionCandidates(result.candidates)
         setDiffusionPhase("preview")
         const iw = imageNaturalSize.width
@@ -947,17 +992,22 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
         const ok = result.candidates.filter((c) =>
           isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts),
         ).length
+        const filteredNote =
+          result.dinoFilteredCount + result.maskNmsFilteredCount > 0
+            ? `，过滤 ${result.dinoFilteredCount + result.maskNmsFilteredCount}（DINO ${result.dinoFilteredCount} / IoU ${result.maskNmsFilteredCount}）`
+            : ""
         setDiffusionToast({
           kind: "ok",
           text:
             `找到 ${result.similarityCandidates.length} 个相似区域，` +
-            `SAM 精化成功 ${result.refinedSuccessCount} / 失败 ${result.refinedFailedCount}，` +
-            `${ok} 个可标注；按 ${getPrimaryShortcutLabel("new-annotation")} 全部新建，` +
+            `SAM 精化成功 ${result.refinedSuccessCount} / 失败 ${result.refinedFailedCount}${filteredNote}，` +
+            `保留 ${result.candidates.length} 个，${ok} 个可标注；按 ${getPrimaryShortcutLabel("new-annotation")} 全部新建，` +
             `${getPrimaryShortcutLabel("select-tool")} 退出`,
         })
       })
       .catch((e) => {
         setDiffusionPhase("seed")
+        setDiffusionProcessOverlay(null)
         const msg = e instanceof Error ? e.message : String(e)
         setDiffusionToast({ kind: "err", text: `扩散搜索失败：${msg}` })
       })
@@ -967,6 +1017,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   }, [
     activeImagePath,
     diffusionBusy,
+    diffusionShowProcessAnimation,
+    handleDiffusionVisualStep,
     diffusionInferScale,
     diffusionMaxInstances,
     diffusionOutputFormat,
@@ -999,6 +1051,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setDiffusionPhase("seed")
     setDiffusionSeedBbox(null)
     setDiffusionCandidates([])
+    setDiffusionProcessOverlay(null)
     setDiffusionDialogOpen(false)
     handleSelectToolClick()
   }, [handleSelectToolClick])
@@ -1009,6 +1062,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setDiffusionPhase("seed")
     setDiffusionSeedBbox(null)
     setDiffusionCandidates([])
+    setDiffusionProcessOverlay(null)
     setDiffusionToast(null)
     setDiffusionDialogOpen(false)
     sam2EmbedCacheRef.current = null
@@ -1185,6 +1239,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       setDiffusionPhase("seed")
       setDiffusionSeedBbox(null)
       setDiffusionCandidates([])
+      setDiffusionProcessOverlay(null)
       setDiffusionToast(null)
     }
   }, [diffusionAiToolbarEnabled])
@@ -1468,6 +1523,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     sam2Auto: sam2AutoParams,
     sam2InferScale,
   })
+
+  const diffusionProcessStageRects = useMemo(
+    () => diffusionProcessOverlayToStageRects(diffusionProcessOverlay, imageGeometry, imageToStageBase),
+    [diffusionProcessOverlay, imageGeometry, imageToStageBase],
+  )
 
   const diffusionTool = useDiffusionCanvasTool({
     diffusionAnnotatingActive,
@@ -1878,6 +1938,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     onDiffusionOverlayClick: diffusionTool.handleDiffusionOverlayClick,
     onDiffusionOverlayMouseMove: diffusionTool.handleDiffusionOverlayMouseMove,
     onDiffusionOverlayMouseLeave: diffusionTool.handleDiffusionOverlayMouseLeave,
+    diffusionProcessRects: diffusionProcessStageRects,
   })
 
   const handleSelectToolFromPalette = useCallback(() => {
@@ -1963,6 +2024,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       onDiffusionSimilarityThresholdChange: setDiffusionSimilarityThreshold,
       diffusionMaxInstances,
       onDiffusionMaxInstancesChange: setDiffusionMaxInstances,
+      diffusionShowProcessAnimation,
+      onDiffusionShowProcessAnimationChange: diffusionProcessAnimationPrefs.setEnabled,
       onDiffusionPanelOk: handleDiffusionPanelOk,
     },
   })

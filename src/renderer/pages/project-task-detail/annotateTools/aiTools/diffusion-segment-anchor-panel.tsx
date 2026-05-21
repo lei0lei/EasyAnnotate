@@ -6,6 +6,7 @@ import { getPrimaryShortcutLabel } from "@/lib/app-shortcut-registry"
 import { cn } from "@/lib/utils"
 import { createPortal } from "react-dom"
 import { useLayoutEffect, useState, type CSSProperties } from "react"
+import { GpuSwitch } from "@/pages/models-backend"
 import type { DiffusionSeedSamPreviewMode, Sam2AutoAnnotationFormat } from "./types"
 
 const DIFFUSION_PANEL_WIDTH_PX = 288
@@ -57,6 +58,8 @@ export type DiffusionSegmentAnchorPanelProps = {
   onSimilarityThresholdChange: (value: number) => void
   maxInstances: number
   onMaxInstancesChange: (value: number) => void
+  showProcessAnimation: boolean
+  onShowProcessAnimationChange: (enabled: boolean) => void
   onCancel: () => void
   onPanelOk: () => void
   getAnchor: () => HTMLElement | null
@@ -86,6 +89,8 @@ export function DiffusionSegmentAnchorPanel({
   onSimilarityThresholdChange,
   maxInstances,
   onMaxInstancesChange,
+  showProcessAnimation,
+  onShowProcessAnimationChange,
   onCancel,
   onPanelOk,
   getAnchor,
@@ -241,6 +246,20 @@ export function DiffusionSegmentAnchorPanel({
             框+掩码
           </button>
         </div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/70 pt-2">
+        <div className="min-w-0">
+          <div className="text-[11px] font-medium text-foreground">显示中间过程</div>
+          <p className="text-[10px] leading-snug text-muted-foreground">搜索时叠加 DINO 候选框与后处理框</p>
+        </div>
+        <GpuSwitch
+          id="ea-diffusion-process-animation"
+          label={showProcessAnimation ? "开" : "关"}
+          checked={showProcessAnimation}
+          disabled={diffusionBusy}
+          onCheckedChange={onShowProcessAnimationChange}
+        />
       </div>
 
       <div className="mt-3 space-y-2 border-t border-border/70 pt-2">

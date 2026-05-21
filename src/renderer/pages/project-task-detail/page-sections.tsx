@@ -239,6 +239,20 @@ export type ProjectTaskCanvasSectionProps = {
   onDiffusionOverlayClick: MouseEventHandler<HTMLDivElement>
   onDiffusionOverlayMouseMove: MouseEventHandler<HTMLDivElement>
   onDiffusionOverlayMouseLeave: MouseEventHandler<HTMLDivElement>
+  /** 扩散搜索中间过程：DINO 候选框 / 后处理保留框（虚线叠加） */
+  diffusionProcessRects: {
+    id: string
+    stage: "similarity" | "refined"
+    left: number
+    top: number
+    width: number
+    height: number
+    color: string
+    clippedLeft: boolean
+    clippedTop: boolean
+    clippedRight: boolean
+    clippedBottom: boolean
+  }[]
 }
 
 export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
@@ -1076,6 +1090,26 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                       onMouseLeave={props.onDiffusionOverlayMouseLeave}
                     />
                   ) : null}
+                  {props.diffusionProcessRects.map((pr) => (
+                    <div
+                      key={pr.id}
+                      className="pointer-events-none absolute z-[27] box-border border-2 border-dashed"
+                      style={{
+                        left: pr.left,
+                        top: pr.top,
+                        width: pr.width,
+                        height: pr.height,
+                        borderColor: pr.color,
+                        borderLeftWidth: pr.clippedLeft ? 0 : 2,
+                        borderTopWidth: pr.clippedTop ? 0 : 2,
+                        borderRightWidth: pr.clippedRight ? 0 : 2,
+                        borderBottomWidth: pr.clippedBottom ? 0 : 2,
+                        backgroundColor: `${pr.color}22`,
+                        boxShadow: `0 0 0 1px rgba(255,255,255,0.7), 0 0 8px ${pr.color}66`,
+                      }}
+                      aria-hidden
+                    />
+                  ))}
                   {props.diffusionSeedRect ? (
                     <div
                       className={

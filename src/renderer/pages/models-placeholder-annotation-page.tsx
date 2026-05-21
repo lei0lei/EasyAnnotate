@@ -1,6 +1,15 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { GlobalRuntimeStatusSection } from "@/components/global-runtime-status-section"
+import {
+  DIFFUSION_CANDIDATE_BOX_LABELS,
+  DIFFUSION_CANDIDATE_BOX_STRATEGIES,
+  DIFFUSION_REFINE_POST_LABELS,
+  DIFFUSION_REFINE_POST_STRATEGIES,
+  type DiffusionCandidateBoxStrategy,
+  type DiffusionRefinePostStrategy,
+} from "@/lib/diffusion-pipeline-strategies"
+import { diffusionPipelinePrefs } from "@/lib/diffusion-pipeline-prefs"
 import { diffusionAiToolbarPrefs, trackingAiToolbarPrefs } from "@/lib/placeholder-ai-toolbar-prefs"
 import { GpuSwitch } from "@/pages/models-backend"
 import { cn } from "@/lib/utils"
@@ -25,7 +34,7 @@ const META: Record<
     prefs: diffusionAiToolbarPrefs,
     title: "扩散式标注",
     lead: "配置任务页工具栏开关；SAM 与 DINOv2 使用「后端模型管理」中的全局推理实例。",
-    body: "相似检索与画布扩散流程仍在接入；请先在「后端模型管理」中启动全局 SAM 与 DINOv2。",
+    body: "在任务页框选种子后自动检索相似区域并用 SAM 精化；请先在「后端模型管理」中启动全局 SAM 与 DINOv2。",
     Icon: Sparkles,
   },
   tracking: {
@@ -89,6 +98,7 @@ export default function ModelsPlaceholderAnnotationPage() {
             }}
             body={meta.body}
           />
+          <DiffusionPipelineStrategySection />
           <GlobalRuntimeStatusSection showDinov2 />
         </>
       ) : (
@@ -142,6 +152,73 @@ function TrackingToolbarHeader({
         }}
       />
     </div>
+  )
+}
+
+function DiffusionPipelineStrategySection() {
+  const [boxStrategy, setBoxStrategy] = useState<DiffusionCandidateBoxStrategy>(() =>
+    diffusionPipelinePrefs.getCandidateBoxStrategy(),
+  )
+  const [postStrategy, setPostStrategy] = useState<DiffusionRefinePostStrategy>(() =>
+    diffusionPipelinePrefs.getRefinePostStrategy(),
+  )
+
+  useEffect(() => {
+    return diffusionPipelinePrefs.subscribe(() => {
+      setBoxStrategy(diffusionPipelinePrefs.getCandidateBoxStrategy())
+      setPostStrategy(diffusionPipelinePrefs.getRefinePostStrategy())
+    })
+  }, [])
+
+  return (
+    <section className="space-y-4 border-b border-border/80 pb-6">
+      <div>
+        <h2 className="text-lg font-semibold text-foreground">检索与后处理</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          任务页扩散搜索时使用下列方案；修改后重新执行搜索即可生效。
+        </p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block space-y-2">
+          <span className="text-sm font-medium text-foreground">候选框方案</span>
+          <select
+            id="ea-diffusion-candidate-box-strategy"
+            className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+            value={boxStrategy}
+            onChange={(e) => {
+              const v = e.target.value as DiffusionCandidateBoxStrategy
+              diffusionPipelinePrefs.setCandidateBoxStrategy(v)
+              setBoxStrategy(diffusionPipelinePrefs.getCandidateBoxStrategy())
+            }}
+          >
+            {DIFFUSION_CANDIDATE_BOX_STRATEGIES.map((id) => (
+              <option key={id} value={id}>
+                {DIFFUSION_CANDIDATE_BOX_LABELS[id]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block space-y-2">
+          <span className="text-sm font-medium text-foreground">后处理方案</span>
+          <select
+            id="ea-diffusion-refine-post-strategy"
+            className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+            value={postStrategy}
+            onChange={(e) => {
+              const v = e.target.value as DiffusionRefinePostStrategy
+              diffusionPipelinePrefs.setRefinePostStrategy(v)
+              setPostStrategy(diffusionPipelinePrefs.getRefinePostStrategy())
+            }}
+          >
+            {DIFFUSION_REFINE_POST_STRATEGIES.map((id) => (
+              <option key={id} value={id}>
+                {DIFFUSION_REFINE_POST_LABELS[id]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </section>
   )
 }
 

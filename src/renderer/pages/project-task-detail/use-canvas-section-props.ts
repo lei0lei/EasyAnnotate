@@ -103,6 +103,7 @@ type UseCanvasSectionPropsParams = {
   onDiffusionOverlayClick: CanvasSectionBaseProps["onDiffusionOverlayClick"]
   onDiffusionOverlayMouseMove: CanvasSectionBaseProps["onDiffusionOverlayMouseMove"]
   onDiffusionOverlayMouseLeave: CanvasSectionBaseProps["onDiffusionOverlayMouseLeave"]
+  diffusionProcessRects: CanvasSectionBaseProps["diffusionProcessRects"]
 }
 
 export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
@@ -206,6 +207,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     onDiffusionOverlayClick,
     onDiffusionOverlayMouseMove,
     onDiffusionOverlayMouseLeave,
+    diffusionProcessRects,
   } = params
 
   const canvasSectionHandlerProps = useMemo(
@@ -380,6 +382,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       diffusionSeedRect,
       diffusionSeedRectCommitted,
       diffusionSeedColor,
+      diffusionProcessRects,
     }),
     [
       canDrawBox3d,
@@ -434,6 +437,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       diffusionSeedRect,
       diffusionSeedRectCommitted,
       diffusionSeedColor,
+      diffusionProcessRects,
     ],
   )
 

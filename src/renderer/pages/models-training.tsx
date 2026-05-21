@@ -49,17 +49,17 @@ export default function ModelsTrainingPage() {
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Card className="border-border/80 shadow-sm opacity-90">
+        <Card className="border-border/80 shadow-sm">
           <CardHeader>
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <Box className="h-5 w-5" aria-hidden />
             </div>
             <CardTitle className="text-lg">DINOv2</CardTitle>
-            <CardDescription>特征与下游训练（即将推出）</CardDescription>
+            <CardDescription>ViT 预训练权重：线性探针 / 微调 / 部分解冻</CardDescription>
           </CardHeader>
           <CardContent>
-            <Button type="button" variant="outline" disabled className="w-full">
-              敬请期待
+            <Button asChild variant="default" className="w-full" disabled={backendOk === false}>
+              <Link to="/models/training/dinov2">进入 DINOv2 训练</Link>
             </Button>
           </CardContent>
         </Card>
