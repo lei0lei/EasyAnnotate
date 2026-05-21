@@ -1,5 +1,7 @@
 import type { ProjectItem as ProtoProjectItem, ProjectTag as ProtoProjectTag, SkeletonTemplatePb } from "@/gen/app"
 import { ipc } from "@/gen/ipc"
+import { createXAnyLabelTemplate, normalizeXAnyLabelDoc } from "@/lib/xanylabeling-format"
+import type { XAnyLabelShape } from "@/lib/xanylabeling-format"
 import { loadAppConfig } from "@/lib/app-config-storage"
 import {
   createEmptySkeletonTemplate,
@@ -313,23 +315,72 @@ export async function writeImageAnnotation(payload: {
   }
 }
 
-/** 主进程合并写入，避免整张标注 JSON 经 IPC 往返导致闪退。 */
+async function appendImageAnnotationShapesViaReadWrite(payload: {
+  imagePath: string
+  shapesJson: string
+  imageWidth: number
+  imageHeight: number
+}): Promise<{ jsonPath: string; errorMessage: string }> {
+  let incoming: XAnyLabelShape[] = []
+  try {
+    const parsed = JSON.parse(payload.shapesJson || "[]")
+    if (!Array.isArray(parsed)) {
+      return { jsonPath: "", errorMessage: "shapes_json 必须是 JSON 数组。" }
+    }
+    incoming = parsed as XAnyLabelShape[]
+  } catch {
+    return { jsonPath: "", errorMessage: "shapes_json 解析失败。" }
+  }
+
+  const read = await readImageAnnotation(payload.imagePath)
+  if (read.errorMessage) {
+    return { jsonPath: "", errorMessage: read.errorMessage }
+  }
+
+  const doc = read.exists
+    ? normalizeXAnyLabelDoc({
+        imagePath: payload.imagePath,
+        imageWidth: payload.imageWidth,
+        imageHeight: payload.imageHeight,
+        rawJsonText: read.jsonText,
+      })
+    : createXAnyLabelTemplate({
+        imagePath: payload.imagePath,
+        imageWidth: payload.imageWidth,
+        imageHeight: payload.imageHeight,
+      })
+
+  doc.shapes = [...doc.shapes, ...incoming]
+  doc.imageWidth = payload.imageWidth
+  doc.imageHeight = payload.imageHeight
+
+  return writeImageAnnotation({
+    imagePath: payload.imagePath,
+    jsonText: JSON.stringify(doc),
+  })
+}
+
+/** 主进程合并写入；若 IPC 未生成则回退为读/写（检测任务 JSON 通常较小）。 */
 export async function appendImageAnnotationShapes(payload: {
   imagePath: string
   shapesJson: string
   imageWidth: number
   imageHeight: number
 }): Promise<{ jsonPath: string; errorMessage: string }> {
-  const response = await ipc.app.AppendImageAnnotationShapes({
-    imagePath: payload.imagePath,
-    shapesJson: payload.shapesJson,
-    imageWidth: payload.imageWidth,
-    imageHeight: payload.imageHeight,
-  })
-  return {
-    jsonPath: response.jsonPath || "",
-    errorMessage: response.errorMessage || "",
+  try {
+    const response = await ipc.app.AppendImageAnnotationShapes({
+      imagePath: payload.imagePath,
+      shapesJson: payload.shapesJson,
+      imageWidth: payload.imageWidth,
+      imageHeight: payload.imageHeight,
+    })
+    if (!response.errorMessage) {
+      return { jsonPath: response.jsonPath || "", errorMessage: "" }
+    }
+  } catch {
+    // 旧版主进程未实现该 RPC 时回退
   }
+  return appendImageAnnotationShapesViaReadWrite(payload)
 }
 
 export async function deleteImageAnnotation(imagePath: string): Promise<{ errorMessage: string }> {
@@ -356,6 +407,8 @@ export async function getImageFileInfo(path: string): Promise<{
   format: string
   channelCount: number
   extension: string
+  width: number
+  height: number
   errorMessage: string
 }> {
   const response = await ipc.app.GetImageFileInfo({ path })
@@ -365,6 +418,8 @@ export async function getImageFileInfo(path: string): Promise<{
     format: response.format || "",
     channelCount: Number(response.channelCount || 0),
     extension: response.extension || "",
+    width: Number(response.width || 0),
+    height: Number(response.height || 0),
     errorMessage: response.errorMessage || "",
   }
 }

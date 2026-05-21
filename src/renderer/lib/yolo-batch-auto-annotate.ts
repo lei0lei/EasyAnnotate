@@ -1,4 +1,9 @@
-import { appendImageAnnotationShapes, getImageFileInfo, listTaskFiles, type ProjectTag } from "@/lib/projects-api"
+import {
+  appendImageAnnotationShapes,
+  getImageFileInfo,
+  listTaskFiles,
+  type ProjectTag,
+} from "@/lib/projects-api"
 import {
   buildAllowedProjectLabelSet,
   yoloPredictResultToShapes,
@@ -14,6 +19,7 @@ export type YoloAutoAnnotateProgress = {
   done: number
   total: number
   currentFile?: string
+  statusMessage?: string
   errorMessage?: string
 }
 
@@ -26,8 +32,20 @@ export type RunYoloBatchAutoAnnotateParams = {
   onProgress: (progress: YoloAutoAnnotateProgress) => void
 }
 
+function dimensionsFromPredict(predict: YoloBatchPredictResult): { width: number; height: number } {
+  const shape = predict.results?.[0]?.shape
+  if (!shape || shape.length < 2) return { width: 0, height: 0 }
+  const h = Number(shape[0])
+  const w = Number(shape[1])
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return { width: 0, height: 0 }
+  return { width: Math.round(w), height: Math.round(h) }
+}
+
 export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateParams): Promise<void> {
   const { projectId, taskId, modelSlug, projectTags, signal, onProgress } = params
+
+  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "检查后端接口…" })
+
   const apiOk = await probeYoloBatchApiAvailable()
   if (!apiOk) {
     onProgress({
@@ -40,6 +58,7 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     return
   }
 
+  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "启动/加载模型…" })
   try {
     await ensureYoloBatchModelRunning(modelSlug)
   } catch (e) {
@@ -58,11 +77,12 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
       phase: "error",
       done: 0,
       total: 0,
-      errorMessage: "项目尚未配置可用的普通类别标签",
+      errorMessage: "项目尚未配置可用的普通类别标签（需与模型 data.yaml 中的类别名一致）",
     })
     return
   }
 
+  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "读取任务图片列表…" })
   const fileResult = await listTaskFiles({ projectId, taskId })
   if (fileResult.errorMessage) {
     onProgress({
@@ -90,15 +110,15 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     }
 
     const imagePath = files[i]!.filePath.trim()
-    onProgress({ phase: "running", done: i, total, currentFile: imagePath })
+    onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "推理中…" })
 
     const info = await getImageFileInfo(imagePath)
-    if (info.errorMessage || info.width <= 0 || info.height <= 0) {
+    if (!info.exists) {
       onProgress({
         phase: "error",
         done: i,
         total,
-        errorMessage: info.errorMessage || `无法读取图片尺寸：${imagePath}`,
+        errorMessage: info.errorMessage || `图片不存在或无法访问：${imagePath}`,
       })
       return
     }
@@ -116,22 +136,37 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
       return
     }
 
+    const fromPredict = dimensionsFromPredict(predict)
+    const imageWidth = info.width > 0 ? info.width : fromPredict.width
+    const imageHeight = info.height > 0 ? info.height : fromPredict.height
+    if (imageWidth <= 0 || imageHeight <= 0) {
+      onProgress({
+        phase: "error",
+        done: i,
+        total,
+        errorMessage: `无法确定图片尺寸：${imagePath}`,
+      })
+      return
+    }
+
     const newShapes = normalizeDocPointsToInt({
       version: "2.5.4",
       flags: {},
-      shapes: yoloPredictResultToShapes(predict, allowed, info.width, info.height),
+      shapes: yoloPredictResultToShapes(predict, allowed, imageWidth, imageHeight),
       description: null,
       imagePath,
       imageData: null,
-      imageHeight: info.height,
-      imageWidth: info.width,
+      imageHeight,
+      imageWidth,
     }).shapes
+
+    onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "写入标注…" })
 
     const write = await appendImageAnnotationShapes({
       imagePath,
       shapesJson: JSON.stringify(newShapes),
-      imageWidth: info.width,
-      imageHeight: info.height,
+      imageWidth,
+      imageHeight,
     })
     if (write.errorMessage) {
       onProgress({ phase: "error", done: i, total, errorMessage: write.errorMessage })

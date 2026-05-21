@@ -371,6 +371,17 @@ export default function ProjectDetailPage() {
           setAnnotationStatsTick((t) => t + 1)
         }
       },
+    }).catch((e) => {
+      setAutoAnnotateProgressByTaskId((prev) => ({
+        ...prev,
+        [task.id]: {
+          phase: "error",
+          done: 0,
+          total: 0,
+          errorMessage: e instanceof Error ? e.message : "自动标注异常退出",
+        },
+      }))
+      delete autoAnnotateAbortRef.current[task.id]
     })
   }
   const initialTags = useMemo(() => normalizeTags(project?.tags ?? []), [project?.tags])

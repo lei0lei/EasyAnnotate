@@ -57,6 +57,7 @@ export function TaskYoloAutoAnnotatePanel({
   const progressLabel = useMemo(() => {
     if (!progress) return "尚未开始"
     if (progress.phase === "running") {
+      if (progress.total <= 0 && progress.statusMessage) return progress.statusMessage
       return `${progress.done} / ${progress.total}`
     }
     if (progress.phase === "done") return `已完成 ${progress.done} / ${progress.total}`

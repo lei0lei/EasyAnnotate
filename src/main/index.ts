@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
+import { parseImageDimensionsFromHeader } from './image-dimensions';
 import { appendShapesToAnnotationJsonFile } from './xanylabel-annotation-merge';
 import {
   CreateProjectRequest,
@@ -1019,19 +1020,47 @@ ipc.registerService(AppService({
     try {
       const filePath = (request.path || "").trim()
       if (!filePath) {
-        return { exists: false, sizeBytes: 0, format: "", channelCount: 0, extension: "", errorMessage: "图片路径为空。" }
+        return {
+          exists: false,
+          sizeBytes: 0,
+          format: "",
+          channelCount: 0,
+          extension: "",
+          errorMessage: "图片路径为空。",
+          width: 0,
+          height: 0,
+        }
       }
       if (!fs.existsSync(filePath)) {
-        return { exists: false, sizeBytes: 0, format: "", channelCount: 0, extension: "", errorMessage: "" }
+        return {
+          exists: false,
+          sizeBytes: 0,
+          format: "",
+          channelCount: 0,
+          extension: "",
+          errorMessage: "",
+          width: 0,
+          height: 0,
+        }
       }
       const stat = fs.statSync(filePath)
       if (!stat.isFile()) {
-        return { exists: false, sizeBytes: 0, format: "", channelCount: 0, extension: "", errorMessage: "路径不是文件。" }
+        return {
+          exists: false,
+          sizeBytes: 0,
+          format: "",
+          channelCount: 0,
+          extension: "",
+          errorMessage: "路径不是文件。",
+          width: 0,
+          height: 0,
+        }
       }
       const extension = path.extname(filePath).toLowerCase()
       const header = readFileHeader(filePath)
       const format = detectImageFormat(header)
       const channelCount = detectImageChannelCount(header, format) ?? 0
+      const { width, height } = parseImageDimensionsFromHeader(header, format)
       return {
         exists: true,
         sizeBytes: Math.floor(stat.size),
@@ -1039,6 +1068,8 @@ ipc.registerService(AppService({
         channelCount,
         extension,
         errorMessage: "",
+        width,
+        height,
       }
     } catch (error) {
       return {
@@ -1048,6 +1079,8 @@ ipc.registerService(AppService({
         channelCount: 0,
         extension: "",
         errorMessage: error instanceof Error ? error.message : String(error),
+        width: 0,
+        height: 0,
       }
     }
   },
