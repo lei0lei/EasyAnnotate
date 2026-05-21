@@ -124,12 +124,12 @@ def history_model_download_info(
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
-@router.get("/history/{job_slug}/models/file")
+@router.get("/history/{job_slug}/models/file", response_model=None)
 def history_model_file(
     request: Request,
     job_slug: str,
     path: str = Query(..., description="相对训练任务目录的模型路径"),
-) -> FileResponse | Response:
+):
     try:
         file_path = yolo_workspace.resolve_training_model_file(job_slug, path)
     except ValueError as e:
