@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
+import { appendShapesToAnnotationJsonFile } from './xanylabel-annotation-merge';
 import {
   CreateProjectRequest,
   CreateProjectResponse,
@@ -45,6 +46,8 @@ import {
   SaveTaskFilesResponse,
   WriteImageAnnotationRequest,
   WriteImageAnnotationResponse,
+  AppendImageAnnotationShapesRequest,
+  AppendImageAnnotationShapesResponse,
   DeleteAnnotationProjectRequest,
   DeleteAnnotationRequest,
   GetProjectRequest,
@@ -940,6 +943,30 @@ ipc.registerService(AppService({
       fs.mkdirSync(path.dirname(jsonPath), { recursive: true })
       fs.writeFileSync(jsonPath, jsonText, "utf8")
       return { jsonPath, errorMessage: "" }
+    } catch (error) {
+      return {
+        jsonPath: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async AppendImageAnnotationShapes(
+    request: AppendImageAnnotationShapesRequest,
+  ): Promise<AppendImageAnnotationShapesResponse> {
+    try {
+      const imagePath = (request.imagePath || "").trim()
+      if (!imagePath) {
+        return { jsonPath: "", errorMessage: "图片路径为空。" }
+      }
+      const jsonPath = resolveAnnotationJsonPath(imagePath)
+      const result = appendShapesToAnnotationJsonFile({
+        jsonPath,
+        imagePath,
+        imageWidth: request.imageWidth ?? 0,
+        imageHeight: request.imageHeight ?? 0,
+        shapesJson: request.shapesJson || "[]",
+      })
+      return { jsonPath: result.jsonPath, errorMessage: result.errorMessage }
     } catch (error) {
       return {
         jsonPath: "",

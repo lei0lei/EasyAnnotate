@@ -50,6 +50,14 @@ function resolveLabel(className: string | null | undefined, allowed: Set<string>
   return null
 }
 
+const MAX_POLYGON_VERTS = 256
+
+function downsamplePolygon(points: number[][]): number[][] {
+  if (points.length <= MAX_POLYGON_VERTS) return points
+  const step = Math.max(1, Math.floor(points.length / MAX_POLYGON_VERTS))
+  return points.filter((_, idx) => idx % step === 0).slice(0, MAX_POLYGON_VERTS)
+}
+
 function clampPoints(points: number[][], imageW: number, imageH: number): number[][] {
   const w = Math.max(1, imageW)
   const h = Math.max(1, imageH)
@@ -107,6 +115,10 @@ export function yoloDetectionsToShapes(
         [Math.max(...xs), Math.max(...ys)],
         [Math.min(...xs), Math.max(...ys)],
       ]
+    }
+
+    if (shapeType === "polygon") {
+      points = downsamplePolygon(points)
     }
 
     if (shapeType === "point" && points.length < 1) continue

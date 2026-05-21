@@ -1,17 +1,10 @@
-import {
-  getImageFileInfo,
-  listTaskFiles,
-  readImageAnnotation,
-  writeImageAnnotation,
-  type ProjectTag,
-} from "@/lib/projects-api"
+import { appendImageAnnotationShapes, getImageFileInfo, listTaskFiles, type ProjectTag } from "@/lib/projects-api"
 import {
   buildAllowedProjectLabelSet,
   yoloPredictResultToShapes,
   type YoloBatchPredictResult,
 } from "@/lib/yolo-predict-to-annotation"
 import { ensureYoloBatchModelRunning, predictYoloBatchImage, probeYoloBatchApiAvailable } from "@/lib/yolo-batch-api"
-import { createXAnyLabelTemplate, normalizeXAnyLabelDoc } from "@/lib/xanylabeling-format"
 import { normalizeDocPointsToInt } from "@/pages/project-task-detail/utils"
 
 export type YoloAutoAnnotatePhase = "idle" | "running" | "done" | "error" | "cancelled"
@@ -123,32 +116,22 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
       return
     }
 
-    const newShapes = yoloPredictResultToShapes(predict, allowed, info.width, info.height)
-
-    const read = await readImageAnnotation(imagePath)
-    if (read.errorMessage) {
-      onProgress({ phase: "error", done: i, total, errorMessage: read.errorMessage })
-      return
-    }
-
-    const doc = read.exists
-      ? normalizeXAnyLabelDoc({
-          imagePath,
-          imageWidth: info.width,
-          imageHeight: info.height,
-          rawJsonText: read.jsonText,
-        })
-      : createXAnyLabelTemplate({
-          imagePath,
-          imageWidth: info.width,
-          imageHeight: info.height,
-        })
-
-    doc.shapes = [...doc.shapes, ...newShapes]
-    const normalized = normalizeDocPointsToInt(doc)
-    const write = await writeImageAnnotation({
+    const newShapes = normalizeDocPointsToInt({
+      version: "2.5.4",
+      flags: {},
+      shapes: yoloPredictResultToShapes(predict, allowed, info.width, info.height),
+      description: null,
       imagePath,
-      jsonText: JSON.stringify(normalized, null, 2),
+      imageData: null,
+      imageHeight: info.height,
+      imageWidth: info.width,
+    }).shapes
+
+    const write = await appendImageAnnotationShapes({
+      imagePath,
+      shapesJson: JSON.stringify(newShapes),
+      imageWidth: info.width,
+      imageHeight: info.height,
     })
     if (write.errorMessage) {
       onProgress({ phase: "error", done: i, total, errorMessage: write.errorMessage })

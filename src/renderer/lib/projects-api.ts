@@ -313,6 +313,25 @@ export async function writeImageAnnotation(payload: {
   }
 }
 
+/** 主进程合并写入，避免整张标注 JSON 经 IPC 往返导致闪退。 */
+export async function appendImageAnnotationShapes(payload: {
+  imagePath: string
+  shapesJson: string
+  imageWidth: number
+  imageHeight: number
+}): Promise<{ jsonPath: string; errorMessage: string }> {
+  const response = await ipc.app.AppendImageAnnotationShapes({
+    imagePath: payload.imagePath,
+    shapesJson: payload.shapesJson,
+    imageWidth: payload.imageWidth,
+    imageHeight: payload.imageHeight,
+  })
+  return {
+    jsonPath: response.jsonPath || "",
+    errorMessage: response.errorMessage || "",
+  }
+}
+
 export async function deleteImageAnnotation(imagePath: string): Promise<{ errorMessage: string }> {
   const response = await ipc.app.DeleteImageAnnotation({ imagePath })
   return { errorMessage: response.errorMessage || "" }

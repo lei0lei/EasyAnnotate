@@ -354,6 +354,19 @@ message WriteImageAnnotationResponse {
   string error_message = 2;
 }
 
+/** 主进程读/写标注 JSON，仅 IPC 传入新增 shapes，避免超大 json_text 导致闪退。 */
+message AppendImageAnnotationShapesRequest {
+  string image_path = 1;
+  string shapes_json = 2;
+  int32 image_width = 3;
+  int32 image_height = 4;
+}
+
+message AppendImageAnnotationShapesResponse {
+  string json_path = 1;
+  string error_message = 2;
+}
+
 message DeleteImageAnnotationRequest {
   string image_path = 1;
 }
@@ -551,6 +564,7 @@ service AppService {
   rpc ReadImageFile(ReadImageFileRequest) returns (ReadImageFileResponse);
   rpc ReadImageAnnotation(ReadImageAnnotationRequest) returns (ReadImageAnnotationResponse);
   rpc WriteImageAnnotation(WriteImageAnnotationRequest) returns (WriteImageAnnotationResponse);
+  rpc AppendImageAnnotationShapes(AppendImageAnnotationShapesRequest) returns (AppendImageAnnotationShapesResponse);
   rpc DeleteImageAnnotation(DeleteImageAnnotationRequest) returns (DeleteImageAnnotationResponse);
   rpc DeleteTaskAnnotations(DeleteTaskAnnotationsRequest) returns (DeleteTaskAnnotationsResponse);
   rpc GetImageFileInfo(GetImageFileInfoRequest) returns (GetImageFileInfoResponse);
