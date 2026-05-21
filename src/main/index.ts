@@ -1,9 +1,9 @@
-import fs, { createReadStream, createWriteStream } from "node:fs";
+import fs, { createWriteStream } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
+import { randomUUID } from "node:crypto";
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
 import {
@@ -19,6 +19,8 @@ import {
   DownloadTaskImageResponse,
   DownloadYoloTrainingModelRequest,
   DownloadYoloTrainingModelResponse,
+  GetYoloModelDownloadStatusRequest,
+  GetYoloModelDownloadStatusResponse,
   GetImageFileInfoRequest,
   GetImageFileInfoResponse,
   DeleteImageAnnotationRequest,
@@ -127,7 +129,49 @@ function buildUniqueFilePath(dir: string, fileName: string): string {
   return candidate
 }
 
-const YOLO_MODEL_DOWNLOAD_TIMEOUT_MS = 7_200_000
+const YOLO_CHUNK_SIZE = 5 * 1024 * 1024
+const YOLO_MODEL_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 60 * 1000
+const YOLO_MODEL_CHUNK_TIMEOUT_MS = 15 * 60 * 1000
+
+type YoloModelDownloadJob = {
+  status: "pending" | "success" | "failed"
+  savedPath: string
+  errorMessage: string
+  finishedAt?: number
+}
+
+const _yoloModelDownloadJobs = new Map<string, YoloModelDownloadJob>()
+
+function pruneYoloModelDownloadJobs(): void {
+  const cutoff = Date.now() - 30 * 60_000
+  for (const [id, job] of _yoloModelDownloadJobs) {
+    if (job.finishedAt != null && job.finishedAt < cutoff) {
+      _yoloModelDownloadJobs.delete(id)
+    }
+  }
+}
+
+function startHttpModelDownloadJob(downloadId: string, url: string, targetPath: string): void {
+  _yoloModelDownloadJobs.set(downloadId, { status: "pending", savedPath: "", errorMessage: "" })
+  void (async () => {
+    try {
+      await downloadUrlToFile(url, targetPath)
+      _yoloModelDownloadJobs.set(downloadId, {
+        status: "success",
+        savedPath: targetPath,
+        errorMessage: "",
+        finishedAt: Date.now(),
+      })
+    } catch (error) {
+      _yoloModelDownloadJobs.set(downloadId, {
+        status: "failed",
+        savedPath: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+        finishedAt: Date.now(),
+      })
+    }
+  })()
+}
 
 function sanitizeModelDownloadFileName(name: string): string {
   const base = path.basename((name || "").replace(/\\/g, "/")).trim()
@@ -135,42 +179,13 @@ function sanitizeModelDownloadFileName(name: string): string {
   return base
 }
 
-function sanitizeJobSlugForPath(jobSlug: string): string | null {
-  const slug = jobSlug
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
-    .replace(/\s+/g, "_")
-    .replace(/^\.+|\.+$/g, "")
-    .slice(0, 120)
-  return slug || null
+function modelDownloadInfoUrlFromFileUrl(fileUrl: string): string {
+  const parsed = new URL(fileUrl)
+  parsed.pathname = parsed.pathname.replace("/models/file", "/models/download-info")
+  return parsed.toString()
 }
 
-function resolveLocalYoloModelPath(
-  backendDirectory: string,
-  jobSlug: string,
-  modelRelPath: string,
-): string | null {
-  const backendDir = path.normalize(backendDirectory.trim())
-  if (!backendDir) return null
-  const slug = sanitizeJobSlugForPath(jobSlug.trim())
-  if (!slug) return null
-  const rel = modelRelPath.trim().replace(/\\/g, "/").replace(/^\/+/, "")
-  if (!rel || rel.split("/").some((seg) => seg === "..")) return null
-  const jobDir = path.resolve(path.join(backendDir, "external", "temp", slug))
-  const full = path.resolve(path.join(jobDir, rel))
-  const relToJob = path.relative(jobDir, full)
-  if (!relToJob || relToJob === ".." || relToJob.startsWith(`..${path.sep}`) || path.isAbsolute(relToJob)) {
-    return null
-  }
-  if (!fs.existsSync(full) || !fs.statSync(full).isFile()) return null
-  return full
-}
-
-async function copyFileStreaming(srcPath: string, destPath: string): Promise<void> {
-  fs.mkdirSync(path.dirname(destPath), { recursive: true })
-  await pipeline(createReadStream(srcPath), createWriteStream(destPath))
-}
-
-async function downloadUrlToFile(url: string, destPath: string, redirectLeft = 3): Promise<void> {
+function httpGetJson(url: string, timeoutMs: number): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let parsed: URL
     try {
@@ -179,33 +194,89 @@ async function downloadUrlToFile(url: string, destPath: string, redirectLeft = 3
       reject(new Error("无效的下载地址"))
       return
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      reject(new Error("仅支持 http/https 下载地址"))
-      return
-    }
     const lib = parsed.protocol === "https:" ? https : http
     const req = lib.get(url, (res) => {
       const status = res.statusCode ?? 0
-      if (status >= 300 && status < 400 && res.headers.location && redirectLeft > 0) {
-        res.resume()
-        void downloadUrlToFile(res.headers.location, destPath, redirectLeft - 1).then(resolve).catch(reject)
-        return
-      }
       if (status >= 400) {
         res.resume()
-        reject(new Error(`下载失败（HTTP ${status}）`))
+        reject(new Error(`下载信息请求失败（HTTP ${status}）`))
         return
       }
-      fs.mkdirSync(path.dirname(destPath), { recursive: true })
-      pipeline(res, createWriteStream(destPath))
-        .then(() => resolve())
-        .catch(reject)
+      const chunks: Buffer[] = []
+      res.on("data", (c) => chunks.push(c))
+      res.on("end", () => {
+        try {
+          const data = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>
+          resolve(data)
+        } catch {
+          reject(new Error("无法解析下载信息响应"))
+        }
+      })
     })
-    req.setTimeout(YOLO_MODEL_DOWNLOAD_TIMEOUT_MS, () => {
-      req.destroy(new Error("下载超时"))
-    })
+    req.setTimeout(timeoutMs, () => req.destroy(new Error("下载信息请求超时")))
     req.on("error", reject)
   })
+}
+
+function httpGetRange(url: string, start: number, end: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      reject(new Error("无效的下载地址"))
+      return
+    }
+    const lib = parsed.protocol === "https:" ? https : http
+    const req = lib.get(url, { headers: { Range: `bytes=${start}-${end}` } }, (res) => {
+      const status = res.statusCode ?? 0
+      if (status !== 206 && status !== 200) {
+        res.resume()
+        reject(new Error(`分片下载失败（HTTP ${status}）`))
+        return
+      }
+      const chunks: Buffer[] = []
+      res.on("data", (c) => chunks.push(c))
+      res.on("end", () => resolve(Buffer.concat(chunks)))
+    })
+    req.setTimeout(YOLO_MODEL_CHUNK_TIMEOUT_MS, () => req.destroy(new Error("分片下载超时")))
+    req.on("error", reject)
+  })
+}
+
+async function downloadUrlToFile(url: string, destPath: string): Promise<void> {
+  const info = await httpGetJson(modelDownloadInfoUrlFromFileUrl(url), 60_000)
+  const totalSize = Number(info.total_size)
+  if (!Number.isFinite(totalSize) || totalSize < 0) {
+    throw new Error("无效的模型文件大小")
+  }
+
+  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  let offset = 0
+  if (fs.existsSync(destPath)) {
+    const st = fs.statSync(destPath)
+    if (st.size >= totalSize) {
+      fs.unlinkSync(destPath)
+    } else if (st.size > 0) {
+      offset = st.size
+    }
+  }
+
+  const fd = fs.openSync(destPath, offset > 0 ? "r+" : "w")
+  const deadline = Date.now() + YOLO_MODEL_DOWNLOAD_TIMEOUT_MS
+  try {
+    while (offset < totalSize) {
+      if (Date.now() > deadline) {
+        throw new Error(`下载超时（超过 ${YOLO_MODEL_DOWNLOAD_TIMEOUT_MS / 60_000} 分钟）`)
+      }
+      const end = Math.min(offset + YOLO_CHUNK_SIZE, totalSize) - 1
+      const chunk = await httpGetRange(url, offset, end)
+      fs.writeSync(fd, chunk, 0, chunk.length, offset)
+      offset = end + 1
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 function collectTaskFiles(taskRootDir: string): Array<{ subset: string; filePath: string; createdAt: string }> {
@@ -1204,11 +1275,13 @@ ipc.registerService(AppService({
   ): Promise<DownloadYoloTrainingModelResponse> {
     const url = (request.downloadUrl || "").trim()
     const fileName = sanitizeModelDownloadFileName(request.suggestedFileName || "")
-    const backendDirectory = (request.backendDirectory || "").trim()
-    const jobSlug = (request.jobSlug || "").trim()
-    const modelRelPath = (request.modelRelPath || "").trim()
 
     try {
+      if (!url) {
+        return { canceled: true, savedPath: "", errorMessage: "下载地址为空。", downloadId: "" }
+      }
+
+      pruneYoloModelDownloadJobs()
       const downloadsDir = path.join(os.homedir(), "Downloads")
       const defaultDir = fs.existsSync(downloadsDir) ? downloadsDir : os.homedir()
 
@@ -1223,31 +1296,35 @@ ipc.registerService(AppService({
         },
       })
       if (dialogResult.canceled || !dialogResult.paths[0]) {
-        return { canceled: true, savedPath: "", errorMessage: "" }
+        return { canceled: true, savedPath: "", errorMessage: "", downloadId: "" }
       }
 
       const targetPath = buildUniqueFilePath(dialogResult.paths[0], fileName)
-      const localSource =
-        backendDirectory && jobSlug && modelRelPath
-          ? resolveLocalYoloModelPath(backendDirectory, jobSlug, modelRelPath)
-          : null
-
-      if (localSource) {
-        await copyFileStreaming(localSource, targetPath)
-      } else {
-        if (!url) {
-          return { canceled: true, savedPath: "", errorMessage: "下载地址为空。" }
-        }
-        await downloadUrlToFile(url, targetPath)
-      }
-
-      return { canceled: false, savedPath: targetPath, errorMessage: "" }
+      const downloadId = randomUUID()
+      startHttpModelDownloadJob(downloadId, url, targetPath)
+      return { canceled: false, savedPath: "", errorMessage: "", downloadId }
     } catch (error) {
       return {
         canceled: true,
         savedPath: "",
         errorMessage: error instanceof Error ? error.message : String(error),
+        downloadId: "",
       }
+    }
+  },
+  async GetYoloModelDownloadStatus(
+    request: GetYoloModelDownloadStatusRequest,
+  ): Promise<GetYoloModelDownloadStatusResponse> {
+    pruneYoloModelDownloadJobs()
+    const downloadId = (request.downloadId || "").trim()
+    const job = downloadId ? _yoloModelDownloadJobs.get(downloadId) : undefined
+    if (!job) {
+      return { status: "failed", savedPath: "", errorMessage: "下载任务不存在或已过期。" }
+    }
+    return {
+      status: job.status,
+      savedPath: job.savedPath,
+      errorMessage: job.errorMessage,
     }
   },
   async CopyYoloTrainingDatasetZip(request) {

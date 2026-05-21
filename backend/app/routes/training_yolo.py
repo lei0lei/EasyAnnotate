@@ -8,11 +8,11 @@ from typing import Any
 
 import mimetypes
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from app.train import yolo_runner, yolo_workspace
+from app.train import yolo_chunk_transfer, yolo_runner, yolo_workspace
 
 router = APIRouter()
 
@@ -26,6 +26,13 @@ class SelectBaseModelBody(BaseModel):
     asset_id: str = Field(..., description="registry 中的 ultralytics 权重 id")
     family: str = Field(..., description="yolov8 | yolo26")
     task: str = Field(..., description="detect | segment | pose | obb | classify")
+
+
+class DatasetUploadInitBody(BaseModel):
+    job_slug: str
+    filename: str = Field(..., min_length=1)
+    total_size: int = Field(..., ge=1)
+    upload_id: str | None = Field(None, description="续传时传入已有 upload_id")
 
 
 class StartTrainBody(BaseModel):
@@ -105,22 +112,64 @@ def history_models(job_slug: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
+@router.get("/history/{job_slug}/models/download-info")
+def history_model_download_info(
+    job_slug: str, path: str = Query(..., description="相对训练任务目录的模型路径")
+) -> dict[str, Any]:
+    try:
+        return yolo_chunk_transfer.model_download_info(job_slug, path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
 @router.get("/history/{job_slug}/models/file")
 def history_model_file(
-    job_slug: str, path: str = Query(..., description="相对训练任务目录的模型路径")
-) -> FileResponse:
+    request: Request,
+    job_slug: str,
+    path: str = Query(..., description="相对训练任务目录的模型路径"),
+) -> FileResponse | Response:
     try:
         file_path = yolo_workspace.resolve_training_model_file(job_slug, path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+    file_size = file_path.stat().st_size
     media_type, _ = mimetypes.guess_type(str(file_path))
+    common_headers = {
+        "Cache-Control": "no-store, max-age=0",
+        "Pragma": "no-cache",
+        "Accept-Ranges": "bytes",
+    }
+
+    range_header = request.headers.get("range")
+    parsed = (
+        yolo_chunk_transfer.parse_range_header(range_header, file_size)
+        if range_header and file_size > 0
+        else None
+    )
+    if parsed is not None:
+        start, end = parsed
+        data, _ = yolo_chunk_transfer.read_model_byte_range(job_slug, path, start, end)
+        return Response(
+            content=data,
+            status_code=206,
+            media_type=media_type or "application/octet-stream",
+            headers={
+                **common_headers,
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Content-Length": str(len(data)),
+            },
+        )
+
     return FileResponse(
         path=str(file_path),
         media_type=media_type or "application/octet-stream",
         filename=file_path.name,
-        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+        headers=common_headers,
     )
 
 
@@ -193,6 +242,47 @@ def unpack_dataset(
         "data_yaml": str(data_yaml),
         "dataset_zip_filename": meta.get("dataset_zip_filename"),
     }
+
+
+@router.post("/dataset/upload/init")
+def dataset_upload_init(body: DatasetUploadInitBody) -> dict[str, Any]:
+    slug = _require_slug(body.job_slug)
+    try:
+        return yolo_chunk_transfer.init_dataset_upload(
+            slug,
+            filename=body.filename,
+            total_size=body.total_size,
+            upload_id=body.upload_id,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.put("/dataset/upload/chunk")
+async def dataset_upload_chunk(
+    request: Request,
+    job_slug: str = Query(...),
+    upload_id: str = Query(...),
+    chunk_index: int = Query(..., ge=0),
+) -> dict[str, Any]:
+    slug = _require_slug(job_slug)
+    data = await request.body()
+    try:
+        return yolo_chunk_transfer.save_dataset_upload_chunk(slug, upload_id, chunk_index, data)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/dataset/upload/complete")
+def dataset_upload_complete(
+    job_slug: str = Query(...),
+    upload_id: str = Query(...),
+) -> dict[str, Any]:
+    slug = _require_slug(job_slug)
+    try:
+        return yolo_chunk_transfer.complete_dataset_upload(slug, upload_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/dataset/upload")

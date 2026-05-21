@@ -184,23 +184,48 @@ export function yoloTrainingModelDownloadUrl(jobSlug: string, filePath: string, 
   return `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/models/file?${q}`
 }
 
+const YOLO_MODEL_DOWNLOAD_POLL_MS = 400
+const YOLO_MODEL_DOWNLOAD_POLL_TIMEOUT_MS = 5 * 60 * 60 * 1000
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
 export async function downloadYoloTrainingModelWithSaveDialog(
   jobSlug: string,
   file: YoloTrainingModelFile,
 ): Promise<{ canceled: boolean; savedPath: string; errorMessage: string }> {
-  const { localBackendDir, remoteConnected } = loadAppConfig().backend
   const response = await ipc.app.DownloadYoloTrainingModel({
     downloadUrl: yoloTrainingModelDownloadUrl(jobSlug, file.path, file.mtime),
     suggestedFileName: file.name,
-    backendDirectory: remoteConnected ? "" : localBackendDir.trim(),
-    jobSlug,
-    modelRelPath: file.path,
   })
-  return {
-    canceled: response.canceled,
-    savedPath: response.savedPath || "",
-    errorMessage: response.errorMessage || "",
+  if (response.canceled) {
+    return { canceled: true, savedPath: "", errorMessage: "" }
   }
+  if (response.errorMessage?.trim()) {
+    return { canceled: true, savedPath: "", errorMessage: response.errorMessage.trim() }
+  }
+
+  const downloadId = response.downloadId?.trim()
+  if (!downloadId) {
+    return { canceled: true, savedPath: "", errorMessage: "下载未启动" }
+  }
+
+  const deadline = Date.now() + YOLO_MODEL_DOWNLOAD_POLL_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await sleepMs(YOLO_MODEL_DOWNLOAD_POLL_MS)
+    const status = await ipc.app.GetYoloModelDownloadStatus({ downloadId })
+    if (status.status === "pending") continue
+    if (status.status === "success") {
+      return { canceled: false, savedPath: status.savedPath?.trim() || "", errorMessage: "" }
+    }
+    return {
+      canceled: true,
+      savedPath: "",
+      errorMessage: status.errorMessage?.trim() || "下载失败",
+    }
+  }
+  return { canceled: true, savedPath: "", errorMessage: "下载超时" }
 }
 
 export async function deleteYoloTrainingJob(jobSlug: string): Promise<void> {

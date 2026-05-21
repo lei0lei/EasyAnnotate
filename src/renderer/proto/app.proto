@@ -489,18 +489,26 @@ message CopyYoloTrainingDatasetZipResponse {
   string dataset_zip_path = 3;
 }
 
-/** 选择保存目录后写入模型：本地优先磁盘复制，远程走 HTTP 流式下载 */
+/** 选择保存目录后，经 download_url 从训练后端 HTTP 流式下载（本地/远程同一通道） */
 message DownloadYoloTrainingModelRequest {
   string download_url = 1;
   string suggested_file_name = 2;
-  /** 本地 backend 根目录；配合 job_slug / model_rel_path 时从磁盘复制，避免主进程 HTTP 拉取大文件崩溃 */
-  string backend_directory = 3;
-  string job_slug = 4;
-  string model_rel_path = 5;
 }
 
 message DownloadYoloTrainingModelResponse {
   bool canceled = 1;
+  string saved_path = 2;
+  string error_message = 3;
+  /** 非空：HTTP 下载已在主进程后台进行，请轮询 GetYoloModelDownloadStatus */
+  string download_id = 4;
+}
+
+message GetYoloModelDownloadStatusRequest {
+  string download_id = 1;
+}
+
+message GetYoloModelDownloadStatusResponse {
+  string status = 1;
   string saved_path = 2;
   string error_message = 3;
 }
@@ -551,4 +559,5 @@ service AppService {
   rpc GetLocalBackendStatus(google.protobuf.Empty) returns (LocalBackendStatusResponse);
   rpc CopyYoloTrainingDatasetZip(CopyYoloTrainingDatasetZipRequest) returns (CopyYoloTrainingDatasetZipResponse);
   rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);
+  rpc GetYoloModelDownloadStatus(GetYoloModelDownloadStatusRequest) returns (GetYoloModelDownloadStatusResponse);
 }
