@@ -9,6 +9,37 @@ export type TaskUploadCandidate = {
   file?: File
 }
 
+function maybeDecodePathValue(value: string): string {
+  if (!/%[0-9a-fA-F]{2}/.test(value)) return value
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+export function normalizeDialogPath(rawPath: string): string {
+  const input = rawPath.trim()
+  if (!input) return ""
+  if (!/^file:\/\//i.test(input)) {
+    return maybeDecodePathValue(input)
+  }
+  try {
+    const url = new URL(input)
+    let pathname = maybeDecodePathValue(url.pathname || "")
+    if (/^\/[A-Za-z]:\//.test(pathname)) {
+      pathname = pathname.slice(1)
+    }
+    pathname = pathname.replace(/\//g, "\\")
+    if (url.host) {
+      return `\\\\${url.host}${pathname.startsWith("\\") ? "" : "\\"}${pathname}`
+    }
+    return pathname
+  } catch {
+    return maybeDecodePathValue(input)
+  }
+}
+
 export function fileNameFromPath(filePath: string): string {
   const p = filePath.trim().replace(/\\/g, "/")
   const idx = p.lastIndexOf("/")
@@ -17,13 +48,47 @@ export function fileNameFromPath(filePath: string): string {
 
 export function candidatesFromDialogPaths(paths: string[]): TaskUploadCandidate[] {
   return paths
-    .map((p) => p.trim())
+    .map((p) => normalizeDialogPath(p))
     .filter(Boolean)
     .map((sourcePath) => ({
       id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
       name: fileNameFromPath(sourcePath),
       sourcePath,
     }))
+}
+
+const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
+
+export function splitTaskUploadPaths(paths: string[]): {
+  imageCandidates: TaskUploadCandidate[]
+  zipPaths: string[]
+  unsupportedPaths: string[]
+} {
+  const imageCandidates: TaskUploadCandidate[] = []
+  const zipPaths: string[] = []
+  const unsupportedPaths: string[] = []
+  for (const raw of paths) {
+    const sourcePath = normalizeDialogPath(raw)
+    if (!sourcePath) continue
+    const normalized = sourcePath.replace(/\\/g, "/")
+    const fileName = normalized.slice(normalized.lastIndexOf("/") + 1)
+    const dot = fileName.lastIndexOf(".")
+    const ext = dot >= 0 ? fileName.slice(dot).toLowerCase() : ""
+    if (IMAGE_EXTS.has(ext)) {
+      imageCandidates.push({
+        id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+        name: fileNameFromPath(sourcePath),
+        sourcePath,
+      })
+      continue
+    }
+    if (ext === ".zip") {
+      zipPaths.push(sourcePath)
+      continue
+    }
+    unsupportedPaths.push(sourcePath)
+  }
+  return { imageCandidates, zipPaths, unsupportedPaths }
 }
 
 /** 通过系统对话框选文件（推荐）：只传路径，由主进程 copyFileSync。 */
@@ -36,8 +101,14 @@ export async function pickTaskUploadFilesViaDialog(title: string): Promise<TaskU
   return candidatesFromDialogPaths(picked.paths)
 }
 
-function pathFromBrowserFile(file: File): string {
-  return ((file as File & { path?: string }).path ?? "").trim()
+export async function pickAnnotatedZipViaDialog(title: string): Promise<string> {
+  const picked = await ipc.app.SelectFiles({
+    title,
+    defaultPath: "",
+  })
+  if (picked.canceled || !picked.paths?.length) return ""
+  const zipPath = picked.paths.find((item) => normalizeDialogPath(item).toLowerCase().endsWith(".zip")) ?? ""
+  return normalizeDialogPath(zipPath)
 }
 
 export function candidatesFromBrowserFiles(input: FileList | File[]): {
@@ -47,15 +118,11 @@ export function candidatesFromBrowserFiles(input: FileList | File[]): {
   const accepted: TaskUploadCandidate[] = []
   const skippedWithoutPath: string[] = []
   for (const file of Array.from(input)) {
-    const sourcePath = pathFromBrowserFile(file)
-    if (!sourcePath) {
-      skippedWithoutPath.push(file.name)
-      continue
-    }
     accepted.push({
       id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
       name: file.name,
-      sourcePath,
+      // 浏览器 File 可能提供错误编码路径（中文会乱码）；此处强制走 content 上传。
+      sourcePath: "",
       file,
     })
   }

@@ -4,7 +4,6 @@ import { STORAGE_KEYS } from "@/lib/storage/keys"
 import { AppLayout } from "@/components/app-layout"
 import { hydrateAppConfigFromDisk } from "@/lib/app-config-storage"
 import BackendsPage from "@/pages/backends"
-import EventsPage from "@/pages/events"
 import HomePage from "@/pages/home"
 import ModelsAutoPage from "@/pages/models-auto"
 import ModelsHubPage from "@/pages/models-hub"
@@ -27,17 +26,8 @@ import ProjectTaskDetailPage from "@/pages/project-task-detail"
 import ProjectsCreatePage from "@/pages/projects-create"
 import ProjectsCreateConfigPage from "@/pages/projects-create-config"
 import ProjectsHubPage from "@/pages/projects-hub"
-import ProjectsImportPage from "@/pages/projects-import"
 import ProjectsMinePage from "@/pages/projects-mine"
 import { ProjectsOutlet } from "@/pages/projects-outlet"
-import { MonitorDetailOutlet } from "@/pages/monitor-detail-outlet"
-import MonitorEditorPage from "@/pages/monitor-editor"
-import MonitorHubPage from "@/pages/monitor-hub"
-import { MonitorOutlet } from "@/pages/monitor-outlet"
-import MonitorPreviewPage from "@/pages/monitor-preview"
-import WorkflowEditorPage from "@/pages/workflow-editor"
-import WorkflowsHubPage from "@/pages/workflows-hub"
-import { WorkflowsOutlet } from "@/pages/workflows-outlet"
 import SettingsPage from "@/pages/settings"
 import { Loader2 } from "lucide-react"
 import { useEffect, useState } from "react"
@@ -65,7 +55,6 @@ export default function App() {
             <Route index element={<ProjectsHubPage />} />
             <Route path="new" element={<ProjectsCreatePage />} />
             <Route path="new/config" element={<ProjectsCreateConfigPage />} />
-            <Route path="import" element={<ProjectsImportPage />} />
             <Route path="mine" element={<ProjectsMinePage />} />
             <Route path=":projectId/export" element={<ProjectExportPage />} />
             <Route path=":projectId/tasks/new" element={<ProjectTaskCreatePage />} />
@@ -74,10 +63,8 @@ export default function App() {
             <Route path=":projectId/tasks/:taskId" element={<ProjectTaskDetailPage />} />
             <Route path=":projectId" element={<ProjectDetailPage />} />
           </Route>
-          <Route path="workflows" element={<WorkflowsOutlet />}>
-            <Route index element={<WorkflowsHubPage />} />
-            <Route path=":workflowId" element={<WorkflowEditorPage />} />
-          </Route>
+          <Route path="workflows" element={<Navigate to="/" replace />} />
+          <Route path="workflows/:workflowId" element={<Navigate to="/" replace />} />
           <Route path="models" element={<ModelsOutlet />}>
             <Route index element={<ModelsHubPage />} />
             <Route path="backend" element={<ModelsBackendPage />} />
@@ -95,16 +82,12 @@ export default function App() {
             <Route path="yolo-batch" element={<ModelsYoloBatchPage />} />
             <Route path="yolo-batch/new/:task" element={<ModelsYoloBatchNewPage />} />
           </Route>
-          <Route path="monitor" element={<MonitorOutlet />}>
-            <Route index element={<MonitorHubPage />} />
-            <Route path=":monitorId" element={<MonitorDetailOutlet />}>
-              <Route index element={<MonitorEditorPage />} />
-              <Route path="preview" element={<MonitorPreviewPage />} />
-            </Route>
-          </Route>
+          <Route path="monitor" element={<Navigate to="/" replace />} />
+          <Route path="monitor/:monitorId" element={<Navigate to="/" replace />} />
+          <Route path="monitor/:monitorId/preview" element={<Navigate to="/" replace />} />
           <Route path="backends" element={<BackendsPage />} />
+          <Route path="backends/:groupId" element={<BackendsPage />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="events" element={<EventsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

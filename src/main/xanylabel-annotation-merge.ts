@@ -25,6 +25,24 @@ type XAnyLabelFile = {
   imageWidth: number
 }
 
+const ALLOWED_SHAPE_TYPES = new Set([
+  "rectangle",
+  "rotation",
+  "polygon",
+  "point",
+  "line",
+  "linestrip",
+  "circle",
+  "cuboid2d",
+  "skeleton",
+])
+
+function normalizePositiveDimension(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
+  const rounded = Math.round(value)
+  return rounded > 0 ? rounded : fallback
+}
+
 function fileNameFromPath(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/")
   const parts = normalized.split("/").filter(Boolean)
@@ -50,6 +68,8 @@ function normalizeShape(input: unknown): XAnyLabelShape | undefined {
   if (typeof value.label !== "string") return undefined
   if (!Array.isArray(value.points)) return undefined
   if (typeof value.shape_type !== "string") return undefined
+  const shapeType = value.shape_type.trim()
+  if (!ALLOWED_SHAPE_TYPES.has(shapeType)) return undefined
   return {
     label: value.label,
     score: typeof value.score === "number" ? value.score : null,
@@ -65,7 +85,7 @@ function normalizeShape(input: unknown): XAnyLabelShape | undefined {
     group_id: typeof value.group_id === "number" ? value.group_id : null,
     description: typeof value.description === "string" ? value.description : null,
     difficult: value.difficult === true,
-    shape_type: value.shape_type,
+    shape_type: shapeType,
     flags: value.flags && typeof value.flags === "object" ? (value.flags as Record<string, unknown>) : null,
     attributes:
       value.attributes && typeof value.attributes === "object" ? (value.attributes as Record<string, unknown>) : {},
@@ -91,14 +111,8 @@ function loadDoc(jsonPath: string, imagePath: string, imageWidth: number, imageH
       imagePath:
         typeof parsed.imagePath === "string" && parsed.imagePath.trim() ? parsed.imagePath : fallback.imagePath,
       imageData: typeof parsed.imageData === "string" ? parsed.imageData : null,
-      imageHeight:
-        typeof parsed.imageHeight === "number" && Number.isFinite(parsed.imageHeight)
-          ? parsed.imageHeight
-          : fallback.imageHeight,
-      imageWidth:
-        typeof parsed.imageWidth === "number" && Number.isFinite(parsed.imageWidth)
-          ? parsed.imageWidth
-          : fallback.imageWidth,
+      imageHeight: normalizePositiveDimension(parsed.imageHeight, fallback.imageHeight),
+      imageWidth: normalizePositiveDimension(parsed.imageWidth, fallback.imageWidth),
     }
   } catch {
     return fallback

@@ -47,12 +47,10 @@ function isLikelyChromeTypeaheadKey(event: KeyboardEvent): boolean {
 type UseTaskShortcutsParams = {
   rightToolMode: RightToolMode
   polygonDraftPointCount: number
-  hasMaskDraft: boolean
   selectedShapeId: string | null
   hoveredShapeId: string | null
   resolveShapeIndexById: (shapeId: string | null) => number | null
   clearPolygonDraft: () => void
-  clearMaskTransientState: () => void
   handleSelectToolClick: () => void
   popPolygonPoint: () => void
   deleteShape: (shapeIndex: number) => void
@@ -86,12 +84,10 @@ type UseTaskShortcutsParams = {
 export function useTaskShortcuts({
   rightToolMode,
   polygonDraftPointCount,
-  hasMaskDraft,
   selectedShapeId,
   hoveredShapeId,
   resolveShapeIndexById,
   clearPolygonDraft,
-  clearMaskTransientState,
   handleSelectToolClick,
   popPolygonPoint,
   deleteShape,
@@ -192,11 +188,6 @@ export function useTaskShortcuts({
           clearPolygonDraft()
           return
         }
-        if (rightToolMode === "mask" && hasMaskDraft) {
-          consumeShortcutEvent(event)
-          clearMaskTransientState()
-          return
-        }
         consumeShortcutEvent(event)
         handleSelectToolClick()
         return
@@ -243,14 +234,12 @@ export function useTaskShortcuts({
     canRedo,
     canRepeatNewAnnotation,
     canUndo,
-    clearMaskTransientState,
     clearPolygonDraft,
     deleteShape,
     goNextImage,
     goPrevImage,
     handleSelectToolClick,
     repeatNewAnnotation,
-    hasMaskDraft,
     hoveredShapeId,
     polygonDraftPointCount,
     popPolygonPoint,

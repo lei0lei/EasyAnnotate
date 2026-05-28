@@ -19,7 +19,6 @@ type UseCanvasSectionPropsParams = {
   handleRectangleMouseLeave: CanvasSectionBaseProps["onHandleRectangleMouseLeave"]
   handleRectangleMouseDown: CanvasSectionBaseProps["onHandleRectangleMouseDown"]
   handleRectangleClick: CanvasSectionBaseProps["onHandleRectangleClick"]
-  handleMaskMouseDown: CanvasSectionBaseProps["onHandleMaskMouseDown"]
   handlePointMouseDown: CanvasSectionBaseProps["onHandlePointMouseDown"]
   handlePolygonMouseDown: CanvasSectionBaseProps["onHandlePolygonMouseDown"]
   handleCuboidFaceMouseDown: CanvasSectionBaseProps["onHandleCuboidFaceMouseDown"]
@@ -31,14 +30,6 @@ type UseCanvasSectionPropsParams = {
   previewRect: CanvasSectionBaseProps["previewRect"]
   polygonDraftStagePoints: CanvasSectionBaseProps["polygonDraftStagePoints"]
   hoveredDraftVertexIndex: CanvasSectionBaseProps["hoveredDraftVertexIndex"]
-  maskDraftStagePoints: CanvasSectionBaseProps["maskDraftStagePoints"]
-  maskCursorStagePoint: CanvasSectionBaseProps["maskCursorStagePoint"]
-  maskBrushSize: CanvasSectionBaseProps["maskBrushSize"]
-  maskDrawMode: "brush" | "eraser"
-  createMaskDraft: CanvasSectionBaseProps["onCreateMaskDraft"]
-  appendMaskDraftPoint: CanvasSectionBaseProps["onAppendMaskDraftPoint"]
-  commitMaskStroke: CanvasSectionBaseProps["onCommitMaskStroke"]
-  clearMaskTransientState: CanvasSectionBaseProps["onClearMaskTransientState"]
   handlePolygonDrawMove: CanvasSectionBaseProps["onHandlePolygonDrawMove"]
   handlePolygonDrawClick: CanvasSectionBaseProps["onHandlePolygonDrawClick"]
   handlePolygonDrawDoubleClick: CanvasSectionBaseProps["onHandlePolygonDrawDoubleClick"]
@@ -58,7 +49,6 @@ type UseCanvasSectionPropsParams = {
   currentFileName: CanvasSectionBaseProps["currentFileName"]
   canPanAndZoom: CanvasSectionBaseProps["canPanAndZoom"]
   isPanning: CanvasSectionBaseProps["isPanning"]
-  canDrawMask: CanvasSectionBaseProps["canDrawMask"]
   canDrawRectangle: CanvasSectionBaseProps["canDrawRectangle"]
   canDrawPolygon: CanvasSectionBaseProps["canDrawPolygon"]
   canDrawBox3d: CanvasSectionBaseProps["canDrawBox3d"]
@@ -66,9 +56,11 @@ type UseCanvasSectionPropsParams = {
   canDrawSkeleton: CanvasSectionBaseProps["canDrawSkeleton"]
   imageOffset: CanvasSectionBaseProps["imageOffset"]
   imageScale: CanvasSectionBaseProps["imageScale"]
+  annotationLineWidthScale: CanvasSectionBaseProps["annotationLineWidthScale"]
+  annotationPointSizeScale: CanvasSectionBaseProps["annotationPointSizeScale"]
   imageFitScale: CanvasSectionBaseProps["imageFitScale"]
   drawingLayerActive: CanvasSectionBaseProps["drawingLayerActive"]
-  renderedMasks: CanvasSectionBaseProps["renderedMasks"]
+  renderedRasterPreviews: CanvasSectionBaseProps["renderedRasterPreviews"]
   renderedPolygons: CanvasSectionBaseProps["renderedPolygons"]
   renderedRotationRects: CanvasSectionBaseProps["renderedRotationRects"]
   renderedRectangles: CanvasSectionBaseProps["renderedRectangles"]
@@ -123,7 +115,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     handleRectangleMouseLeave,
     handleRectangleMouseDown,
     handleRectangleClick,
-    handleMaskMouseDown,
     handlePointMouseDown,
     handlePolygonMouseDown,
     handleCuboidFaceMouseDown,
@@ -135,14 +126,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     previewRect,
     polygonDraftStagePoints,
     hoveredDraftVertexIndex,
-    maskDraftStagePoints,
-    maskCursorStagePoint,
-    maskBrushSize,
-    maskDrawMode,
-    createMaskDraft,
-    appendMaskDraftPoint,
-    commitMaskStroke,
-    clearMaskTransientState,
     handlePolygonDrawMove,
     handlePolygonDrawClick,
     handlePolygonDrawDoubleClick,
@@ -162,7 +145,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     currentFileName,
     canPanAndZoom,
     isPanning,
-    canDrawMask,
     canDrawRectangle,
     canDrawPolygon,
     canDrawBox3d,
@@ -170,9 +152,11 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     canDrawSkeleton,
     imageOffset,
     imageScale,
+    annotationLineWidthScale,
+    annotationPointSizeScale,
     imageFitScale,
     drawingLayerActive,
-    renderedMasks,
+    renderedRasterPreviews,
     renderedPolygons,
     renderedRotationRects,
     renderedRectangles,
@@ -228,7 +212,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       onHandleRectangleMouseLeave: handleRectangleMouseLeave,
       onHandleRectangleMouseDown: handleRectangleMouseDown,
       onHandleRectangleClick: handleRectangleClick,
-      onHandleMaskMouseDown: handleMaskMouseDown,
       onHandlePointMouseDown: handlePointMouseDown,
       onHandlePolygonMouseDown: handlePolygonMouseDown,
       onHandleCuboidFaceMouseDown: handleCuboidFaceMouseDown,
@@ -240,14 +223,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       previewRect,
       polygonDraftStagePoints,
       hoveredDraftVertexIndex,
-      maskDraftStagePoints,
-      maskCursorStagePoint,
-      maskBrushSize,
-      maskDrawMode,
-      onCreateMaskDraft: createMaskDraft,
-      onAppendMaskDraftPoint: appendMaskDraftPoint,
-      onCommitMaskStroke: commitMaskStroke,
-      onClearMaskTransientState: clearMaskTransientState,
       onHandlePolygonDrawMove: handlePolygonDrawMove,
       onHandlePolygonDrawClick: handlePolygonDrawClick,
       onHandlePolygonDrawDoubleClick: handlePolygonDrawDoubleClick,
@@ -270,12 +245,8 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       onSam2ToastDismiss,
     }),
     [
-      appendMaskDraftPoint,
       box3dDraftBaseStagePoints,
       box3dPreviewTopStagePoints,
-      clearMaskTransientState,
-      commitMaskStroke,
-      createMaskDraft,
       endImagePan,
       handleBox3dDrawClick,
       handleBox3dDrawMove,
@@ -286,7 +257,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       handleImageMouseMove,
       handleImageWheel,
       handleKeypointDrawClick,
-      handleMaskMouseDown,
       handlePointMouseDown,
       handlePolygonDrawClick,
       handlePolygonDrawDoubleClick,
@@ -306,10 +276,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       handleSkeletonDrawClick,
       handleStageClick,
       hoveredDraftVertexIndex,
-      maskBrushSize,
-      maskCursorStagePoint,
-      maskDraftStagePoints,
-      maskDrawMode,
       polygonDraftStagePoints,
       previewRect,
       setImageLoadError,
@@ -338,7 +304,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       currentFileName,
       canPanAndZoom,
       isPanning,
-      canDrawMask,
       canDrawRectangle,
       canDrawPolygon,
       canDrawBox3d,
@@ -346,9 +311,11 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       canDrawSkeleton,
       imageOffset,
       imageScale,
+      annotationLineWidthScale,
+      annotationPointSizeScale,
       imageFitScale,
       drawingLayerActive,
-      renderedMasks,
+      renderedRasterPreviews,
       renderedPolygons,
       renderedRotationRects,
       renderedRectangles,
@@ -367,10 +334,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       previewRect,
       polygonDraftStagePoints,
       hoveredDraftVertexIndex,
-      maskDraftStagePoints,
-      maskCursorStagePoint,
-      maskBrushSize,
-      maskDrawMode,
       sam2OverlayActive,
       sam2StagePoints,
       sam2PointPositiveColor,
@@ -387,7 +350,6 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     [
       canDrawBox3d,
       canDrawKeypoint,
-      canDrawMask,
       canDrawPolygon,
       canDrawRectangle,
       canDrawSkeleton,
@@ -400,22 +362,22 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       hoveredDraftVertexIndex,
       hoveredShapeIndex,
       imageFitScale,
+      annotationLineWidthScale,
+      annotationPointSizeScale,
       imageLoadError,
       imageObjectUrl,
       imageOffset,
       imageScale,
+      annotationLineWidthScale,
+      annotationPointSizeScale,
       isImageLoading,
       isPanning,
-      maskBrushSize,
-      maskCursorStagePoint,
-      maskDraftStagePoints,
-      maskDrawMode,
       pendingRectColor,
       polygonDraftStagePoints,
       previewRect,
       rawHighlightCorner,
       renderedCuboids2d,
-      renderedMasks,
+      renderedRasterPreviews,
       renderedPoints,
       renderedPolygons,
       renderedRectangles,

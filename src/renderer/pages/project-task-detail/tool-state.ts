@@ -6,7 +6,7 @@
 import type { Point, RightToolMode } from "@/pages/project-task-detail/types"
 
 export type DrawShapeType = "rectangle" | "rotation"
-export type DrawShapeWithPolygon = DrawShapeType | "polygon" | "mask" | "keypoint" | "box3d" | "skeleton"
+export type DrawShapeWithPolygon = DrawShapeType | "polygon" | "keypoint" | "box3d" | "skeleton"
 export type ToolWorkflowPhase = "idle" | "pickingLabel" | "drawing" | "editing"
 export type ToolWorkflowState = {
   phase: ToolWorkflowPhase

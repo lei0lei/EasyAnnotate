@@ -158,7 +158,7 @@ export default function ProjectTaskAppendImagesPage() {
                 选择文件
               </Button>
               <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
-                浏览器选图（需带路径）
+                浏览器选图（兼容中文名）
               </Button>
             </div>
             <div
@@ -180,8 +180,8 @@ export default function ProjectTaskAppendImagesPage() {
               onDrop={handleDrop}
             >
               <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
-              <p className="mt-2 text-sm text-foreground">或将已有本地路径的文件拖拽到此处</p>
-              <p className="mt-1 text-xs text-muted-foreground">推荐「选择文件」，避免大图 IPC 传字节导致闪退</p>
+              <p className="mt-2 text-sm text-foreground">可拖拽文件到此处，或使用上方按钮选择</p>
+              <p className="mt-1 text-xs text-muted-foreground">中文文件名异常时，优先使用“浏览器选图（兼容中文名）”。</p>
             </div>
             <input
               ref={fileInputRef}
@@ -192,9 +192,7 @@ export default function ProjectTaskAppendImagesPage() {
                 if (!e.target.files) return
                 const { accepted, skippedWithoutPath } = candidatesFromBrowserFiles(e.target.files)
                 mergeCandidates(accepted)
-                if (skippedWithoutPath.length > 0) {
-                  setPathHint(`有 ${skippedWithoutPath.length} 个文件无本地路径未加入，请改用「选择文件」。`)
-                }
+                if (skippedWithoutPath.length > 0) setPathHint(`已忽略 ${skippedWithoutPath.length} 个无效文件。`)
                 e.target.value = ""
               }}
             />

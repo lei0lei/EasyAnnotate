@@ -71,11 +71,6 @@ export function isDiffusionCandidateAnnotatable(
   const d = c.rle
   if (!d || d.w !== iw || d.h !== ih) return false
 
-  if (outputFormat === "mask") {
-    const bin = decodeRowMajorRleToBinary(d.counts, iw * ih)
-    return maskBinaryHasForeground(bin)
-  }
-
   if (outputFormat === "polygon") {
     return extractDiffusionPolygonRing(c, iw, ih, contourOptions) != null
   }

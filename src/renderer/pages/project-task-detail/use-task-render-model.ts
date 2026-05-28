@@ -7,13 +7,12 @@ import { useMemo } from "react"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import {
   buildRenderedCuboids2d,
-  buildRenderedMasks,
+  buildRenderedRasterPreviews,
   buildRenderedPoints,
   buildRenderedPolygons,
   buildRenderedRectangles,
   buildRenderedRotationRects,
   buildRenderedSkeletons,
-  type DragLiveMaskRleOverride,
   type DragLivePointsOverride,
   type DragVertexLiveOverride,
   type DiffusionPreviewMaskRle,
@@ -37,11 +36,10 @@ type UseTaskRenderModelParams = {
   /** 与画布 view 层一致：仅 fit，用户平移/缩放在 page-sections 外层 transform */
   imageToStageBase: (point: Point) => Point | null
   dragLivePoints: DragLivePointsOverride | null
-  /** cuboid2d 八点预览：与 dragLivePoints 分离，避免每帧重算矩形/多边形/mask 等 */
+  /** cuboid2d 八点预览：与 dragLivePoints 分离，避免每帧重算矩形/多边形/光栅预览等 */
   dragCuboidLivePoints: DragLivePointsOverride | null
   /** 单顶点拖拽：与 dragLivePoints 互斥使用，且仅驱动 polygon / skeleton / cuboid 的 memo */
   dragVertexLive: DragVertexLiveOverride | null
-  dragLiveMaskRle: DragLiveMaskRleOverride | null
   /** SAM2 当前轮次预览（未按 N 写入文档） */
   sam2DraftMaskRle: Sam2DraftMaskRle | null
   diffusionPreviewMasks: DiffusionPreviewMaskRle[]
@@ -63,7 +61,6 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     dragLivePoints,
     dragCuboidLivePoints,
     dragVertexLive,
-    dragLiveMaskRle,
     sam2DraftMaskRle,
     diffusionPreviewMasks,
     diffusionPreviewPolygons,
@@ -127,15 +124,14 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     labelColorMap,
   ])
 
-  const renderedMasks = useMemo(() => {
-    return buildRenderedMasks({
+  const renderedRasterPreviews = useMemo(() => {
+    return buildRenderedRasterPreviews({
       annotationDoc,
       hiddenShapeIndexes,
       hiddenClassLabels,
       labelColorMap,
       stageScale: 1,
       imageToStage: (point) => imageToStageBase(point),
-      dragLiveMaskRle,
       dragLivePoints,
       sam2DraftMaskRle,
       diffusionPreviewMasks,
@@ -143,7 +139,6 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
   }, [
     annotationDoc,
     diffusionPreviewMasks,
-    dragLiveMaskRle,
     dragLivePoints,
     hiddenClassLabels,
     hiddenShapeIndexes,
@@ -212,7 +207,7 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     renderedRectangles,
     renderedRotationRects,
     renderedPolygons,
-    renderedMasks,
+    renderedRasterPreviews,
     renderedCuboids2d,
     renderedPoints,
     renderedSkeletons,

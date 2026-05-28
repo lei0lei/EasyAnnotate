@@ -6,6 +6,7 @@ import { useDinov2TrainingMessages } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 import { GpuSwitch } from "@/pages/models-backend"
 import {
+  fetchDinov2TrainingCatalog,
   fetchDinov2Devices,
   fetchDinov2Models,
   fetchDinov2TrainStatus,
@@ -75,6 +76,9 @@ export default function ModelsTrainingDinov2Page() {
   const [historySlugs, setHistorySlugs] = useState<Set<string>>(new Set())
 
   const [objective, setObjective] = useState<Dinov2ObjectiveId>("linear_probe")
+  const [objectiveOptions, setObjectiveOptions] = useState<Array<{ id: Dinov2ObjectiveId; label: string }>>(
+    OBJECTIVE_IDS.map((id) => ({ id, label: m.objectives[id] })),
+  )
   const [models, setModels] = useState<Dinov2CatalogModel[]>([])
   const [selectedWeightKey, setSelectedWeightKey] = useState("")
   const [uploadedWeightLabel, setUploadedWeightLabel] = useState<string | null>(null)
@@ -93,6 +97,7 @@ export default function ModelsTrainingDinov2Page() {
 
   const [training, setTraining] = useState(false)
   const [trainProgress, setTrainProgress] = useState(0)
+  const [trainMessage, setTrainMessage] = useState("")
   const [startError, setStartError] = useState<string | null>(null)
 
   const [epochs, setEpochs] = useState(50)
@@ -142,6 +147,10 @@ export default function ModelsTrainingDinov2Page() {
         /* backend may be down */
       })
   }, [jobSlug, applyWorkspace])
+
+  useEffect(() => {
+    setObjectiveOptions(OBJECTIVE_IDS.map((id) => ({ id, label: m.objectives[id] })))
+  }, [m.objectives])
 
   useEffect(() => {
     refreshBackend()
@@ -213,6 +222,22 @@ export default function ModelsTrainingDinov2Page() {
 
   useEffect(() => {
     if (!backendOk) return
+    void fetchDinov2TrainingCatalog()
+      .then((catalog) => {
+        const next = (catalog.objectives ?? []).filter(
+          (item): item is { id: Dinov2ObjectiveId; label: string } => OBJECTIVE_IDS.includes(item.id),
+        )
+        if (next.length > 0) {
+          setObjectiveOptions(next)
+          setObjective((prev) => (next.some((item) => item.id === prev) ? prev : next[0].id))
+        } else {
+          setObjectiveOptions(OBJECTIVE_IDS.map((id) => ({ id, label: m.objectives[id] })))
+        }
+      })
+      .catch(() => {
+        setObjectiveOptions(OBJECTIVE_IDS.map((id) => ({ id, label: m.objectives[id] })))
+      })
+
     setModelsLoading(true)
     void fetchDinov2Models()
       .then((list) => {
@@ -225,37 +250,42 @@ export default function ModelsTrainingDinov2Page() {
       })
       .catch(() => setModels([]))
       .finally(() => setModelsLoading(false))
-  }, [backendOk])
+  }, [backendOk, m.objectives])
 
+  const lastObservedStatusRef = useRef<string>("idle")
   useEffect(() => {
-    if (!training || !jobSlug) return
+    if (!backendOk || !jobSlug) return
+    lastObservedStatusRef.current = "idle"
     let alive = true
     const tick = () => {
       void fetchDinov2TrainStatus(jobSlug)
         .then(({ job }) => {
           if (!alive) return
-          setTrainProgress(job.progress)
-          if (job.status === "success" || job.status === "failed") {
-            setTraining(false)
-            setTrainProgress(job.progress ?? (job.status === "success" ? 100 : 0))
-            if (job.status === "failed" && job.last_error) {
-              setStartError(job.last_error)
-            }
+          const nextProgress = Number.isFinite(job.progress) ? job.progress : 0
+          setTrainProgress(nextProgress)
+          setTraining(job.status === "running")
+          setTrainMessage(job.message || "")
+          if (job.status === "failed" && job.last_error) {
+            setStartError(job.last_error)
+          }
+
+          const prev = lastObservedStatusRef.current
+          if (prev !== job.status && (job.status === "success" || job.status === "failed")) {
             refreshWorkspace()
             loadHistorySlugs()
-          } else {
-            window.setTimeout(tick, 1000)
           }
+          lastObservedStatusRef.current = job.status
+          window.setTimeout(tick, job.status === "running" ? 1000 : 2000)
         })
         .catch(() => {
-          if (alive) window.setTimeout(tick, 1500)
+          if (alive) window.setTimeout(tick, 2000)
         })
     }
     tick()
     return () => {
       alive = false
     }
-  }, [training, jobSlug, refreshWorkspace, loadHistorySlugs])
+  }, [backendOk, jobSlug, refreshWorkspace, loadHistorySlugs])
 
   const slugPreview = useMemo(() => trainingNameToJobSlug(trainingName), [trainingName])
   const nameDuplicate = Boolean(slugPreview && historySlugs.has(slugPreview) && slugPreview !== jobSlug)
@@ -421,6 +451,7 @@ export default function ModelsTrainingDinov2Page() {
     if (!jobSlug || !canStart) return
     setTraining(true)
     setTrainProgress(0)
+    setTrainMessage("")
     setStartError(null)
     try {
       await startDinov2Training(jobSlug, {
@@ -529,9 +560,9 @@ export default function ModelsTrainingDinov2Page() {
                   className="flex flex-wrap justify-start gap-2"
                   disabled={!jobReady}
                 >
-                  {OBJECTIVE_IDS.map((id) => (
-                    <ToggleGroupItem key={id} value={id} className="px-3">
-                      {m.objectives[id]}
+                  {objectiveOptions.map((item) => (
+                    <ToggleGroupItem key={item.id} value={item.id} className="px-3">
+                      {item.label}
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
@@ -773,6 +804,7 @@ export default function ModelsTrainingDinov2Page() {
                   />
                 </div>
               ) : null}
+              {trainMessage ? <p className="text-xs text-muted-foreground">{trainMessage}</p> : null}
             </CardContent>
           </Card>
         </div>

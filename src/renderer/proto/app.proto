@@ -247,6 +247,40 @@ message SaveTaskFilesResponse {
   repeated string saved_paths = 2;
 }
 
+/** 导入仅包含图片的 ZIP 到任务目录。 */
+message ImportTaskImageZipRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string subset = 4;
+  string zip_path = 5;
+}
+
+message ImportTaskImageZipResponse {
+  string error_message = 1;
+  repeated string saved_paths = 2;
+  int32 imported_image_count = 3;
+}
+
+/** 导入已标注 ZIP 到任务目录。 */
+message ImportAnnotatedTaskZipRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string subset = 4;
+  string zip_path = 5;
+  /** xanylabeling / yolo-detect / yolo-obb / yolo-segment / yolo-pose */
+  string import_format = 6;
+}
+
+message ImportAnnotatedTaskZipResponse {
+  string error_message = 1;
+  repeated string saved_paths = 2;
+  int32 imported_image_count = 3;
+  int32 imported_annotation_count = 4;
+  string detected_format = 5;
+}
+
 message DefaultDatabaseDirResponse {
   string path = 1;
 }
@@ -491,6 +525,57 @@ message LocalBackendStatusResponse {
   bool reachable = 1;
 }
 
+/** 主进程探测远程 FastAPI /health（用于打包版避免渲染进程网络策略差异） */
+message ProbeRemoteBackendHealthRequest {
+  string protocol = 1;
+  string host = 2;
+  string port = 3;
+  string base_path = 4;
+  int32 timeout_ms = 5;
+}
+
+message ProbeRemoteBackendHealthResponse {
+  bool ok = 1;
+  string health_url = 2;
+  string reason = 3;
+  int32 http_status = 4;
+}
+
+/** 主进程代理 HTTP 请求（用于将后端请求统一转到主进程网络栈） */
+message ProxyBackendHttpRequest {
+  string url = 1;
+  string method = 2;
+  map<string, string> headers = 3;
+  bytes body = 4;
+  int32 timeout_ms = 5;
+}
+
+message ProxyBackendHttpResponse {
+  bool ok = 1;
+  int32 status = 2;
+  string status_text = 3;
+  map<string, string> headers = 4;
+  bytes body = 5;
+  string error_message = 6;
+}
+
+/** 主进程按本地图片路径发起 multipart 上传，避免大体积二进制跨 IPC 复制 */
+message ProxyBackendImageUploadRequest {
+  string url = 1;
+  string image_path = 2;
+  string payload_json = 3;
+  int32 timeout_ms = 4;
+}
+
+message ProxyBackendImageUploadResponse {
+  bool ok = 1;
+  int32 status = 2;
+  string status_text = 3;
+  map<string, string> headers = 4;
+  bytes body = 5;
+  string error_message = 6;
+}
+
 /** 将本地 zip 复制到 backend/external/temp/<训练名>/dataset.zip */
 message CopyYoloTrainingDatasetZipRequest {
   string backend_directory = 1;
@@ -558,6 +643,8 @@ service AppService {
   rpc UpdateProject(UpdateProjectRequest) returns (UpdateProjectResponse);
   rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
   rpc SaveTaskFiles(SaveTaskFilesRequest) returns (SaveTaskFilesResponse);
+  rpc ImportTaskImageZip(ImportTaskImageZipRequest) returns (ImportTaskImageZipResponse);
+  rpc ImportAnnotatedTaskZip(ImportAnnotatedTaskZipRequest) returns (ImportAnnotatedTaskZipResponse);
   rpc ListTaskFiles(ListTaskFilesRequest) returns (ListTaskFilesResponse);
   rpc ListProjectTasks(ListProjectTasksRequest) returns (ListProjectTasksResponse);
   rpc SaveProjectTasks(SaveProjectTasksRequest) returns (SaveProjectTasksResponse);
@@ -588,6 +675,9 @@ service AppService {
   rpc StartLocalBackend(StartLocalBackendRequest) returns (StartLocalBackendResponse);
   rpc StopLocalBackend(google.protobuf.Empty) returns (StopLocalBackendResponse);
   rpc GetLocalBackendStatus(google.protobuf.Empty) returns (LocalBackendStatusResponse);
+  rpc ProbeRemoteBackendHealth(ProbeRemoteBackendHealthRequest) returns (ProbeRemoteBackendHealthResponse);
+  rpc ProxyBackendHttp(ProxyBackendHttpRequest) returns (ProxyBackendHttpResponse);
+  rpc ProxyBackendImageUpload(ProxyBackendImageUploadRequest) returns (ProxyBackendImageUploadResponse);
   rpc CopyYoloTrainingDatasetZip(CopyYoloTrainingDatasetZipRequest) returns (CopyYoloTrainingDatasetZipResponse);
   rpc CopyYoloBatchModelFile(CopyYoloBatchModelFileRequest) returns (CopyYoloBatchModelFileResponse);
   rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);

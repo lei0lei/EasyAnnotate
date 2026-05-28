@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { FolderKanban, Import, Plus } from "lucide-react"
+import { FolderKanban, Plus } from "lucide-react"
 import { Link } from "react-router-dom"
 
 export default function ProjectsHubPage() {
@@ -11,7 +11,7 @@ export default function ProjectsHubPage() {
         <p className="mt-1 text-sm text-muted-foreground">创建新项目或管理已有项目（界面预览）</p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <Card>
           <CardHeader>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -40,19 +40,6 @@ export default function ProjectsHubPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Import className="h-5 w-5" aria-hidden />
-            </div>
-            <CardTitle className="text-lg">导入项目</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Button asChild variant="outline" className="w-full sm:w-auto">
-              <Link to="/projects/import">进入</Link>
-            </Button>
-          </CardContent>
-        </Card>
       </div>
     </div>
   )

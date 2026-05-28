@@ -22,7 +22,7 @@ import type {
   ShapeDragAction,
 } from "@/pages/project-task-detail/types"
 
-export type CanvasShapeType = "rectangle" | "rotation" | "polygon" | "mask" | "cuboid2d" | "point" | "skeleton"
+export type CanvasShapeType = "rectangle" | "rotation" | "polygon" | "cuboid2d" | "point" | "skeleton"
 
 export type CanvasShapeCreatedEvent = {
   shapeId: string
@@ -209,15 +209,6 @@ export function useTaskCanvasEngine(params: UseTaskCanvasEngineParams) {
     [interactionHandlers, resolveShapeIndexById],
   )
 
-  const handleMaskMouseDownById = useCallback(
-    (shapeId: string, event: ReactMouseEvent<HTMLElement>) => {
-      const shapeIndex = resolveShapeIndexById(shapeId)
-      if (shapeIndex === null) return
-      interactionHandlers.handleMaskMouseDown(shapeIndex, event)
-    },
-    [interactionHandlers, resolveShapeIndexById],
-  )
-
   const handlePointMouseDownById = useCallback(
     (shapeId: string, event: ReactMouseEvent<Element>) => {
       const shapeIndex = resolveShapeIndexById(shapeId)
@@ -277,7 +268,6 @@ export function useTaskCanvasEngine(params: UseTaskCanvasEngineParams) {
     ...interactionHandlers,
     ...viewState,
     handleRectangleMouseDown: handleRectangleMouseDownById,
-    handleMaskMouseDown: handleMaskMouseDownById,
     handlePointMouseDown: handlePointMouseDownById,
     handlePolygonMouseDown: handlePolygonMouseDownById,
     handleRotationPolygonMouseDown: handleRotationPolygonMouseDownById,

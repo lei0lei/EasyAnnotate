@@ -3,11 +3,10 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { contourForYoloExport, minimumAreaBoundingBoxCornersFromPoints, obbCornersFromMaskBinary } from "../renderer/lib/mask-contour"
-import { decodeRowMajorRleToBinary, foregroundBBoxInclusive, readMaskRle } from "../renderer/lib/mask-raster-rle"
+import { normalizeXAnyLabelDoc } from "../renderer/lib/xanylabeling-format"
 import type { ProjectRecord } from "./project-storage"
 
-type ExportFormat = "coco" | "voc" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose"
+type ExportFormat = "coco" | "voc" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose" | "xanylabeling"
 type ExportStatus = "queued" | "running" | "success" | "failed"
 
 type ExportJobRecord = {
@@ -21,6 +20,8 @@ type ExportJobRecord = {
   status: ExportStatus
   progress: number
   message: string
+  statusMessage: string
+  logLines: string[]
   createdAt: string
   updatedAt: string
 }
@@ -64,13 +65,65 @@ type ExportImageItem = {
   subsetName: string
 }
 
+type ExportWorkerTraceEvent = {
+  ts: string
+  jobId: string
+  format: ExportFormat
+  stage: string
+  imagePath?: string
+  shapeIndex?: number
+  label?: string
+  classId?: number
+  detail?: string
+}
+
 const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
 const exportJobs = new Map<string, ExportJobRecord>()
+const MAX_IMAGE_DIMENSION = 65535
+const MAX_YOLO_SEGMENT_POINTS = 120
+const EXPORT_LOG_SEPARATOR = "\n---EXPORT_LOG---\n"
+const MAX_EXPORT_LOG_LINES = 600
+
+function appendTraceLine(filePath: string, event: ExportWorkerTraceEvent): void {
+  try {
+    fs.appendFileSync(filePath, `${JSON.stringify(event)}\n`, "utf8")
+  } catch {
+    // never break export for trace logging
+  }
+}
+
+function normalizeImageDimension(value: unknown, fallback: number): number {
+  const n = Math.floor(Number(value))
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return Math.min(MAX_IMAGE_DIMENSION, n)
+}
 
 function sanitizeSegment(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) return "default"
   return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+}
+
+function buildUniqueTaskFolderById(
+  allItems: ExportImageItem[],
+  taskNameById: Record<string, string>,
+): Map<string, string> {
+  const out = new Map<string, string>()
+  const used = new Set<string>()
+  const taskIds = [...new Set(allItems.map((item) => item.taskId))]
+  for (const taskId of taskIds) {
+    const preferred = taskNameById[taskId]?.trim() || taskId
+    const base = sanitizeSegment(preferred)
+    let candidate = base
+    let index = 1
+    while (used.has(candidate)) {
+      index += 1
+      candidate = `${base}_${String(index).padStart(3, "0")}`
+    }
+    used.add(candidate)
+    out.set(taskId, candidate)
+  }
+  return out
 }
 
 function sanitizeExportZipBaseName(versionName: string): string {
@@ -229,12 +282,43 @@ function resolveAnnotationJsonPath(imagePath: string): string {
   return path.join(parsed.dir, `${parsed.name}.json`)
 }
 
+function composeJobMessage(statusMessage: string, logLines: string[]): string {
+  if (logLines.length <= 0) return statusMessage
+  return `${statusMessage}${EXPORT_LOG_SEPARATOR}${logLines.join("\n")}`
+}
+
 function updateJob(jobId: string, patch: Partial<ExportJobRecord>): void {
   const current = exportJobs.get(jobId)
   if (!current) return
+  const nextStatusMessage =
+    typeof patch.statusMessage === "string"
+      ? patch.statusMessage
+      : typeof patch.message === "string"
+        ? patch.message
+        : (current.statusMessage || current.message || "")
+  const nextLogLines = Array.isArray(patch.logLines) ? patch.logLines : Array.isArray(current.logLines) ? current.logLines : []
   exportJobs.set(jobId, {
     ...current,
     ...patch,
+    statusMessage: nextStatusMessage,
+    logLines: nextLogLines,
+    message: composeJobMessage(nextStatusMessage, nextLogLines),
+    updatedAt: nowIso(),
+  })
+}
+
+function appendJobLog(jobId: string, line: string): void {
+  const current = exportJobs.get(jobId)
+  if (!current) return
+  const text = line.trim()
+  if (!text) return
+  const baseLines = Array.isArray(current.logLines) ? current.logLines : []
+  const merged = [...baseLines, text]
+  const logLines = merged.length > MAX_EXPORT_LOG_LINES ? merged.slice(merged.length - MAX_EXPORT_LOG_LINES) : merged
+  exportJobs.set(jobId, {
+    ...current,
+    logLines,
+    message: composeJobMessage(current.statusMessage || current.message || "", logLines),
     updatedAt: nowIso(),
   })
 }
@@ -246,7 +330,15 @@ function safeReadAnnotationDoc(imagePath: string): XAnyDoc {
     const raw = fs.readFileSync(jsonPath, "utf8")
     if (!raw.trim()) return {}
     const parsed = JSON.parse(raw) as XAnyDoc
-    return parsed && typeof parsed === "object" ? parsed : {}
+    if (!parsed || typeof parsed !== "object") return {}
+    const imageWidth = normalizeImageDimension(parsed.imageWidth, 1)
+    const imageHeight = normalizeImageDimension(parsed.imageHeight, 1)
+    return normalizeXAnyLabelDoc({
+      imagePath,
+      imageWidth,
+      imageHeight,
+      rawJsonText: raw,
+    }) as XAnyDoc
   } catch {
     return {}
   }
@@ -331,26 +423,42 @@ function shapePoints(shape: XAnyShape): number[][] {
   return shape.points.filter((pt): pt is number[] => Array.isArray(pt) && pt.length >= 2).map((pt) => [Number(pt[0]), Number(pt[1])])
 }
 
+function bboxFromPoints(points: number[][]): { x: number; y: number; w: number; h: number } | undefined {
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  let hasPoint = false
+  for (const pt of points) {
+    const x = Number(pt[0])
+    const y = Number(pt[1])
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    hasPoint = true
+    if (x < minX) minX = x
+    if (y < minY) minY = y
+    if (x > maxX) maxX = x
+    if (y > maxY) maxY = y
+  }
+  if (!hasPoint) return undefined
+  return { x: minX, y: minY, w: Math.max(0, maxX - minX), h: Math.max(0, maxY - minY) }
+}
+
+function decimatePoints(points: number[][], maxPoints: number): number[][] {
+  if (points.length <= maxPoints) return points
+  const step = Math.ceil(points.length / maxPoints)
+  const out: number[][] = []
+  for (let i = 0; i < points.length; i += step) {
+    const p = points[i]
+    if (p) out.push(p)
+  }
+  return out.length >= 3 ? out : points.slice(0, maxPoints)
+}
+
 function bboxFromShape(
   shape: XAnyShape,
-  imageWidth: number,
-  imageHeight: number,
+  _imageWidth: number,
+  _imageHeight: number,
 ): { x: number; y: number; w: number; h: number } | undefined {
-  if (shape.shape_type === "mask" && shape.attributes) {
-    const rle = readMaskRle(shape.attributes)
-    if (rle && rle.w === imageWidth && rle.h === imageHeight) {
-      const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-      const bb = foregroundBBoxInclusive(bin, rle.w, rle.h)
-      if (bb) {
-        return {
-          x: bb.minX,
-          y: bb.minY,
-          w: Math.max(0, bb.maxX - bb.minX + 1),
-          h: Math.max(0, bb.maxY - bb.minY + 1),
-        }
-      }
-    }
-  }
   const points = shapePoints(shape)
   if (points.length === 0) return undefined
   if (shape.shape_type === "circle" && points.length >= 2) {
@@ -359,13 +467,50 @@ function bboxFromShape(
     const r = Math.sqrt(dx * dx + dy * dy)
     return { x: points[0][0] - r, y: points[0][1] - r, w: r * 2, h: r * 2 }
   }
-  const xs = points.map((pt) => pt[0])
-  const ys = points.map((pt) => pt[1])
-  const minX = Math.min(...xs)
-  const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
-  return { x: minX, y: minY, w: Math.max(0, maxX - minX), h: Math.max(0, maxY - minY) }
+  return bboxFromPoints(points)
+}
+
+function polygonArea(points: number[][]): number {
+  if (points.length < 3) return 0
+  let area2 = 0
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i]!
+    const b = points[(i + 1) % points.length]!
+    area2 += Number(a[0] ?? 0) * Number(b[1] ?? 0) - Number(b[0] ?? 0) * Number(a[1] ?? 0)
+  }
+  return Math.max(0, Math.abs(area2) * 0.5)
+}
+
+function bboxToPolygonPoints(bbox: { x: number; y: number; w: number; h: number }): number[][] {
+  return [
+    [bbox.x, bbox.y],
+    [bbox.x + bbox.w, bbox.y],
+    [bbox.x + bbox.w, bbox.y + bbox.h],
+    [bbox.x, bbox.y + bbox.h],
+  ]
+}
+
+function normalizePolygonForCoco(points: number[][]): number[][] | null {
+  const valid = points
+    .map((pt) => [Number(pt[0]), Number(pt[1])])
+    .filter((pt) => Number.isFinite(pt[0]) && Number.isFinite(pt[1]))
+  if (valid.length < 3) return null
+  return valid
+}
+
+async function cocoSegmentationFromShape(
+  shape: XAnyShape,
+  _imageWidth: number,
+  _imageHeight: number,
+  bbox: { x: number; y: number; w: number; h: number },
+): Promise<{ segmentation: number[][]; area: number }> {
+  let poly: number[][] | null = normalizePolygonForCoco(shapePoints(shape))
+  if (!poly) poly = bboxToPolygonPoints(bbox)
+  const flat = poly.flatMap((pt) => [pt[0], pt[1]])
+  const segmentation = flat.length >= 6 ? [flat] : []
+  const polyArea = polygonArea(poly)
+  const area = polyArea > 0 ? polyArea : Math.max(0, bbox.w * bbox.h)
+  return { segmentation, area }
 }
 
 function clamp01(value: number): number {
@@ -373,25 +518,22 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
 
-function isMaskShape(shape: XAnyShape): boolean {
-  return (shape.shape_type || "").trim() === "mask"
-}
-
 function shouldExportAsYoloDetect(shape: XAnyShape): boolean {
   const type = (shape.shape_type || "").trim()
   return (
     type === "rectangle" ||
     type === "rotation" ||
-    type === "mask" ||
     type === "polygon" ||
     type === "cuboid2d" ||
-    type === "skeleton"
+    // 兼容历史/外部 3D 框命名：统一按点集外接水平框导出为 YOLO Detect。
+    type === "box3d" ||
+    type === "3dbox" ||
+    type === "cuboid"
   )
 }
 
 function toYoloDetectLine(shape: XAnyShape, classId: number, width: number, height: number): string | undefined {
   if (!shouldExportAsYoloDetect(shape)) return undefined
-  /** mask：最小水平外接矩形（轴对齐、紧包前景） */
   const bbox = bboxFromShape(shape, width, height)
   if (!bbox) return undefined
   const x = clamp01((bbox.x + bbox.w / 2) / width)
@@ -401,40 +543,43 @@ function toYoloDetectLine(shape: XAnyShape, classId: number, width: number, heig
   return `${classId} ${x.toFixed(6)} ${y.toFixed(6)} ${w.toFixed(6)} ${h.toFixed(6)}`
 }
 
-/** YOLO OBB：水平框、旋转框、mask（最小面积外接矩形） */
+/** YOLO OBB：水平框与旋转框。 */
 function shouldExportAsYoloObb(shape: XAnyShape): boolean {
   const type = (shape.shape_type || "").trim()
-  return type === "rectangle" || type === "rotation" || type === "mask"
+  return (
+    type === "rectangle" ||
+    type === "rotation" ||
+    type === "polygon" ||
+    type === "cuboid2d" ||
+    type === "box3d" ||
+    type === "3dbox" ||
+    type === "cuboid"
+  )
 }
 
 function toYoloObbLine(shape: XAnyShape, classId: number, width: number, height: number): string | undefined {
   if (!shouldExportAsYoloObb(shape)) return undefined
-  if (isMaskShape(shape) && shape.attributes) {
-    const rle = readMaskRle(shape.attributes)
-    if (rle && rle.w === width && rle.h === height) {
-      const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-      const corners = obbCornersFromMaskBinary(bin, rle.w, rle.h)
-      if (corners && corners.length === 4) {
-        const coords = corners
-          .flatMap((pt) => [clamp01(pt[0]! / width).toFixed(6), clamp01(pt[1]! / height).toFixed(6)])
-          .join(" ")
-        return `${classId} ${coords}`
-      }
-    }
-    const pts = shapePoints(shape).map(([x, y]) => ({ x, y }))
-    const obb = minimumAreaBoundingBoxCornersFromPoints(pts)
-    if (obb && obb.length === 4) {
-      const coords = obb
-        .flatMap((pt) => [clamp01(pt[0]! / width).toFixed(6), clamp01(pt[1]! / height).toFixed(6)])
-        .join(" ")
-      return `${classId} ${coords}`
-    }
+  const type = (shape.shape_type || "").trim()
+  if (type === "rotation") {
+    const points = shapePoints(shape)
+    const used = points.length >= 4 ? points.slice(0, 4) : undefined
+    const bbox = bboxFromShape(shape, width, height)
+    if (!used && !bbox) return undefined
+    const corners = used ?? [
+      [bbox!.x, bbox!.y],
+      [bbox!.x + bbox!.w, bbox!.y],
+      [bbox!.x + bbox!.w, bbox!.y + bbox!.h],
+      [bbox!.x, bbox!.y + bbox!.h],
+    ]
+    const coords = corners
+      .flatMap((pt) => [clamp01(pt[0] / width).toFixed(6), clamp01(pt[1] / height).toFixed(6)])
+      .join(" ")
+    return `${classId} ${coords}`
   }
-  const points = shapePoints(shape)
-  const used = points.length >= 4 ? points.slice(0, 4) : undefined
+  // rectangle / polygon / 3dbox：统一按水平外接框导出 OBB 四点。
   const bbox = bboxFromShape(shape, width, height)
-  if (!used && !bbox) return undefined
-  const corners = used ?? [
+  if (!bbox) return undefined
+  const corners = [
     [bbox!.x, bbox!.y],
     [bbox!.x + bbox!.w, bbox!.y],
     [bbox!.x + bbox!.w, bbox!.y + bbox!.h],
@@ -448,28 +593,23 @@ function toYoloObbLine(shape: XAnyShape, classId: number, width: number, height:
 
 function shouldExportAsYoloSegment(shape: XAnyShape): boolean {
   const type = (shape.shape_type || "").trim()
-  return type === "rectangle" || type === "rotation" || type === "polygon" || type === "mask"
+  return type === "rectangle" || type === "rotation" || type === "polygon"
 }
 
-function toYoloSegmentLine(shape: XAnyShape, classId: number, width: number, height: number): string | undefined {
+async function toYoloSegmentLine(
+  shape: XAnyShape,
+  classId: number,
+  width: number,
+  height: number,
+  trace?: (stage: string, detail?: string) => void,
+): Promise<string | undefined> {
   if (!shouldExportAsYoloSegment(shape)) return undefined
-  if ((shape.shape_type || "").trim() === "mask" && shape.attributes) {
-    const rle = readMaskRle(shape.attributes)
-    if (rle && rle.w === width && rle.h === height) {
-      const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-      const contour = contourForYoloExport(bin, rle.w, rle.h)
-      if (contour.length >= 3) {
-        const coords = contour
-          .flatMap((pt) => [clamp01(pt[0]! / width).toFixed(6), clamp01(pt[1]! / height).toFixed(6)])
-          .join(" ")
-        return `${classId} ${coords}`
-      }
-    }
-  }
   const points = shapePoints(shape)
-  const poly = points.length >= 3 ? points : undefined
+  const safePoints = decimatePoints(points, MAX_YOLO_SEGMENT_POINTS)
+  const poly = safePoints.length >= 3 ? safePoints : undefined
   const bbox = bboxFromShape(shape, width, height)
   if (!poly && !bbox) return undefined
+  trace?.(poly ? "fallback_points_polygon" : "fallback_bbox_polygon")
   const output = poly ?? [
     [bbox!.x, bbox!.y],
     [bbox!.x + bbox!.w, bbox!.y],
@@ -655,6 +795,31 @@ function copyImage(imagePath: string, targetPath: string): string {
   return targetPath
 }
 
+function exportAsXAnyLabeling(
+  images: ExportImageItem[],
+  outputDir: string,
+  updateProgress: (done: number, total: number, message: string) => void,
+  logImageDone?: (item: ExportImageItem, elapsedMs: number) => void,
+): void {
+  const total = images.length
+  for (let i = 0; i < images.length; i += 1) {
+    const item = images[i]
+    const startedAt = Date.now()
+    const relPath = path.join(item.subset, item.relativeWithinSubset)
+    const imageTarget = path.join(outputDir, relPath)
+    copyImage(item.filePath, imageTarget)
+
+    const srcJson = resolveAnnotationJsonPath(item.filePath)
+    const targetJson = resolveAnnotationJsonPath(imageTarget)
+    if (fs.existsSync(srcJson)) {
+      ensureDir(path.dirname(targetJson))
+      fs.copyFileSync(srcJson, targetJson)
+    }
+    updateProgress(i + 1, total, `导出 ${item.fileName}`)
+    logImageDone?.(item, Date.now() - startedAt)
+  }
+}
+
 function createJobRecord(req: ExportRequest): ExportJobRecord {
   const now = nowIso()
   return {
@@ -668,6 +833,8 @@ function createJobRecord(req: ExportRequest): ExportJobRecord {
     status: "queued",
     progress: 0,
     message: "等待开始",
+    statusMessage: "等待开始",
+    logLines: [],
     createdAt: now,
     updatedAt: now,
   }
@@ -730,7 +897,7 @@ function writeYoloDataYamlPose(rootDir: string, classNames: string[], splitNames
   fs.writeFileSync(path.join(rootDir, "data.yaml"), `${lines.join("\n")}\n`, "utf8")
 }
 
-function exportAsYolo(
+async function exportAsYolo(
   format: ExportFormat,
   images: ExportImageItem[],
   classByName: Map<string, number>,
@@ -739,16 +906,20 @@ function exportAsYolo(
   keepProjectStructure: boolean,
   updateProgress: (done: number, total: number, message: string) => void,
   poseLayout: YoloPoseLayout | null,
-): void {
+  traceEvent?: (event: Omit<ExportWorkerTraceEvent, "ts" | "jobId" | "format">) => void,
+  logImageDone?: (item: ExportImageItem, elapsedMs: number) => void,
+): Promise<void> {
   const total = images.length
   const splitSet = new Set<string>()
   for (let i = 0; i < images.length; i += 1) {
     const item = images[i]
+    const startedAt = Date.now()
     const doc = safeReadAnnotationDoc(item.filePath)
-    const width = Math.max(1, Number(doc.imageWidth || 1))
-    const height = Math.max(1, Number(doc.imageHeight || 1))
+    const width = normalizeImageDimension(doc.imageWidth, 1)
+    const height = normalizeImageDimension(doc.imageHeight, 1)
     const labels: string[] = []
-    for (const shape of doc.shapes ?? []) {
+    for (let shapeIndex = 0; shapeIndex < (doc.shapes ?? []).length; shapeIndex += 1) {
+      const shape = (doc.shapes ?? [])[shapeIndex]!
       const label = typeof shape.label === "string" ? shape.label.trim() : ""
       if (!label) continue
       const classId = classByName.get(label)
@@ -759,7 +930,16 @@ function exportAsYolo(
           : format === "yolo-obb"
             ? toYoloObbLine(shape, classId, width, height)
             : format === "yolo-segment"
-              ? toYoloSegmentLine(shape, classId, width, height)
+              ? await toYoloSegmentLine(shape, classId, width, height, (stage, detail) =>
+                  traceEvent?.({
+                    stage,
+                    detail,
+                    imagePath: item.filePath,
+                    shapeIndex,
+                    label,
+                    classId,
+                  }),
+                )
               : format === "yolo-pose" && poseLayout
                 ? toYoloPoseLine(shape, classId, width, height, poseLayout)
                 : undefined
@@ -778,6 +958,7 @@ function exportAsYolo(
     ensureDir(path.dirname(labelTarget))
     fs.writeFileSync(labelTarget, `${labels.join("\n")}${labels.length ? "\n" : ""}`, "utf8")
     updateProgress(i + 1, total, `导出 ${item.fileName}`)
+    logImageDone?.(item, Date.now() - startedAt)
   }
   if (format === "yolo-pose" && poseLayout) {
     if (!keepProjectStructure) {
@@ -796,17 +977,23 @@ function exportAsYolo(
   }
 }
 
-function exportAsVoc(images: ExportImageItem[], outputDir: string, keepProjectStructure: boolean, updateProgress: (done: number, total: number, message: string) => void): void {
+function exportAsVoc(
+  images: ExportImageItem[],
+  outputDir: string,
+  keepProjectStructure: boolean,
+  updateProgress: (done: number, total: number, message: string) => void,
+  logImageDone?: (item: ExportImageItem, elapsedMs: number) => void,
+): void {
   const total = images.length
   const splitNames = new Set<string>()
   for (let i = 0; i < images.length; i += 1) {
     const item = images[i]
+    const startedAt = Date.now()
     const doc = safeReadAnnotationDoc(item.filePath)
-    const width = Math.max(1, Number(doc.imageWidth || 1))
-    const height = Math.max(1, Number(doc.imageHeight || 1))
+    const width = normalizeImageDimension(doc.imageWidth, 1)
+    const height = normalizeImageDimension(doc.imageHeight, 1)
     const objects: Array<{ label: string; bbox: { x: number; y: number; w: number; h: number } }> = []
     for (const shape of doc.shapes ?? []) {
-      if (isMaskShape(shape)) continue
       const label = typeof shape.label === "string" ? shape.label.trim() : ""
       const bbox = bboxFromShape(shape, width, height)
       if (!label || !bbox) continue
@@ -830,11 +1017,19 @@ function exportAsVoc(images: ExportImageItem[], outputDir: string, keepProjectSt
     ensureDir(path.dirname(listFile))
     fs.appendFileSync(listFile, `${keepProjectStructure ? stem : `${item.subset}__${path.parse(path.basename(relPath)).name}`}\n`, "utf8")
     updateProgress(i + 1, total, `导出 ${item.fileName}`)
+    logImageDone?.(item, Date.now() - startedAt)
   }
   void splitNames
 }
 
-function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: string[], keepProjectStructure: boolean, updateProgress: (done: number, total: number, message: string) => void): void {
+async function exportAsCoco(
+  images: ExportImageItem[],
+  outputDir: string,
+  classNames: string[],
+  keepProjectStructure: boolean,
+  updateProgress: (done: number, total: number, message: string) => void,
+  logImageDone?: (item: ExportImageItem, elapsedMs: number) => void,
+): Promise<void> {
   const grouped = new Map<string, ExportImageItem[]>()
   for (const item of images) {
     const list = grouped.get(item.subset) ?? []
@@ -853,11 +1048,12 @@ function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: 
     const imageRows: Array<{ id: number; file_name: string; width: number; height: number }> = []
     const annotationRows: Array<{ id: number; image_id: number; category_id: number; bbox: number[]; area: number; iscrowd: number; segmentation: number[][] }> = []
     for (const item of list) {
+      const startedAt = Date.now()
       const relPath = keepProjectStructure ? item.relativeWithinSubset : item.fileName
       copyImage(item.filePath, path.join(imageTarget, relPath))
       const doc = safeReadAnnotationDoc(item.filePath)
-      const width = Math.max(1, Number(doc.imageWidth || 1))
-      const height = Math.max(1, Number(doc.imageHeight || 1))
+      const width = normalizeImageDimension(doc.imageWidth, 1)
+      const height = normalizeImageDimension(doc.imageHeight, 1)
       const currentImageId = imageId
       imageRows.push({
         id: currentImageId,
@@ -866,14 +1062,11 @@ function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: 
         height,
       })
       for (const shape of doc.shapes ?? []) {
-        if (isMaskShape(shape)) continue
         const label = typeof shape.label === "string" ? shape.label.trim() : ""
         const categoryId = classNames.indexOf(label) + 1
         const bbox = bboxFromShape(shape, width, height)
         if (!label || categoryId <= 0 || !bbox) continue
-        const points = shapePoints(shape)
-        const seg: number[][] = points.length >= 3 ? [points.flatMap((pt) => [pt[0], pt[1]])] : []
-        const area = Math.max(0, bbox.w * bbox.h)
+        const { segmentation, area } = await cocoSegmentationFromShape(shape, width, height, bbox)
         annotationRows.push({
           id: annotationId,
           image_id: currentImageId,
@@ -881,13 +1074,14 @@ function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: 
           bbox: [bbox.x, bbox.y, bbox.w, bbox.h],
           area,
           iscrowd: 0,
-          segmentation: seg,
+          segmentation,
         })
         annotationId += 1
       }
       imageId += 1
       done += 1
       updateProgress(done, total, `导出 ${item.fileName}`)
+      logImageDone?.(item, Date.now() - startedAt)
     }
     const categories = classNames.map((name, index) => ({
       id: index + 1,
@@ -902,6 +1096,27 @@ function exportAsCoco(images: ExportImageItem[], outputDir: string, classNames: 
   }
 }
 
+function collectClassNamesForExport(project: ProjectRecord, images: ExportImageItem[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const tag of project.tags) {
+    const name = (tag.name || "").trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    out.push(name)
+  }
+  for (const item of images) {
+    const doc = safeReadAnnotationDoc(item.filePath)
+    for (const shape of doc.shapes ?? []) {
+      const label = typeof shape.label === "string" ? shape.label.trim() : ""
+      if (!label || seen.has(label)) continue
+      seen.add(label)
+      out.push(label)
+    }
+  }
+  return out
+}
+
 async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void> {
   updateJob(job.id, { status: "running", progress: 1, message: "开始导出" })
   const knownTaskIds = req.taskId ? undefined : new Set(Object.keys(req.taskNameById))
@@ -910,15 +1125,14 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
     updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的图片" })
     return
   }
-  const classNames = req.project.tags.map((tag) => tag.name.trim()).filter(Boolean)
-  const classByName = new Map<string, number>(classNames.map((name, index) => [name, index]))
   const groupedItems: ExportImageItem[] = []
   if (!req.taskId && req.keepProjectStructure) {
+    const taskFolderById = buildUniqueTaskFolderById(allItems, req.taskNameById)
     for (const item of allItems) {
-      const taskName = req.taskNameById[item.taskId]?.trim() || item.taskId
       groupedItems.push({
         ...item,
-        subset: sanitizeSegment(taskName),
+        // 保持项目结构：按任务名导出；重名任务自动追加后缀避免目录冲突。
+        subset: taskFolderById.get(item.taskId) ?? sanitizeSegment(item.taskId),
         relativeWithinSubset: item.relativeWithinTask,
       })
     }
@@ -945,7 +1159,29 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
       }
     }
   }
+  const classNames = req.exportFormat === "xanylabeling" ? [] : collectClassNamesForExport(req.project, groupedItems)
+  const classByName = new Map<string, number>(classNames.map((name, index) => [name, index]))
+  if (req.exportFormat !== "xanylabeling" && classNames.length === 0) {
+    updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的类别标签（标注 label 为空）" })
+    return
+  }
   const compressToZip = req.compressToZip === true
+  const traceFilePath = compressToZip
+    ? path.join(path.dirname(req.outputPath), `${sanitizeExportZipBaseName(req.versionName)}_${job.id}_export_worker_trace.jsonl`)
+    : path.join(req.outputPath, "export_worker_trace.jsonl")
+  const trace = (event: Omit<ExportWorkerTraceEvent, "ts" | "jobId" | "format">) => {
+    appendTraceLine(traceFilePath, {
+      ts: nowIso(),
+      jobId: job.id,
+      format: req.exportFormat,
+      ...event,
+    })
+  }
+  fs.mkdirSync(path.dirname(traceFilePath), { recursive: true })
+  trace({ stage: "export_start", detail: `images=${groupedItems.length}` })
+  const logImageTiming = (item: ExportImageItem, elapsedMs: number) => {
+    appendJobLog(job.id, `${nowIso()} | ${item.fileName} | ${Math.max(0, elapsedMs)}ms`)
+  }
   const exportProgressCap = compressToZip ? 82 : 99
   const updateProgress = (done: number, total: number, message: string) => {
     const progress = Math.max(1, Math.min(exportProgressCap, Math.floor((done / Math.max(1, total)) * exportProgressCap)))
@@ -956,11 +1192,13 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
   fs.mkdirSync(stagingDir, { recursive: true })
   try {
     if (req.exportFormat === "coco") {
-      exportAsCoco(groupedItems, stagingDir, classNames, !req.taskId && req.keepProjectStructure, updateProgress)
+      await exportAsCoco(groupedItems, stagingDir, classNames, !req.taskId && req.keepProjectStructure, updateProgress, logImageTiming)
     } else if (req.exportFormat === "voc") {
-      exportAsVoc(groupedItems, stagingDir, !req.taskId && req.keepProjectStructure, updateProgress)
+      exportAsVoc(groupedItems, stagingDir, !req.taskId && req.keepProjectStructure, updateProgress, logImageTiming)
+    } else if (req.exportFormat === "xanylabeling") {
+      exportAsXAnyLabeling(groupedItems, stagingDir, updateProgress, logImageTiming)
     } else {
-      exportAsYolo(
+      await exportAsYolo(
         req.exportFormat,
         groupedItems,
         classByName,
@@ -969,6 +1207,8 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
         !req.taskId && req.keepProjectStructure,
         updateProgress,
         poseLayout,
+        trace,
+        logImageTiming,
       )
     }
     if (compressToZip) {
@@ -982,12 +1222,14 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
       progress: 100,
       message: `导出完成：${req.outputPath}`,
     })
+    trace({ stage: "export_success", detail: req.outputPath })
   } catch (error) {
     updateJob(job.id, {
       status: "failed",
       progress: 100,
       message: error instanceof Error ? error.message : String(error),
     })
+    trace({ stage: "export_failed", detail: error instanceof Error ? error.message : String(error) })
   } finally {
     if (compressToZip) {
       try {

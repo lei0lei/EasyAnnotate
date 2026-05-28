@@ -308,7 +308,7 @@ export function Sam2SegmentAnchorPanel({
 
       <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
         <div className="text-[11px] text-muted-foreground">输出类型</div>
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-2 gap-1">
           <button
             type="button"
             className={cn(
@@ -320,18 +320,6 @@ export function Sam2SegmentAnchorPanel({
             onClick={() => onOutputFormatChange("polygon")}
           >
             <span>多边形</span>
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "inline-flex min-h-7 items-center justify-center rounded border px-0.5 py-1 text-[11px] leading-tight",
-              outputFormat === "mask"
-                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
-                : "border-border text-muted-foreground hover:bg-accent",
-            )}
-            onClick={() => onOutputFormatChange("mask")}
-          >
-            <span>掩码</span>
           </button>
           <button
             type="button"

@@ -25,8 +25,6 @@ export function useToolWorkflowBindings({
 }: UseToolWorkflowBindingsParams) {
   const [toolState, dispatchTool] = useReducer(toolReducer, initialToolState)
   const [rectPendingLabel, setRectPendingLabel] = useState("")
-  /** 本次 Mask 流程在点 OK 进入绘制时锁定的标签；到离开「mask + drawing」或取消/选工具前不变。 */
-  const [maskDrawingSessionLabel, setMaskDrawingSessionLabel] = useState<string | null>(null)
 
   const rightToolMode = getActiveTool(toolState)
   const drawShapeType = getDrawShapeType(toolState)
@@ -42,7 +40,6 @@ export function useToolWorkflowBindings({
   const rectDrawShapeType: "rectangle" | "rotation" = drawShapeType === "rotation" ? "rotation" : "rectangle"
 
   const handleSelectToolClick = useCallback(() => {
-    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "exitToEditing" })
     clearToolTransientInteractions()
   }, [clearToolTransientInteractions])
@@ -50,16 +47,10 @@ export function useToolWorkflowBindings({
   const handleRectPickerConfirm = useCallback(() => {
     const label = rectPendingLabel.trim()
     if (!label) return
-    if (drawShapeType === "mask") {
-      setMaskDrawingSessionLabel(label)
-    } else {
-      setMaskDrawingSessionLabel(null)
-    }
     dispatchTool({ type: "enterDrawing" })
-  }, [rectPendingLabel, drawShapeType])
+  }, [rectPendingLabel])
 
   const handleRectPickerCancel = useCallback(() => {
-    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "cancelPicking" })
   }, [])
 
@@ -74,34 +65,21 @@ export function useToolWorkflowBindings({
       const allowed = params.mode === "skeleton" ? annotationLabelOptionsSkeleton : annotationLabelOptionsPlain
       if (!t || !allowed.includes(t)) return
       setRectPendingLabel(t)
-      if (params.drawShapeType === "mask") {
-        setMaskDrawingSessionLabel(t)
-      } else {
-        setMaskDrawingSessionLabel(null)
-      }
       dispatchTool({ type: "enterPickingLabel", mode: params.mode, drawShapeType: params.drawShapeType })
       dispatchTool({ type: "enterDrawing" })
     },
     [annotationLabelOptionsPlain, annotationLabelOptionsSkeleton, dispatchTool],
   )
 
-  const handleStartMaskTool = useCallback(() => {
-    setMaskDrawingSessionLabel(null)
-    dispatchTool({ type: "enterPickingLabel", mode: "mask", drawShapeType: "mask" })
-  }, [])
-
   const handleStartKeypointTool = useCallback(() => {
-    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "enterPickingLabel", mode: "keypoint", drawShapeType: "keypoint" })
   }, [])
 
   const handleStartBox3dTool = useCallback(() => {
-    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "enterPickingLabel", mode: "box3d", drawShapeType: "box3d" })
   }, [])
 
   const handleStartSkeletonTool = useCallback(() => {
-    setMaskDrawingSessionLabel(null)
     dispatchTool({ type: "enterPickingLabel", mode: "skeleton", drawShapeType: "skeleton" })
   }, [])
 
@@ -110,12 +88,6 @@ export function useToolWorkflowBindings({
       setRectPendingLabel(annotationLabelsAllowedForDrawShape[0] ?? "")
     }
   }, [annotationLabelsAllowedForDrawShape, rectPendingLabel])
-
-  useEffect(() => {
-    if (!(toolWorkflowPhase === "drawing" && drawShapeType === "mask")) {
-      setMaskDrawingSessionLabel(null)
-    }
-  }, [toolWorkflowPhase, drawShapeType])
 
   return useMemo(
     () => ({
@@ -136,10 +108,8 @@ export function useToolWorkflowBindings({
       handleStartKeypointTool,
       handleStartBox3dTool,
       handleStartSkeletonTool,
-      handleStartMaskTool,
       rectPendingLabel,
       setRectPendingLabel,
-      maskDrawingSessionLabel,
       startDrawingWithPreset,
     }),
     [
@@ -150,8 +120,6 @@ export function useToolWorkflowBindings({
       handleStartBox3dTool,
       handleStartKeypointTool,
       handleStartSkeletonTool,
-      handleStartMaskTool,
-      maskDrawingSessionLabel,
       rectPendingLabel,
       startDrawingWithPreset,
       polygonDraftPoints,

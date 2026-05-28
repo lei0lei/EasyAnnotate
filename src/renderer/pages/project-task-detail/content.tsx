@@ -10,7 +10,7 @@ import {
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import { getPrimaryShortcutLabel } from "@/lib/app-shortcut-registry"
 import { fetchModelRuntimeCatalog } from "@/lib/model-runtime-api"
-import { writeMaskRleAttributes, decodeRowMajorRleToBinary, encodeBinaryToRowMajorRle, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
+import { decodeRowMajorRleToBinary, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
 import { contourForYoloExport } from "@/lib/mask-contour"
 import {
   formatOrtWebInferError,
@@ -50,6 +50,7 @@ import {
   type DiffusionProcessOverlay,
 } from "@/lib/diffusion-process-visual"
 import { diffusionPipelinePrefs } from "@/lib/diffusion-pipeline-prefs"
+import { annotationAppearancePrefs } from "@/lib/annotation-appearance-prefs"
 import {
   getSam2AiToolbarEnabledSnapshot,
   subscribeSam2AiToolbarEnabled,
@@ -61,7 +62,6 @@ import { useDragSessions } from "@/pages/project-task-detail/use-drag-sessions"
 import { useTaskCanvasEngine } from "@/pages/project-task-detail/use-task-canvas-engine"
 import type { DragStageNudge } from "@/pages/project-task-detail/page-sections"
 import type {
-  DragLiveMaskRleOverride,
   DragLivePointsOverride,
   DragVertexLiveOverride,
   DiffusionPreviewMaskRle,
@@ -70,7 +70,6 @@ import type {
   Sam2DraftMaskRle,
 } from "@/pages/project-task-detail/rendered-shapes"
 import { useTaskRenderModel } from "@/pages/project-task-detail/use-task-render-model"
-import { useMaskTool } from "@/pages/project-task-detail/annotateTools/use-mask-tool"
 import { useBox3dTool } from "@/pages/project-task-detail/annotateTools/use-box3d-tool"
 import { useKeypointTool } from "@/pages/project-task-detail/annotateTools/use-keypoint-tool"
 import { useSkeletonTool } from "@/pages/project-task-detail/annotateTools/use-skeleton-tool"
@@ -122,27 +121,6 @@ function sam2PolygonContourOptions(vertexBias0to100: number): { rdpEpsilon: numb
   }
 }
 
-function rectMaskRleFromBbox(
-  bbox: { x1: number; y1: number; x2: number; y2: number },
-  iw: number,
-  ih: number,
-): { counts: number[]; w: number; h: number } | null {
-  if (iw <= 0 || ih <= 0) return null
-  const x1 = Math.max(0, Math.min(iw - 1, Math.floor(Math.min(bbox.x1, bbox.x2))))
-  const y1 = Math.max(0, Math.min(ih - 1, Math.floor(Math.min(bbox.y1, bbox.y2))))
-  const x2Inc = Math.max(0, Math.min(iw - 1, Math.ceil(Math.max(bbox.x1, bbox.x2)) - 1))
-  const y2Inc = Math.max(0, Math.min(ih - 1, Math.ceil(Math.max(bbox.y1, bbox.y2)) - 1))
-  if (x2Inc < x1 || y2Inc < y1) return null
-  const bin = new Uint8Array(iw * ih)
-  const rowFillFrom = x1
-  const rowFillTo = x2Inc + 1
-  for (let y = y1; y <= y2Inc; y += 1) {
-    const row = y * iw
-    bin.fill(1, row + rowFillFrom, row + rowFillTo)
-  }
-  return { counts: encodeBinaryToRowMajorRle(bin), w: iw, h: ih }
-}
-
 export type ProjectTaskDetailContentProps = {
   projectId: string | undefined
   taskId: string | undefined
@@ -170,7 +148,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const [labelsTab, setLabelsTab] = useState<LabelsTab>("layers")
   const [sam2DialogOpen, setSam2DialogOpen] = useState(false)
   const [sam2SelectedLabel, setSam2SelectedLabel] = useState("")
-  const [sam2OutputFormat, setSam2OutputFormat] = useState<Sam2AutoAnnotationFormat>("mask")
+  const [sam2OutputFormat, setSam2OutputFormat] = useState<Sam2AutoAnnotationFormat>("polygon")
   /** 多边形输出：0=左少顶点，100=右多顶点 */
   const [sam2PolygonVertexBias, setSam2PolygonVertexBias] = useState(50)
   const [sam2PromptMode, setSam2PromptMode] = useState<Sam2PromptMode>("point")
@@ -349,7 +327,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const [dragLivePoints, setDragLivePoints] = useState<DragLivePointsOverride | null>(null)
   const [dragCuboidLivePoints, setDragCuboidLivePoints] = useState<DragLivePointsOverride | null>(null)
   const [dragVertexLive, setDragVertexLive] = useState<DragVertexLiveOverride | null>(null)
-  const [dragLiveMaskRle, setDragLiveMaskRle] = useState<DragLiveMaskRleOverride | null>(null)
   const [dragStageNudge, setDragStageNudge] = useState<DragStageNudge | null>(null)
   const dragSession = useMemo(
     () => ({
@@ -424,13 +401,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     handleSelectToolClick,
     handleRectPickerConfirm: handleRectPickerConfirmFromBindings,
     handleRectPickerCancel,
-    handleStartMaskTool,
     handleStartKeypointTool,
     handleStartBox3dTool,
     handleStartSkeletonTool,
     rectPendingLabel,
     setRectPendingLabel,
-    maskDrawingSessionLabel,
     startDrawingWithPreset,
   } = useToolWorkflowBindings({
     annotationLabelOptionsPlain,
@@ -507,7 +482,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     toggleClassVisibility,
     reorderShapeLayer,
     applyShapePatch,
-    applyMaskRlePatch,
     createShape,
     replaceDoc,
     resetDoc,
@@ -653,42 +627,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   })
 
   const {
-    maskDrawMode,
-    setMaskDrawMode,
-    maskBrushSize,
-    setMaskBrushSize,
-    canDrawMask,
-    maskDraftStagePoints,
-    maskCursorStagePoint,
-    hasMaskDraft,
-    createMaskDraft,
-    appendMaskDraftPoint,
-    commitMaskStroke,
-    clearMaskTransientState,
-  } = useMaskTool({
-    rightToolMode,
-    rectDrawingEnabled,
-    imageGeometry,
-    activeImagePath,
-    isImageLoading,
-    imageLoadError,
-    stageRef,
-    getCurrentImageGeometry,
-    stageToImageStrictWithGeometry,
-    imageToStage: imageToStageBase,
-    annotationDoc,
-    applyMaskRlePatch,
-    createShape,
-    deleteShape,
-    selectedShapeIndex,
-    setSelectedShapeIndex,
-    imageNaturalSize,
-    rectPendingLabel,
-    maskSessionLabel: (maskDrawingSessionLabel ?? "").trim() || rectPendingLabel.trim(),
-    onShapeCreated: handleEngineShapeCreated,
-  })
-
-  const {
     canDrawBox3d,
     box3dAwaitingSecondClick,
     handleBox3dDrawMove,
@@ -765,11 +703,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     handleStartPolygonTool()
   }, [handleStartPolygonTool])
 
-  const handleStartMaskToolFromToolbar = useCallback(() => {
-    toolbarAnnotationPrimingPendingRef.current = true
-    handleStartMaskTool()
-  }, [handleStartMaskTool])
-
   const handleStartKeypointToolFromToolbar = useCallback(() => {
     toolbarAnnotationPrimingPendingRef.current = true
     handleStartKeypointTool()
@@ -796,7 +729,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       label = allowed[0] ?? ""
     }
     if (!label.trim()) return
-    clearMaskTransientState()
     clearBox3dDraft()
     clearPolygonDraft()
     clearSelectedShape()
@@ -807,7 +739,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     annotationLabelOptionsPlain,
     annotationLabelOptionsSkeleton,
     clearBox3dDraft,
-    clearMaskTransientState,
     clearPolygonDraft,
     clearSelectedShape,
     handleSelectToolClick,
@@ -815,8 +746,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   ])
 
   const drawingLayerActive =
-    toolWorkflowPhase ===
-      "drawing" && (canDrawRectangle || canDrawPolygon || canDrawMask || canDrawKeypoint || canDrawBox3d || canDrawSkeleton)
+    toolWorkflowPhase === "drawing" && (canDrawRectangle || canDrawPolygon || canDrawKeypoint || canDrawBox3d || canDrawSkeleton)
   /** 标签弹窗与当前 drawShapeType 一致：骨架仅骨架类，其余工具仅普通类 */
   const taskRectPickerLabelOptions = useMemo(
     () => (drawShapeType === "skeleton" ? annotationLabelOptionsSkeleton : annotationLabelOptionsPlain),
@@ -1084,7 +1014,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     const contourOpts = sam2PolygonContourOptions(diffusionPolygonVertexBias)
     let created = 0
     for (const c of diffusionCandidates) {
-      if (diffusionOutputFormat !== "mask" && !isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts)) continue
+      if (!isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts)) continue
 
       if (diffusionOutputFormat === "box") {
         const { x1, y1, x2, y2 } = c.bbox
@@ -1105,34 +1035,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
             shape_type: "rectangle",
             flags: null,
             attributes: {},
-            kie_linking: [],
-          },
-        })
-        handleEngineShapeCreated({ shapeId: shape.shapeId })
-        created += 1
-        continue
-      }
-
-      const d = c.rle!
-
-      if (diffusionOutputFormat === "mask") {
-        const maskRle =
-          d && d.w === iw && d.h === ih ? d : rectMaskRleFromBbox(c.bbox, iw, ih)
-        if (!maskRle) continue
-        const shape = createShape({
-          imagePath: activeImagePath,
-          imageWidth: iw,
-          imageHeight: ih,
-          shape: {
-            label,
-            score: c.score,
-            points: [],
-            group_id: null,
-            description: null,
-            difficult: false,
-            shape_type: "mask",
-            flags: null,
-            attributes: writeMaskRleAttributes({}, { ...maskRle, brushSize: 1 }),
             kie_linking: [],
           },
         })
@@ -1207,6 +1109,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     () => diffusionAiToolbarPrefs.getEnabled(),
     () => false,
   )
+  const annotationAppearance = useSyncExternalStore(
+    annotationAppearancePrefs.subscribe,
+    () => annotationAppearancePrefs.get(),
+    () => annotationAppearancePrefs.defaults(),
+  )
 
   const tryResumeDiffusionAfterCommit = useCallback((): boolean => {
     if (!diffusionAiToolbarEnabled) return false
@@ -1271,7 +1178,16 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
         return
       }
 
-      const prompt = mapFullImageSam2PromptToEncode(enc, {
+      const encForPrompt =
+        !enc.full_image_width && !enc.full_image_height && imageNaturalSize.width > 0 && imageNaturalSize.height > 0
+          ? {
+              ...enc,
+              full_image_width: imageNaturalSize.width,
+              full_image_height: imageNaturalSize.height,
+            }
+          : enc
+
+      const prompt = mapFullImageSam2PromptToEncode(encForPrompt, {
         promptMode: ctx.promptMode,
         points: ctx.points.map((p) => ({ x: p.x, y: p.y, label: p.label })),
         bbox: ctx.bbox,
@@ -1328,31 +1244,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
 
     const bin = decodeRowMajorRleToBinary(d.counts, total)
 
-    if (sam2OutputFormat === "mask") {
-      const created = createShape({
-        imagePath: activeImagePath,
-        imageWidth: iw,
-        imageHeight: ih,
-        shape: {
-          label,
-          score: null,
-          points: [],
-          group_id: null,
-          description: null,
-          difficult: false,
-          shape_type: "mask",
-          flags: null,
-          attributes: writeMaskRleAttributes({}, { ...d, brushSize: 1 }),
-          kie_linking: [],
-        },
-      })
-      handleEngineShapeCreated({ shapeId: created.shapeId })
-      setSam2DraftRle(null)
-      setSam2SessionNonce((n) => n + 1)
-      finishSam2CommitAndSwitchToSelect()
-      return
-    }
-
     if (sam2OutputFormat === "polygon") {
       let ring = contourForYoloExport(bin, d.w, d.h, sam2PolygonContourOptions(sam2PolygonVertexBias)).map(
         ([x, y]) => [Math.round(x), Math.round(y)] as number[],
@@ -1363,7 +1254,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
         if (a && b && a[0] === b[0] && a[1] === b[1]) ring = ring.slice(0, -1)
       }
       if (ring.length < 3) {
-        setSam2Toast({ kind: "err", text: "无法从分割结果生成多边形（轮廓点过少），可改用掩码或 Bbox" })
+        setSam2Toast({ kind: "err", text: "无法从分割结果生成多边形（轮廓点过少），可改用 Bbox" })
         return
       }
       const created = createShape({
@@ -1477,7 +1368,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     return true
   }, [sam2AiToolbarEnabled, sam2AnnotatingActive])
 
-  const pendingRectColor = labelColorMap.get((maskDrawingSessionLabel ?? "").trim() || rectPendingLabel) ?? "#f59e0b"
+  const pendingRectColor = labelColorMap.get(rectPendingLabel) ?? "#f59e0b"
   const diffusionLabelColor = labelColorMap.get(diffusionSelectedLabel.trim()) ?? "#f59e0b"
 
   const shouldSkipSam2Encode = useCallback(
@@ -1570,18 +1461,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
         continue
       }
 
-      if (diffusionOutputFormat === "mask") {
-        masks.push({
-          id: c.id,
-          counts: c.rle!.counts,
-          w: iw,
-          h: ih,
-          label,
-          color,
-        })
-        continue
-      }
-
       const ring = extractDiffusionPolygonRing(c, iw, ih, contourOpts)
       if (!ring) continue
       polygons.push({ id: c.id, label, color, imageRing: ring })
@@ -1622,7 +1501,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     renderedRectangles,
     renderedRotationRects,
     renderedPolygons,
-    renderedMasks,
+    renderedRasterPreviews,
     renderedCuboids2d,
     renderedPoints,
     renderedSkeletons,
@@ -1643,7 +1522,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       dragLivePoints,
       dragCuboidLivePoints,
       dragVertexLive,
-      dragLiveMaskRle,
       sam2DraftMaskRle: sam2DraftMaskForRender,
       diffusionPreviewMasks: diffusionPreviewShapes.masks,
       diffusionPreviewPolygons: diffusionPreviewShapes.polygons,
@@ -1670,7 +1548,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     endImagePan,
     handleStageClick,
     handleRectangleMouseDown,
-    handleMaskMouseDown,
     handlePointMouseDown,
     handlePolygonMouseDown,
     handleCuboidFaceMouseDown,
@@ -1747,12 +1624,10 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   useTaskShortcuts({
     rightToolMode,
     polygonDraftPointCount,
-    hasMaskDraft,
     selectedShapeId,
     hoveredShapeId,
     resolveShapeIndexById,
     clearPolygonDraft,
-    clearMaskTransientState,
     handleSelectToolClick,
     popPolygonPoint,
     deleteShape,
@@ -1782,14 +1657,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     (shapeIndex: number, points: number[][], shouldPersist: boolean) => applyShapePatch(shapeIndex, points, { persist: shouldPersist }),
     [applyShapePatch],
   )
-  const dragSessionUpdateMaskRle = useCallback(
-    (
-      shapeIndex: number,
-      payload: { counts: number[]; w: number; h: number; brushSize: number },
-      shouldPersist: boolean,
-    ) => applyMaskRlePatch(shapeIndex, payload, { persist: shouldPersist }),
-    [applyMaskRlePatch],
-  )
 
   useDragSessions({
     dragSession,
@@ -1799,15 +1666,23 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     getCurrentImageGeometry,
     stageToImageWithGeometry,
     updateShapePoints: dragSessionUpdateShapePoints,
-    updateMaskRle: dragSessionUpdateMaskRle,
     setRawHighlightCorner,
     setDragLivePoints,
     setDragCuboidLivePoints,
     setDragVertexLive,
-    setDragLiveMaskRle,
     setDragStageNudge,
     projectImageDeltaToStage,
   })
+
+  const persistIfDirtyRef = useRef(persistIfDirty)
+  useEffect(() => {
+    persistIfDirtyRef.current = persistIfDirty
+  }, [persistIfDirty])
+  useEffect(() => {
+    return () => {
+      persistIfDirtyRef.current()
+    }
+  }, [])
 
   usePersistAfterDrag({ dragSession, persistIfDirty })
 
@@ -1851,7 +1726,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     handleRectangleMouseLeave,
     handleRectangleMouseDown,
     handleRectangleClick,
-    handleMaskMouseDown,
     handlePointMouseDown,
     handlePolygonMouseDown,
     handleCuboidFaceMouseDown,
@@ -1863,14 +1737,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     previewRect,
     polygonDraftStagePoints,
     hoveredDraftVertexIndex,
-    maskDraftStagePoints,
-    maskCursorStagePoint,
-    maskBrushSize,
-    maskDrawMode,
-    createMaskDraft,
-    appendMaskDraftPoint,
-    commitMaskStroke,
-    clearMaskTransientState,
     handlePolygonDrawMove,
     handlePolygonDrawClick,
     handlePolygonDrawDoubleClick,
@@ -1890,7 +1756,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     currentFileName,
     canPanAndZoom,
     isPanning,
-    canDrawMask,
     canDrawRectangle,
     canDrawPolygon,
     canDrawBox3d,
@@ -1898,9 +1763,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     canDrawSkeleton,
     imageOffset,
     imageScale,
+    annotationLineWidthScale: annotationAppearance.lineWidthScale,
+    annotationPointSizeScale: annotationAppearance.pointSizeScale,
     imageFitScale: imageGeometry?.fitScale ?? 1,
     drawingLayerActive,
-    renderedMasks,
+    renderedRasterPreviews,
     renderedPolygons,
     renderedRotationRects,
     renderedRectangles,
@@ -1942,10 +1809,9 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   })
 
   const handleSelectToolFromPalette = useCallback(() => {
-    clearMaskTransientState()
     clearBox3dDraft()
     handleSelectToolClick()
-  }, [clearBox3dDraft, clearMaskTransientState, handleSelectToolClick])
+  }, [clearBox3dDraft, handleSelectToolClick])
 
   const canvasContainerProps = useTaskCanvasContainerProps({
     sectionProps: canvasSectionProps,
@@ -1957,20 +1823,15 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     rectPickerOpen,
     rectPendingLabel,
     annotationLabelOptions: taskRectPickerLabelOptions,
-    maskDrawMode,
-    maskBrushSize,
     onSelectTool: handleSelectToolFromPalette,
     onStartRectTool: handleStartRectToolFromToolbar,
     onStartRotRectTool: handleStartRotRectToolFromToolbar,
     onStartPolygonTool: handleStartPolygonToolFromToolbar,
-    onStartMaskTool: handleStartMaskToolFromToolbar,
     onStartKeypointTool: handleStartKeypointToolFromToolbar,
     onStartBox3dTool: handleStartBox3dToolFromToolbar,
     onStartSkeletonTool: handleStartSkeletonToolFromToolbar,
     onClearSelection: clearSelectedShape,
     onRectPendingLabelChange: setRectPendingLabel,
-    onMaskDrawModeChange: setMaskDrawMode,
-    onMaskBrushSizeChange: setMaskBrushSize,
     onRectPickerCancel: handleRectPickerCancelWrapped,
     onRectPickerConfirm: handleRectPickerConfirmWrapped,
     box3dAwaitingSecondClick,

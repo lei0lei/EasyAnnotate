@@ -14,7 +14,6 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
   ArrowLeft,
   Box,
-  Brush,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -79,19 +78,13 @@ export const RectangleOverlayItem = memo(
       <div
         className={cn(
           drawingLayerActive ? "pointer-events-none" : "pointer-events-auto",
-          "absolute border-2",
+          "absolute",
         )}
         style={{
           left: item.left,
           top: item.top,
           width: item.width,
           height: item.height,
-          borderColor: item.color,
-          borderLeftWidth: item.clippedLeft ? 0 : 2,
-          borderTopWidth: item.clippedTop ? 0 : 2,
-          borderRightWidth: item.clippedRight ? 0 : 2,
-          borderBottomWidth: item.clippedBottom ? 0 : 2,
-          backgroundColor: isSelected || isHovered ? `${item.color}33` : "transparent",
           transform: nudge,
         }}
         onMouseEnter={() => onMouseEnter(item.shapeId)}
@@ -331,8 +324,6 @@ export function TaskLeftPanelContent({
                     <RectangleHorizontal className="h-3.5 w-3.5 rotate-[20deg]" />
                   ) : shape.shape_type === "polygon" ? (
                     <Pentagon className="h-3.5 w-3.5" />
-                  ) : shape.shape_type === "mask" ? (
-                    <Brush className="h-3.5 w-3.5" />
                   ) : shape.shape_type === "point" ? (
                     <Dot className="h-3.5 w-3.5" />
                   ) : shape.shape_type === "cuboid2d" ? (
@@ -660,14 +651,10 @@ function computeLabelPickerPosFromAnchorEl(el: HTMLElement): { top: number; left
 
 export type TaskRectLabelPickerProps = {
   rectPickerOpen: boolean
-  drawShapeType: "rectangle" | "rotation" | "polygon" | "mask" | "keypoint" | "box3d" | "skeleton"
+  drawShapeType: "rectangle" | "rotation" | "polygon" | "keypoint" | "box3d" | "skeleton"
   rectPendingLabel: string
   annotationLabelOptions: string[]
-  maskDrawMode: "brush" | "eraser"
-  maskBrushSize: number
   onRectPendingLabelChange: (nextLabel: string) => void
-  onMaskDrawModeChange: (nextMode: "brush" | "eraser") => void
-  onMaskBrushSizeChange: (nextSize: number) => void
   onCancel: () => void
   onConfirm: () => void
   /** 提供当前工具按钮 DOM，用于在按钮旁定位弹出框；不传则回退为右侧栏固定位置 */
@@ -679,11 +666,7 @@ export function TaskRectLabelPicker({
   drawShapeType,
   rectPendingLabel,
   annotationLabelOptions,
-  maskDrawMode,
-  maskBrushSize,
   onRectPendingLabelChange,
-  onMaskDrawModeChange,
-  onMaskBrushSizeChange,
   onCancel,
   onConfirm,
   getAnchor,
@@ -725,9 +708,7 @@ export function TaskRectLabelPicker({
       ? "旋转矩形标注标签"
       : drawShapeType === "polygon"
         ? "多边形标注标签"
-        : drawShapeType === "mask"
-          ? "Mask 标注标签"
-          : drawShapeType === "keypoint"
+        : drawShapeType === "keypoint"
             ? "关键点标注标签"
             : drawShapeType === "box3d"
               ? "3D 框标注标签"
@@ -767,51 +748,6 @@ export function TaskRectLabelPicker({
             : "请先在项目详情中添加普通类标签，再返回任务进行标注。"}
         </p>
       )}
-      {drawShapeType === "mask" ? (
-        <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
-          <div className="grid grid-cols-2 gap-1">
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-7 items-center justify-center rounded border text-xs",
-                maskDrawMode === "brush"
-                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
-                  : "border-border text-muted-foreground hover:bg-accent",
-              )}
-              onClick={() => onMaskDrawModeChange("brush")}
-            >
-              笔刷
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-7 items-center justify-center rounded border text-xs",
-                maskDrawMode === "eraser"
-                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
-                  : "border-border text-muted-foreground hover:bg-accent",
-              )}
-              onClick={() => onMaskDrawModeChange("eraser")}
-            >
-              橡皮擦
-            </button>
-          </div>
-          <div className="space-y-1">
-            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-              <span>笔刷大小</span>
-              <span>{maskBrushSize}px</span>
-            </div>
-            <input
-              type="range"
-              min={4}
-              max={96}
-              step={1}
-              value={maskBrushSize}
-              className="w-full accent-emerald-500"
-              onChange={(event) => onMaskBrushSizeChange(Number(event.target.value))}
-            />
-          </div>
-        </div>
-      ) : null}
       <div className="mt-3 flex justify-end gap-2">
         <button
           type="button"
@@ -840,11 +776,10 @@ export function TaskRectLabelPicker({
 
 export type TaskDrawHintProps = {
   rightToolMode: RightToolMode
-  drawShapeType: "rectangle" | "rotation" | "polygon" | "mask" | "keypoint" | "box3d" | "skeleton"
+  drawShapeType: "rectangle" | "rotation" | "polygon" | "keypoint" | "box3d" | "skeleton"
   rectDrawingEnabled: boolean
   rectFirstPoint: Point | null
   polygonDraftPointCount: number
-  maskDrawMode: "brush" | "eraser"
   /** 3D 框：已点下前矩形第一角，等待第二角 */
   box3dAwaitingSecondClick?: boolean
 }
@@ -855,14 +790,12 @@ export function TaskDrawHint({
   rectDrawingEnabled,
   rectFirstPoint,
   polygonDraftPointCount,
-  maskDrawMode,
   box3dAwaitingSecondClick = false,
 }: TaskDrawHintProps) {
   if (
     rightToolMode !== "rect" &&
     rightToolMode !== "rotRect" &&
     rightToolMode !== "polygon" &&
-    rightToolMode !== "mask" &&
     rightToolMode !== "keypoint" &&
     rightToolMode !== "box3d" &&
     rightToolMode !== "skeleton"
@@ -891,17 +824,6 @@ export function TaskDrawHint({
     return (
       <div className="absolute right-4 bottom-4 z-50 max-w-sm rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
         {body}
-      </div>
-    )
-  }
-  if (drawShapeType === "mask") {
-    return (
-      <div className="absolute right-4 bottom-4 z-50 rounded border border-border/70 bg-background/90 px-2 py-1 text-xs text-muted-foreground">
-        {!rectDrawingEnabled
-          ? "Mask：请选择标签并点击 OK"
-          : maskDrawMode === "brush"
-            ? "Mask：按住左键涂抹绘制"
-            : "Mask：按住左键擦除已有 Mask"}
       </div>
     )
   }

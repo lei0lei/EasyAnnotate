@@ -1,6 +1,8 @@
 import { BackendGlobalRuntimePanel } from "@/components/backend-global-runtime-panel"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { Server } from "lucide-react"
+import { ArrowLeft, Server } from "lucide-react"
+import { Link } from "react-router-dom"
 
 const PAGE_TITLE = "\u540e\u7aef\u6a21\u578b\u7ba1\u7406"
 const PAGE_DESC =
@@ -55,7 +57,12 @@ export default function ModelsBackendPage() {
   return (
     <div className="mx-auto w-full max-w-3xl space-y-8 px-6 py-8 pb-12">
       <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        <Button asChild variant="ghost" size="icon" className="shrink-0" aria-label="返回 Models">
+          <Link to="/models">
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+        </Button>
+        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <Server className="h-5 w-5" aria-hidden />
         </div>
         <div>

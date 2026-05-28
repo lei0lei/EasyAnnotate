@@ -18,7 +18,16 @@ import {
   runYoloBatchAutoAnnotate,
   type YoloAutoAnnotateProgress,
 } from "@/lib/yolo-batch-auto-annotate"
-import { deleteProject, deleteTaskAnnotations, deleteTaskData, getProject, listTaskFiles, readImageFile, type ProjectItem, type ProjectTag, updateProject } from "@/lib/projects-api"
+import {
+  deleteProject,
+  deleteTaskAnnotations,
+  deleteTaskData,
+  getProject,
+  readImageFile,
+  type ProjectItem,
+  type ProjectTag,
+  updateProject,
+} from "@/lib/projects-api"
 import { cn } from "@/lib/utils"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
@@ -97,6 +106,41 @@ function isSameTags(a: ProjectTag[], b: ProjectTag[]): boolean {
 
 const TASK_PAGE_SIZE = 10
 type TaskSortMode = "time" | "subset"
+const TASK_THUMBNAIL_PATHS_KEY = "easyannotate:task-thumbnail-paths"
+
+function taskThumbnailStorageTaskKey(projectId: string, taskId: string): string {
+  return `${projectId}:${taskId}`
+}
+
+function guessImageMimeType(path: string): string {
+  const normalized = path.trim().toLowerCase()
+  if (normalized.endsWith(".png")) return "image/png"
+  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) return "image/jpeg"
+  if (normalized.endsWith(".webp")) return "image/webp"
+  if (normalized.endsWith(".bmp")) return "image/bmp"
+  if (normalized.endsWith(".gif")) return "image/gif"
+  if (normalized.endsWith(".tif") || normalized.endsWith(".tiff")) return "image/tiff"
+  return "application/octet-stream"
+}
+
+function loadSavedTaskThumbnailPaths(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(TASK_THUMBNAIL_PATHS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object") return {}
+    const next: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v !== "string") continue
+      const trimmed = v.trim()
+      if (!trimmed) continue
+      next[k] = trimmed
+    }
+    return next
+  } catch {
+    return {}
+  }
+}
 
 function extractTaskIdFromImagePath(imagePath: string): string | undefined {
   const normalized = imagePath.replace(/\\/g, "/")
@@ -134,6 +178,7 @@ export default function ProjectDetailPage() {
   const [editingTaskNameValue, setEditingTaskNameValue] = useState("")
   const [editingTaskSubsetId, setEditingTaskSubsetId] = useState<string | null>(null)
   const [editingTaskSubsetValue, setEditingTaskSubsetValue] = useState("")
+  const [manualTaskThumbnailPathByKey, setManualTaskThumbnailPathByKey] = useState<Record<string, string>>({})
   const [taskCoverById, setTaskCoverById] = useState<Record<string, string>>({})
   const saveFlashTimerRef = useRef<number | undefined>(undefined)
   const taskCoverByIdRef = useRef<Record<string, string>>({})
@@ -143,6 +188,9 @@ export default function ProjectDetailPage() {
   const [autoAnnotateProgressByTaskId, setAutoAnnotateProgressByTaskId] = useState<
     Record<string, YoloAutoAnnotateProgress>
   >({})
+  const [editingThumbnailTaskId, setEditingThumbnailTaskId] = useState<string | null>(null)
+  const [editingThumbnailPath, setEditingThumbnailPath] = useState("")
+  const [thumbnailDialogError, setThumbnailDialogError] = useState<string | null>(null)
 
   function flashSaveStatus(status: "success" | "error") {
     if (saveFlashTimerRef.current) {
@@ -186,30 +234,6 @@ export default function ProjectDetailPage() {
       .then((localTasks) => {
         if (!alive) return
         setTasks(localTasks)
-        void Promise.all(
-          localTasks.map(async (task) => {
-            const result = await listTaskFiles({ projectId, taskId: task.id })
-            if (result.errorMessage) return task
-            return {
-              ...task,
-              fileCount: result.files.length,
-            }
-          }),
-        )
-          .then((recountedTasks) => {
-            if (!alive) return
-            const changed =
-              recountedTasks.length !== localTasks.length ||
-              recountedTasks.some((task, index) => task.fileCount !== localTasks[index]?.fileCount)
-            if (!changed) return
-            setTasks(recountedTasks)
-            void persistTasks(projectId, recountedTasks).catch(() => {
-              // Ignore recount persist failures and keep UI counts.
-            })
-          })
-          .catch(() => {
-            // Ignore recount failures.
-          })
       })
       .catch(() => {
         if (!alive) return
@@ -254,61 +278,6 @@ export default function ProjectDetailPage() {
   }, [projectId, annotationStatsTick])
 
   useEffect(() => {
-    taskCoverByIdRef.current = taskCoverById
-  }, [taskCoverById])
-
-  useEffect(() => {
-    let alive = true
-    if (!projectId || tasks.length === 0) {
-      setTaskCoverById((prev) => {
-        for (const url of Object.values(prev)) URL.revokeObjectURL(url)
-        return {}
-      })
-      return () => {
-        alive = false
-      }
-    }
-    const targetTasks = tasks
-    void Promise.all(
-      targetTasks.map(async (task) => {
-        const fileResult = await listTaskFiles({ projectId, taskId: task.id })
-        const firstFilePath = fileResult.files[0]?.filePath?.trim()
-        if (fileResult.errorMessage || !firstFilePath) return { taskId: task.id, coverUrl: "" }
-        const imageResult = await readImageFile(firstFilePath)
-        if (imageResult.errorMessage || !imageResult.content?.length) return { taskId: task.id, coverUrl: "" }
-        const bytes = new Uint8Array(imageResult.content)
-        const objectUrl = URL.createObjectURL(new Blob([bytes]))
-        return { taskId: task.id, coverUrl: objectUrl }
-      }),
-    ).then((items) => {
-      if (!alive) {
-        for (const item of items) {
-          if (item.coverUrl) URL.revokeObjectURL(item.coverUrl)
-        }
-        return
-      }
-      const next: Record<string, string> = {}
-      for (const item of items) {
-        if (item.coverUrl) {
-          next[item.taskId] = item.coverUrl
-        }
-      }
-      setTaskCoverById((prev) => {
-        for (const [taskId, prevUrl] of Object.entries(prev)) {
-          const nextUrl = next[taskId]
-          if (!nextUrl || nextUrl !== prevUrl) {
-            URL.revokeObjectURL(prevUrl)
-          }
-        }
-        return next
-      })
-    })
-    return () => {
-      alive = false
-    }
-  }, [projectId, tasks])
-
-  useEffect(() => {
     return () => {
       if (saveFlashTimerRef.current) {
         window.clearTimeout(saveFlashTimerRef.current)
@@ -319,6 +288,14 @@ export default function ProjectDetailPage() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    setManualTaskThumbnailPathByKey(loadSavedTaskThumbnailPaths())
+  }, [])
+
+  useEffect(() => {
+    taskCoverByIdRef.current = taskCoverById
+  }, [taskCoverById])
 
   const currentTags = useMemo(() => normalizeTags(tags), [tags])
 
@@ -404,6 +381,61 @@ export default function ProjectDetailPage() {
     () => sortedTasks.slice(currentTaskPage * TASK_PAGE_SIZE, currentTaskPage * TASK_PAGE_SIZE + TASK_PAGE_SIZE),
     [currentTaskPage, sortedTasks],
   )
+
+  useEffect(() => {
+    let alive = true
+    let pendingUrls: string[] = []
+    const targetPathByTaskId: Record<string, string> = {}
+    for (const task of pagedTasks) {
+      if (!projectId) continue
+      const key = taskThumbnailStorageTaskKey(projectId, task.id)
+      const path = (manualTaskThumbnailPathByKey[key] || "").trim()
+      if (path) targetPathByTaskId[task.id] = path
+    }
+    if (Object.keys(targetPathByTaskId).length === 0) {
+      setTaskCoverById((prev) => {
+        for (const url of Object.values(prev)) URL.revokeObjectURL(url)
+        return {}
+      })
+      return () => {
+        alive = false
+      }
+    }
+    const loadTaskCovers = async () => {
+      const next: Record<string, string> = {}
+      for (const [taskId, imagePath] of Object.entries(targetPathByTaskId)) {
+        if (!alive) break
+        try {
+          const result = await readImageFile(imagePath)
+          if (result.errorMessage || !result.content || result.content.length === 0) continue
+          const bytes = result.content
+          const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+          const objectUrl = URL.createObjectURL(new Blob([buffer], { type: guessImageMimeType(imagePath) }))
+          next[taskId] = objectUrl
+          pendingUrls.push(objectUrl)
+        } catch {
+          // ignore invalid manual thumbnail path
+        }
+      }
+      if (!alive) {
+        for (const url of pendingUrls) URL.revokeObjectURL(url)
+        pendingUrls = []
+        return
+      }
+      setTaskCoverById((prev) => {
+        for (const url of Object.values(prev)) URL.revokeObjectURL(url)
+        return next
+      })
+      pendingUrls = []
+    }
+    void loadTaskCovers()
+    return () => {
+      alive = false
+      for (const url of pendingUrls) URL.revokeObjectURL(url)
+      pendingUrls = []
+    }
+  }, [manualTaskThumbnailPathByKey, pagedTasks, projectId])
+
   const hasUnsavedChanges = useMemo(() => {
     if (!project) {
       return name.trim().length > 0 || projectInfo.trim().length > 0 || currentTags.length > 0
@@ -580,6 +612,40 @@ export default function ProjectDetailPage() {
     const nextSubset = editingTaskSubsetValue.trim()
     updateTaskFields(task.id, { subset: nextSubset })
     cancelEditTaskSubset()
+  }
+
+  function openTaskThumbnailPathDialog(task: TaskItem) {
+    if (!projectId) return
+    const key = taskThumbnailStorageTaskKey(projectId, task.id)
+    setEditingThumbnailTaskId(task.id)
+    setEditingThumbnailPath(manualTaskThumbnailPathByKey[key] || "")
+    setThumbnailDialogError(null)
+  }
+
+  function closeTaskThumbnailPathDialog() {
+    setEditingThumbnailTaskId(null)
+    setEditingThumbnailPath("")
+    setThumbnailDialogError(null)
+  }
+
+  function saveTaskThumbnailPath() {
+    if (!projectId || !editingThumbnailTaskId) return
+    const key = taskThumbnailStorageTaskKey(projectId, editingThumbnailTaskId)
+    const nextPath = editingThumbnailPath.trim()
+    const nextMap = { ...manualTaskThumbnailPathByKey }
+    if (nextPath) {
+      nextMap[key] = nextPath
+    } else {
+      delete nextMap[key]
+    }
+    setManualTaskThumbnailPathByKey(nextMap)
+    try {
+      localStorage.setItem(TASK_THUMBNAIL_PATHS_KEY, JSON.stringify(nextMap))
+    } catch {
+      setThumbnailDialogError("保存失败：无法写入本地配置。")
+      return
+    }
+    closeTaskThumbnailPathDialog()
   }
 
   return (
@@ -788,21 +854,26 @@ export default function ProjectDetailPage() {
               {pagedTasks.map((task) => (
                 <li key={task.id}>
                   <div className="flex flex-col gap-3 rounded-xl border-2 border-border bg-card p-3 sm:flex-row sm:items-center">
-                    {taskCoverById[task.id] ? (
-                      <div className="w-full shrink-0 sm:w-32">
-                        <div className="rounded-md border-2 border-border bg-muted/20">
-                          <div className="h-20 w-full overflow-hidden rounded-md">
+                    <div className="w-full shrink-0 sm:w-32">
+                      <button
+                        type="button"
+                        className="w-full rounded-md border-2 border-border bg-muted/20 text-left transition-colors hover:bg-accent/20"
+                        title="点击设置任务缩略图路径"
+                        onClick={() => openTaskThumbnailPathDialog(task)}
+                      >
+                        <div className="h-20 w-full overflow-hidden rounded-md">
+                          {taskCoverById[task.id] ? (
                             <img
                               src={taskCoverById[task.id]}
-                              alt={`任务 ${task.name} 预览图`}
+                              alt={`任务 ${task.name} 缩略图`}
                               className="h-full w-full object-cover"
                               draggable={false}
                               loading="lazy"
                             />
-                          </div>
+                          ) : null}
                         </div>
-                      </div>
-                    ) : null}
+                      </button>
+                    </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex min-w-0 items-center gap-1">
@@ -1100,6 +1171,36 @@ export default function ProjectDetailPage() {
           }}
           onStop={() => stopAutoAnnotateForTask(autoAnnotatePanelTaskId)}
         />
+      ) : null}
+      {editingThumbnailTaskId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <Card className="w-full max-w-lg border-border">
+            <CardHeader>
+              <CardTitle className="text-base">设置任务缩略图路径</CardTitle>
+              <CardDescription>
+                输入本地图片完整路径（例如：D:\images\task-cover.jpg）。留空后保存可清除该任务缩略图。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Input
+                value={editingThumbnailPath}
+                onChange={(e) => setEditingThumbnailPath(e.target.value)}
+                placeholder="输入图片路径"
+                spellCheck={false}
+                autoFocus
+              />
+              {thumbnailDialogError ? <p className="text-xs text-destructive">{thumbnailDialogError}</p> : null}
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={closeTaskThumbnailPathDialog}>
+                  取消
+                </Button>
+                <Button type="button" onClick={saveTaskThumbnailPath}>
+                  保存
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       ) : null}
     </div>
   )

@@ -14,8 +14,6 @@ export function rightToolModeToDrawingPreset(tool: RightToolMode): {
       return { mode: "rotRect", drawShapeType: "rotation" }
     case "polygon":
       return { mode: "polygon", drawShapeType: "polygon" }
-    case "mask":
-      return { mode: "mask", drawShapeType: "mask" }
     case "keypoint":
       return { mode: "keypoint", drawShapeType: "keypoint" }
     case "box3d":

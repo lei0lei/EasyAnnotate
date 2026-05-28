@@ -6,12 +6,17 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { ipc } from "@/gen/ipc"
 import { APP_SHORTCUT_ROWS, buildShortcutsPersistPatch } from "@/lib/app-shortcut-registry"
+import { annotationAppearancePrefs } from "@/lib/annotation-appearance-prefs"
 import { loadAppConfig, migrateAndUpdateGlobalConfigDir, updateAppConfig } from "@/lib/app-config-storage"
 import { cn } from "@/lib/utils"
 import { CheckCircle2, FolderOpen, Keyboard, Network, RotateCcw, Settings2 } from "lucide-react"
 import { useCallback, useEffect, useId, useState } from "react"
 
 const DEFAULT_BACKEND = { protocol: "http", host: "127.0.0.1", port: "8000", basePath: "" } as const
+
+function isApiV1Path(path: string): boolean {
+  return /^\/?api\/v1\/?$/i.test(path.trim())
+}
 
 function defaultShortcutMap(): Record<string, string> {
   return Object.fromEntries(APP_SHORTCUT_ROWS.map((row) => [row.id, row.defaultBinding]))
@@ -66,6 +71,10 @@ export default function SettingsPage() {
   }))
   const [shortcutCaptureRowId, setShortcutCaptureRowId] = useState<string | null>(null)
   const [selectingGlobalConfigDir, setSelectingGlobalConfigDir] = useState(false)
+  const initialAppearance = annotationAppearancePrefs.get()
+  const [annotationLineWidthScale, setAnnotationLineWidthScale] = useState(initialAppearance.lineWidthScale)
+  const [annotationPointSizeScale, setAnnotationPointSizeScale] = useState(initialAppearance.pointSizeScale)
+  const [annotationAppearanceStatus, setAnnotationAppearanceStatus] = useState<CompletionStatus>(null)
 
   const handleSelectGlobalConfigDir = useCallback(async () => {
     setSelectingGlobalConfigDir(true)
@@ -102,15 +111,32 @@ export default function SettingsPage() {
   }, [])
 
   const probeRemoteHealth = useCallback(
-    async (nextProtocol: "http" | "https", nextHost: string, nextPort: string, nextBasePath: string): Promise<boolean> => {
+    async (
+      nextProtocol: "http" | "https",
+      nextHost: string,
+      nextPort: string,
+      nextBasePath: string,
+    ): Promise<{ ok: boolean; healthUrl: string; reason: string }> => {
       const origin = remoteOriginFromFields(nextProtocol, nextHost, nextPort)
       const base = nextBasePath.trim() ? (nextBasePath.trim().startsWith("/") ? nextBasePath.trim() : `/${nextBasePath.trim()}`) : ""
       const healthUrl = `${origin}${base}/health`
       try {
-        const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2000) })
-        return response.ok
-      } catch {
-        return false
+        const response = await ipc.app.ProbeRemoteBackendHealth({
+          protocol: nextProtocol,
+          host: nextHost,
+          port: nextPort,
+          basePath: nextBasePath,
+          timeoutMs: 5000,
+        })
+        if (response.ok) return { ok: true, healthUrl: response.healthUrl || healthUrl, reason: "" }
+        return {
+          ok: false,
+          healthUrl: response.healthUrl || healthUrl,
+          reason: response.reason || (response.httpStatus ? `HTTP ${response.httpStatus}` : "请求失败"),
+        }
+      } catch (error) {
+        const reason = error instanceof Error && error.message ? error.message : "请求失败"
+        return { ok: false, healthUrl, reason }
       }
     },
     [],
@@ -123,9 +149,9 @@ export default function SettingsPage() {
     }
     let alive = true
     const tick = () => {
-      void probeRemoteHealth(protocol, host, port, basePath).then((ok) => {
+      void probeRemoteHealth(protocol, host, port, basePath).then((result) => {
         if (!alive) return
-        setRemoteReachable(ok)
+        setRemoteReachable(result.ok)
       })
     }
     tick()
@@ -212,6 +238,25 @@ export default function SettingsPage() {
     setShortcutStatus("reset")
   }, [])
 
+  const handleApplyAnnotationAppearance = useCallback(() => {
+    annotationAppearancePrefs.set({
+      lineWidthScale: annotationLineWidthScale,
+      pointSizeScale: annotationPointSizeScale,
+    })
+    const next = annotationAppearancePrefs.get()
+    setAnnotationLineWidthScale(next.lineWidthScale)
+    setAnnotationPointSizeScale(next.pointSizeScale)
+    setAnnotationAppearanceStatus("applied")
+  }, [annotationLineWidthScale, annotationPointSizeScale])
+
+  const handleAnnotationAppearanceDefaults = useCallback(() => {
+    annotationAppearancePrefs.reset()
+    const defaults = annotationAppearancePrefs.defaults()
+    setAnnotationLineWidthScale(defaults.lineWidthScale)
+    setAnnotationPointSizeScale(defaults.pointSizeScale)
+    setAnnotationAppearanceStatus("reset")
+  }, [])
+
   const handleStartRemote = useCallback(async () => {
     setRemotePending(true)
     try {
@@ -219,6 +264,14 @@ export default function SettingsPage() {
       const normalizedHost = host.trim() || DEFAULT_BACKEND.host
       const normalizedPort = port.trim() || DEFAULT_BACKEND.port
       const normalizedBasePath = basePath.trim()
+      if (normalizedHost.includes("://")) {
+        window.alert("“IP 或主机名”请只填写主机，不要带 http:// 或 https://。")
+        return
+      }
+      if (isApiV1Path(normalizedBasePath)) {
+        window.alert("API 根路径不需要填写 /api/v1。该路径会由应用自动拼接，请留空或仅填写反向代理前缀（如 /easyannotate）。")
+        return
+      }
 
       const local = await ipc.app.GetLocalBackendStatus({})
       if (local.reachable) {
@@ -226,9 +279,11 @@ export default function SettingsPage() {
         return
       }
 
-      const ok = await probeRemoteHealth(normalizedProtocol, normalizedHost, normalizedPort, normalizedBasePath)
-      if (!ok) {
-        window.alert("远程后端健康检查失败（/health 不可用）。请确认服务端已启动且地址端口正确。")
+      const health = await probeRemoteHealth(normalizedProtocol, normalizedHost, normalizedPort, normalizedBasePath)
+      if (!health.ok) {
+        window.alert(
+          `远程后端健康检查失败。\nURL：${health.healthUrl}\n原因：${health.reason || "未知错误"}\n请确认服务端已启动且地址端口正确。`,
+        )
         return
       }
 
@@ -267,6 +322,11 @@ export default function SettingsPage() {
   const shortcutCaptureRow = shortcutCaptureRowId
     ? (APP_SHORTCUT_ROWS.find((r) => r.id === shortcutCaptureRowId) ?? null)
     : null
+  const remoteRuntimeLabel = remoteConnected
+    ? remoteReachable
+      ? "远程运行中"
+      : "远程连接中"
+    : "未连接"
 
   return (
     <div className="min-h-full bg-background">
@@ -292,7 +352,7 @@ export default function SettingsPage() {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <label htmlFor={`${baseId}-protocol`} className="text-sm font-medium text-foreground">
@@ -335,13 +395,13 @@ export default function SettingsPage() {
                     autoComplete="off"
                   />
                 </div>
-                <div className="space-y-2 sm:col-span-2">
+                <div className="space-y-2">
                   <label htmlFor={`${baseId}-base-path`} className="text-sm font-medium text-foreground">
                     API 根路径（可选）
                   </label>
                   <Input
                     id={`${baseId}-base-path`}
-                    placeholder="例如 /easyannotate（留空表示直接 /api/v1）"
+                    placeholder="例如 /easyannotate（通常留空）"
                     value={basePath}
                     onChange={(e) => setBasePath(e.target.value)}
                     autoComplete="off"
@@ -349,26 +409,144 @@ export default function SettingsPage() {
                   />
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" disabled={remotePending} onClick={() => void handleStartRemote()}>
-                  启动
-                </Button>
-                <Button type="button" size="sm" variant="outline" disabled={remotePending} onClick={handleStopRemote}>
-                  停止
-                </Button>
-                <span
-                  className={cn(
-                    "h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background",
-                    remoteConnected && remoteReachable ? "bg-emerald-500" : "bg-red-500",
-                  )}
-                  title={remoteConnected && remoteReachable ? "远程已连接" : "远程未连接"}
-                  role="status"
-                  aria-label={remoteConnected && remoteReachable ? "远程后端已连接" : "远程后端未连接"}
-                />
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    disabled={remotePending}
+                    onClick={() => void handleStartRemote()}
+                  >
+                    启动
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    disabled={remotePending}
+                    onClick={handleStopRemote}
+                  >
+                    停止
+                  </Button>
+                </div>
+                <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>{remoteRuntimeLabel}</span>
+                  <span
+                    className={cn(
+                      "h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-background",
+                      remoteConnected
+                        ? remoteReachable
+                          ? "bg-emerald-500"
+                          : "bg-amber-500"
+                        : "bg-red-500",
+                    )}
+                    title={remoteRuntimeLabel}
+                    role="status"
+                    aria-label={remoteRuntimeLabel}
+                  />
+                </div>
               </div>
             </CardContent>
           </Card>
           <LocalBackendBoard />
+        </section>
+
+        <Separator className="bg-border/60" />
+
+        <section>
+          <Card className="border-border/80 shadow-sm">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <Settings2 className="h-4 w-4" aria-hidden />
+                </div>
+                <div>
+                  <CardTitle className="text-base">标注外观</CardTitle>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+                调整后会影响任务标注页所有框线与点的视觉大小（含框线、顶点、关键点、控制手柄、SAM 点）。
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label htmlFor={`${baseId}-annotation-line-width-scale`} className="text-sm font-medium text-foreground">
+                    线宽系数
+                  </label>
+                  <Input
+                    id={`${baseId}-annotation-line-width-scale`}
+                    type="number"
+                    min={0.5}
+                    max={2.5}
+                    step={0.1}
+                    value={annotationLineWidthScale}
+                    onChange={(e) => setAnnotationLineWidthScale(Number(e.target.value || 1))}
+                  />
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={2.5}
+                    step={0.1}
+                    value={annotationLineWidthScale}
+                    onChange={(e) => setAnnotationLineWidthScale(Number(e.target.value))}
+                    className="w-full"
+                    aria-label="线宽系数滑块"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor={`${baseId}-annotation-point-size-scale`} className="text-sm font-medium text-foreground">
+                    点尺寸系数
+                  </label>
+                  <Input
+                    id={`${baseId}-annotation-point-size-scale`}
+                    type="number"
+                    min={0.5}
+                    max={2.5}
+                    step={0.1}
+                    value={annotationPointSizeScale}
+                    onChange={(e) => setAnnotationPointSizeScale(Number(e.target.value || 1))}
+                  />
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={2.5}
+                    step={0.1}
+                    value={annotationPointSizeScale}
+                    onChange={(e) => setAnnotationPointSizeScale(Number(e.target.value))}
+                    className="w-full"
+                    aria-label="点尺寸系数滑块"
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    onClick={handleApplyAnnotationAppearance}
+                  >
+                    应用
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    onClick={handleAnnotationAppearanceDefaults}
+                  >
+                    使用默认
+                  </Button>
+                </div>
+                <CompletionIcon status={annotationAppearanceStatus} />
+              </div>
+            </CardContent>
+          </Card>
         </section>
 
         <Separator className="bg-border/60" />
@@ -406,13 +584,29 @@ export default function SettingsPage() {
                   {selectingGlobalConfigDir ? "选择中..." : "选择目录"}
                 </Button>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" disabled={storageMigrating} onClick={() => void handleApplyStoragePaths()}>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    disabled={storageMigrating}
+                    onClick={() => void handleApplyStoragePaths()}
+                  >
                   {storageMigrating ? "迁移中..." : "应用"}
-                </Button>
-                <Button type="button" size="sm" variant="outline" disabled={storageMigrating} onClick={() => void handleStorageDefaults()}>
-                  使用默认
-                </Button>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    disabled={storageMigrating}
+                    onClick={() => void handleStorageDefaults()}
+                  >
+                    使用默认
+                  </Button>
+                </div>
                 <CompletionIcon status={storageStatus} />
               </div>
             </CardContent>
@@ -470,10 +664,12 @@ export default function SettingsPage() {
                   onSave={(binding) => handleShortcutRowSave(shortcutCaptureRow.id, binding)}
                 />
               ) : null}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" variant="outline" onClick={handleShortcutDefaults}>
-                  使用默认
-                </Button>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button type="button" variant="outline" size="sm" className="h-9 w-[6.75rem]" onClick={handleShortcutDefaults}>
+                    使用默认
+                  </Button>
+                </div>
                 <CompletionIcon status={shortcutStatus} />
               </div>
             </CardContent>

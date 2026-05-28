@@ -39,10 +39,6 @@ export type PolygonToolButtonProps = AnnotateToolButtonProps & {
   onClearSelection: () => void
 }
 
-export type MaskToolButtonProps = AnnotateToolButtonProps & {
-  onStartMaskTool: () => void
-}
-
 export type KeypointToolButtonProps = AnnotateToolButtonProps & {
   onStartKeypointTool: () => void
 }
@@ -65,7 +61,6 @@ export type TaskToolPaletteProps = {
   onStartRectTool: () => void
   onStartRotRectTool: () => void
   onStartPolygonTool: () => void
-  onStartMaskTool: () => void
   onStartKeypointTool: () => void
   onStartBox3dTool: () => void
   onStartSkeletonTool: () => void

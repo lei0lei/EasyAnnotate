@@ -102,6 +102,14 @@
     width: 0;
     height: 0;
   }
+
+  /*
+   * Keep SVG annotation strokes visually constant when the canvas container scales.
+   * This prevents wheel zoom from making outlines look thicker.
+   */
+  .ea-annotation-svg * {
+    vector-effect: non-scaling-stroke;
+  }
 }
 
 @layer base {

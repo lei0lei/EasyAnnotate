@@ -1,6 +1,6 @@
 /**
  * 模块：project-task-detail/rendered-shapes
- * 职责：将标注文档转换为画布渲染结构（矩形、旋转框、多边形、Mask）。
+ * 职责：将标注文档转换为画布渲染结构（矩形、旋转框、多边形、光栅预览）。
  * 边界：只负责渲染数据投影，不负责修改原始标注。
  */
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
@@ -9,18 +9,16 @@ import {
   decodeRowMajorRleToBinary,
   foregroundBBoxInclusive,
   maskBinaryHasForeground,
-  readMaskRle,
 } from "@/lib/mask-raster-rle"
 import {
   resolveSkeletonTemplateForClassName,
   skeletonJointDisplayLabelsFromTemplate,
 } from "@/lib/skeleton-template"
-import { splitMaskPointSegments } from "@/pages/project-task-detail/annotateTools/mask-draw-ops"
 import { getShapeStableId } from "@/pages/project-task-detail/shape-identity"
 import type {
   Point,
   RenderedCuboid2d,
-  RenderedMask,
+  RenderedRasterPreview,
   RenderedPoint,
   RenderedPolygon,
   RenderedRectangle,
@@ -35,9 +33,6 @@ export type DragLivePointsOverride = { shapeIndex: number; points: number[][] }
 
 /** 单顶点拖拽预览（polygon / skeleton / cuboid 顶点），避免触发其它类型 rendered* 整表重算 */
 export type DragVertexLiveOverride = { shapeIndex: number; vertexIndex: number; imageX: number; imageY: number }
-
-/** 拖拽中覆盖 RLE 栅格 mask 的展示数据 */
-export type DragLiveMaskRleOverride = { shapeIndex: number; counts: number[]; w: number; h: number; brushSize: number }
 
 /** SAM2 会话中尚未按 N 提交的整图 RLE 预览（非文档内形状） */
 export type Sam2DraftMaskRle = { counts: number[]; w: number; h: number; label: string; color: string }
@@ -66,7 +61,6 @@ type RenderShapeContext = {
   /** 用于骨架关节显示名与项目模板对齐 */
   projectTags?: ProjectTag[]
   dragLivePoints?: DragLivePointsOverride | null
-  dragLiveMaskRle?: DragLiveMaskRleOverride | null
   /** SAM2：当前轮次 ONNX 预览 mask，叠在文档 mask 之上 */
   sam2DraftMaskRle?: Sam2DraftMaskRle | null
   /** 扩散式标注：批量相似实例预览 */
@@ -398,150 +392,18 @@ export function buildRenderedPoints(context: RenderShapeContext): RenderedPoint[
     .filter((item): item is RenderedPoint => !!item)
 }
 
-export function buildRenderedMasks(context: RenderShapeContext & { stageScale: number }): RenderedMask[] {
+export function buildRenderedRasterPreviews(context: RenderShapeContext & { stageScale: number }): RenderedRasterPreview[] {
   const {
     annotationDoc,
-    hiddenShapeIndexes,
-    hiddenClassLabels,
-    labelColorMap,
     imageToStage,
-    dragLiveMaskRle,
-    dragLivePoints,
     sam2DraftMaskRle,
     diffusionPreviewMasks,
   } =
     context
   if (!annotationDoc) return []
-  const hiddenSet = new Set(hiddenShapeIndexes)
-  const hiddenClassSet = new Set(hiddenClassLabels)
   const docIw = annotationDoc.imageWidth
   const docIh = annotationDoc.imageHeight
-  const list = annotationDoc.shapes
-    .map((shape, index): RenderedMask | null => {
-      if (hiddenSet.has(index)) return null
-      if (hiddenClassSet.has(shape.label)) return null
-      if (shape.shape_type !== "mask") return null
-      const brushSizeRaw =
-        typeof shape.attributes?.brushSize === "number"
-          ? shape.attributes.brushSize
-          : typeof shape.attributes?.maskBrushSize === "number"
-            ? shape.attributes.maskBrushSize
-            : 16
-      const brushSize = Math.max(1, Number(brushSizeRaw) || 16)
-
-      const rleFromDoc = readMaskRle(shape.attributes)
-      const rle =
-        dragLiveMaskRle && dragLiveMaskRle.shapeIndex === index
-          ? { counts: dragLiveMaskRle.counts, w: dragLiveMaskRle.w, h: dragLiveMaskRle.h }
-          : rleFromDoc
-      const brushSizeForRaster =
-        dragLiveMaskRle && dragLiveMaskRle.shapeIndex === index ? dragLiveMaskRle.brushSize : brushSize
-      if (rle && rle.w === docIw && rle.h === docIh) {
-        const total = docIw * docIh
-        const bin = decodeRowMajorRleToBinary(rle.counts, total)
-        if (!maskBinaryHasForeground(bin)) return null
-        const bbox = foregroundBBoxInclusive(bin, docIw, docIh)
-        if (!bbox) return null
-        /** 外接框与前景像素格对齐，不再按笔刷半径外扩 */
-        const tightCorners: Point[] = [
-          { x: bbox.minX, y: bbox.minY },
-          { x: bbox.maxX + 1, y: bbox.minY },
-          { x: bbox.maxX + 1, y: bbox.maxY + 1 },
-          { x: bbox.minX, y: bbox.maxY + 1 },
-        ]
-        const stageTight = tightCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
-        if (stageTight.length < 1) return null
-        const xs = stageTight.map((item) => item.x)
-        const ys = stageTight.map((item) => item.y)
-        const left = Math.min(...xs)
-        const top = Math.min(...ys)
-        const right = Math.max(...xs)
-        const bottom = Math.max(...ys)
-        const imageCorners: Point[] = [
-          { x: 0, y: 0 },
-          { x: docIw, y: 0 },
-          { x: docIw, y: docIh },
-          { x: 0, y: docIh },
-        ]
-        const stageImg = imageCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
-        if (stageImg.length < 4) return null
-        const ixs = stageImg.map((p) => p.x)
-        const iys = stageImg.map((p) => p.y)
-        const sil = Math.min(...ixs)
-        const sit = Math.min(...iys)
-        const siw = Math.max(...ixs) - sil
-        const sih = Math.max(...iys) - sit
-        return {
-          index,
-          shapeId: getShapeStableId(shape, index),
-          label: shape.label,
-          color: labelColorMap.get(shape.label) ?? "#f59e0b",
-          stagePoints: [],
-          stageSegments: [],
-          brushSize: brushSizeForRaster,
-          left,
-          top,
-          width: Math.max(1, right - left),
-          height: Math.max(1, bottom - top),
-          raster: { counts: rle.counts, imageWidth: docIw, imageHeight: docIh },
-          stageImageRect: { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) },
-        }
-      }
-
-      const ptsVec = shapePointsWithLiveOverride(index, shape, dragLivePoints)
-      if (ptsVec.length < 1) return null
-      const stagePoints = ptsVec.map((pt) => imageToStage({ x: pt[0], y: pt[1] })).filter((item): item is Point => !!item)
-      if (stagePoints.length < 1) return null
-      const stageSegments = splitMaskPointSegments(ptsVec, brushSize)
-        .map((segment) =>
-          segment
-            .map((pt) => imageToStage({ x: Number(pt[0] ?? 0), y: Number(pt[1] ?? 0) }))
-            .filter((item): item is Point => !!item),
-        )
-        .filter((segment) => segment.length > 0)
-      /** 在图像坐标下用笔刷半径包络中心线，再投到 stage，避免 stage 上二次加粗选框 */
-      const r = brushSize / 2
-      let minIX = Infinity
-      let minIY = Infinity
-      let maxIX = -Infinity
-      let maxIY = -Infinity
-      for (const pt of ptsVec) {
-        const x = Number(pt[0] ?? 0)
-        const y = Number(pt[1] ?? 0)
-        minIX = Math.min(minIX, x - r)
-        maxIX = Math.max(maxIX, x + r)
-        minIY = Math.min(minIY, y - r)
-        maxIY = Math.max(maxIY, y + r)
-      }
-      const legacyCorners: Point[] = [
-        { x: minIX, y: minIY },
-        { x: maxIX, y: minIY },
-        { x: maxIX, y: maxIY },
-        { x: minIX, y: maxIY },
-      ]
-      const stageLegacy = legacyCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
-      if (stageLegacy.length < 1) return null
-      const lxs = stageLegacy.map((item) => item.x)
-      const lys = stageLegacy.map((item) => item.y)
-      const left = Math.min(...lxs)
-      const top = Math.min(...lys)
-      const right = Math.max(...lxs)
-      const bottom = Math.max(...lys)
-      return {
-        index,
-        shapeId: getShapeStableId(shape, index),
-        label: shape.label,
-        color: labelColorMap.get(shape.label) ?? "#f59e0b",
-        stagePoints,
-        stageSegments,
-        brushSize,
-        left,
-        top,
-        width: Math.max(1, right - left),
-        height: Math.max(1, bottom - top),
-      }
-    })
-    .filter((item): item is RenderedMask => !!item)
+  const list: RenderedRasterPreview[] = []
 
   const imageCorners: Point[] = [
     { x: 0, y: 0 },
@@ -653,7 +515,7 @@ function readCuboid2dHeightPx(shape: { attributes?: Record<string, unknown> }): 
 export function buildRenderedCuboids2d(
   context: RenderShapeContext & {
     dragVertexLive?: DragVertexLiveOverride | null
-    /** 与 dragLivePoints 分离：仅 cuboid 拖拽每帧更新，不触发矩形/多边形/mask 等 memo */
+    /** 与 dragLivePoints 分离：仅 cuboid 拖拽每帧更新，不触发矩形/多边形/光栅预览等 memo */
     dragCuboidLivePoints?: DragLivePointsOverride | null
   },
 ): RenderedCuboid2d[] {

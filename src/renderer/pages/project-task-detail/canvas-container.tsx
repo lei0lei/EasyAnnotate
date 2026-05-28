@@ -21,20 +21,15 @@ export type TaskCanvasContainerProps = {
   rectPickerOpen: boolean
   rectPendingLabel: string
   annotationLabelOptions: string[]
-  maskDrawMode: "brush" | "eraser"
-  maskBrushSize: number
   onSelectTool: () => void
   onStartRectTool: TaskToolPaletteProps["onStartRectTool"]
   onStartRotRectTool: TaskToolPaletteProps["onStartRotRectTool"]
   onStartPolygonTool: TaskToolPaletteProps["onStartPolygonTool"]
-  onStartMaskTool: TaskToolPaletteProps["onStartMaskTool"]
   onStartKeypointTool: TaskToolPaletteProps["onStartKeypointTool"]
   onStartBox3dTool: TaskToolPaletteProps["onStartBox3dTool"]
   onStartSkeletonTool: TaskToolPaletteProps["onStartSkeletonTool"]
   onClearSelection: TaskToolPaletteProps["onClearSelection"]
   onRectPendingLabelChange: (nextLabel: string) => void
-  onMaskDrawModeChange: (nextMode: "brush" | "eraser") => void
-  onMaskBrushSizeChange: (nextSize: number) => void
   onRectPickerCancel: () => void
   onRectPickerConfirm: () => void
   box3dAwaitingSecondClick: boolean
@@ -51,20 +46,15 @@ export function TaskCanvasContainer({
   rectPickerOpen,
   rectPendingLabel,
   annotationLabelOptions,
-  maskDrawMode,
-  maskBrushSize,
   onSelectTool,
   onStartRectTool,
   onStartRotRectTool,
   onStartPolygonTool,
-  onStartMaskTool,
   onStartKeypointTool,
   onStartBox3dTool,
   onStartSkeletonTool,
   onClearSelection,
   onRectPendingLabelChange,
-  onMaskDrawModeChange,
-  onMaskBrushSizeChange,
   onRectPickerCancel,
   onRectPickerConfirm,
   box3dAwaitingSecondClick,
@@ -76,7 +66,6 @@ export function TaskCanvasContainer({
     onStartRectTool,
     onStartRotRectTool,
     onStartPolygonTool,
-    onStartMaskTool,
     onStartKeypointTool,
     onStartBox3dTool,
     onStartSkeletonTool,
@@ -86,11 +75,7 @@ export function TaskCanvasContainer({
       drawShapeType,
       rectPendingLabel,
       annotationLabelOptions,
-      maskDrawMode,
-      maskBrushSize,
       onRectPendingLabelChange,
-      onMaskDrawModeChange,
-      onMaskBrushSizeChange,
       onCancel: onRectPickerCancel,
       onConfirm: onRectPickerConfirm,
     },
@@ -102,7 +87,6 @@ export function TaskCanvasContainer({
     rectDrawingEnabled,
     rectFirstPoint,
     polygonDraftPointCount,
-    maskDrawMode,
     box3dAwaitingSecondClick,
   }
 

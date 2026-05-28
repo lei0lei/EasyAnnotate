@@ -6,8 +6,8 @@
 /** 解码器 prompt：正负点 / 矩形框 */
 export type Sam2PromptMode = "point" | "bbox"
 
-/** 解码输出：多边形轮廓 / 分割掩码 / 边界框 */
-export type Sam2AutoAnnotationFormat = "polygon" | "mask" | "box"
+/** 解码输出：多边形轮廓 / 边界框 */
+export type Sam2AutoAnnotationFormat = "polygon" | "box"
 
 /** 扩散工具：SAM 种子阶段在画布上的预览形态（仅界面；后续接解码管线） */
 export type DiffusionSeedSamPreviewMode = "bbox" | "mask" | "bbox_and_mask"

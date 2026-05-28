@@ -8,7 +8,7 @@ import { TaskToolPalette } from "@/pages/project-task-detail/annotateTools"
 import { TaskAiToolPalette } from "@/pages/project-task-detail/annotateTools/aiTools"
 import type {
   RenderedCuboid2d,
-  RenderedMask,
+  RenderedRasterPreview,
   RenderedPoint,
   RenderedPolygon,
   RenderedRectangle,
@@ -23,7 +23,7 @@ import {
   cuboidFrontEdgeMidMarkers,
   cuboidWireframeEdgeSegmentsLayered,
 } from "@/pages/project-task-detail/annotateTools/cuboid2d-geometry"
-import { MaskRasterOverlay } from "@/pages/project-task-detail/mask-raster-overlay"
+import { RasterPreviewOverlay } from "@/pages/project-task-detail/raster-preview-overlay"
 import type { TaskDrawHintProps, TaskLeftPanelContentProps } from "@/pages/project-task-detail/components"
 import type {
   MouseEvent as ReactMouseEvent,
@@ -41,6 +41,21 @@ function dragNudgeSvgTransform(nudge: DragStageNudge | null | undefined, shapeId
   return `translate(${nudge.dx} ${nudge.dy})`
 }
 
+function stageInvariantStrokePx(basePx: number, imageScale: number, minPx = 0.75): number {
+  const safeScale = Number.isFinite(imageScale) && imageScale > 0 ? imageScale : 1
+  return Math.max(minPx, basePx / safeScale)
+}
+
+function stageInvariantSizePx(basePx: number, imageScale: number, minPx = 1): number {
+  const safeScale = Number.isFinite(imageScale) && imageScale > 0 ? imageScale : 1
+  return Math.max(minPx, basePx / safeScale)
+}
+
+function clampAppearanceScale(value: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.min(2.5, Math.max(0.5, value))
+}
+
 /** 自动 prompt：中心十字 + 四角直角线（无半透明矩形） */
 type Sam2AutoPreviewRectModel = {
   left: number
@@ -49,7 +64,15 @@ type Sam2AutoPreviewRectModel = {
   height: number
 }
 
-function Sam2AutoPromptGuides({ rect, stroke }: { rect: Sam2AutoPreviewRectModel; stroke: string }) {
+function Sam2AutoPromptGuides({
+  rect,
+  stroke,
+  strokeWidth,
+}: {
+  rect: Sam2AutoPreviewRectModel
+  stroke: string
+  strokeWidth: number
+}) {
   const { left, top, width, height } = rect
   if (width < 1 || height < 1) return null
   const base = Math.min(width, height)
@@ -71,7 +94,7 @@ function Sam2AutoPromptGuides({ rect, stroke }: { rect: Sam2AutoPreviewRectModel
     `M ${cx - crossH} ${cy} L ${cx + crossH} ${cy} M ${cx} ${cy - crossV} L ${cx} ${cy + crossV}`,
   ].join(" ")
   return (
-    <g fill="none" stroke={stroke} strokeWidth={2} strokeLinecap="square" strokeLinejoin="miter" opacity={0.92}>
+    <g fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="square" strokeLinejoin="miter" opacity={0.92}>
       <path d={d} />
     </g>
   )
@@ -108,7 +131,6 @@ export type ProjectTaskCanvasSectionProps = {
   currentFileName: string
   canPanAndZoom: boolean
   isPanning: boolean
-  canDrawMask: boolean
   canDrawRectangle: boolean
   canDrawPolygon: boolean
   canDrawBox3d: boolean
@@ -116,12 +138,14 @@ export type ProjectTaskCanvasSectionProps = {
   canDrawSkeleton: boolean
   imageOffset: { x: number; y: number }
   imageScale: number
+  annotationLineWidthScale: number
+  annotationPointSizeScale: number
   /** object-contain 下图像像素 → stage 的缩放（与 canvas-geometry 的 fitScale 一致），用于 mask 笔刷等线宽 */
   imageFitScale: number
   onImageError: () => void
   onImageLoad: (event: SyntheticEvent<HTMLImageElement>) => void
   drawingLayerActive: boolean
-  renderedMasks: RenderedMask[]
+  renderedRasterPreviews: RenderedRasterPreview[]
   renderedPolygons: RenderedPolygon[]
   renderedRotationRects: RenderedRotationRect[]
   renderedRectangles: RenderedRectangle[]
@@ -148,7 +172,6 @@ export type ProjectTaskCanvasSectionProps = {
   onHandleRectangleMouseLeave: (shapeId: string) => void
   onHandleRectangleMouseDown: (shapeId: string, event: ReactMouseEvent<HTMLDivElement>) => void
   onHandleRectangleClick: (shapeId: string, event: ReactMouseEvent<HTMLDivElement>) => void
-  onHandleMaskMouseDown: (shapeId: string, event: ReactMouseEvent<HTMLElement>) => void
   onHandlePointMouseDown: (shapeId: string, event: ReactMouseEvent<Element>) => void
   onHandlePolygonMouseDown: (shapeId: string, event: ReactMouseEvent<SVGGraphicsElement>) => void
   onHandleCuboidFaceMouseDown: (shapeId: string, face: "front" | "back", event: ReactMouseEvent<SVGPolygonElement>) => void
@@ -169,14 +192,6 @@ export type ProjectTaskCanvasSectionProps = {
   } | null
   polygonDraftStagePoints: Point[]
   hoveredDraftVertexIndex: number | null
-  maskDraftStagePoints: Point[]
-  maskCursorStagePoint: Point | null
-  maskBrushSize: number
-  maskDrawMode: "brush" | "eraser"
-  onCreateMaskDraft: (event: ReactMouseEvent<HTMLDivElement>) => void
-  onAppendMaskDraftPoint: (event: ReactMouseEvent<HTMLDivElement>) => void
-  onCommitMaskStroke: () => void
-  onClearMaskTransientState: () => void
   onHandlePolygonDrawMove: (event: ReactMouseEvent<HTMLDivElement>) => void
   onHandlePolygonDrawClick: (event: ReactMouseEvent<HTMLDivElement>) => void
   onHandlePolygonDrawDoubleClick: (event: ReactMouseEvent<HTMLDivElement>) => void
@@ -256,6 +271,26 @@ export type ProjectTaskCanvasSectionProps = {
 }
 
 export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
+  const lineScale = clampAppearanceScale(props.annotationLineWidthScale)
+  const pointScale = clampAppearanceScale(props.annotationPointSizeScale)
+  const stroke2 = stageInvariantStrokePx(2 * lineScale, props.imageScale)
+  const stroke1 = stageInvariantStrokePx(1 * lineScale, props.imageScale)
+  const stroke4 = stageInvariantStrokePx(4 * lineScale, props.imageScale, 1)
+  const pointVisualR = stageInvariantSizePx(4.5 * pointScale, props.imageScale, 1.5)
+  const pointHitR = stageInvariantSizePx(14 * pointScale, props.imageScale, 5)
+  const jointHitR = stageInvariantSizePx(12 * pointScale, props.imageScale, 5)
+  const jointVisRSelected = stageInvariantSizePx(5 * pointScale, props.imageScale, 1.8)
+  const jointVisR = stageInvariantSizePx(3.5 * pointScale, props.imageScale, 1.3)
+  const rotateHandleR = stageInvariantSizePx(5 * pointScale, props.imageScale, 2)
+  const draftPointHoverHaloR = stageInvariantSizePx(8 * pointScale, props.imageScale, 2.5)
+  const draftPointHoverR = stageInvariantSizePx(5 * pointScale, props.imageScale, 2)
+  const draftPointR = stageInvariantSizePx(3.5 * pointScale, props.imageScale, 1.3)
+  const sam2PromptPointR = stageInvariantSizePx(6 * pointScale, props.imageScale, 2)
+  const rectResizeHandleSize = stageInvariantSizePx(9 * pointScale, props.imageScale, 4)
+  const rectResizeHandleBorder = stageInvariantStrokePx(1, props.imageScale, 0.5)
+  const skeletonLabelFontSize = stageInvariantSizePx(10, props.imageScale, 6)
+  const skeletonLabelOffset = stageInvariantSizePx(10, props.imageScale, 4)
+  const lw = (base: number, min = 0.5) => Math.max(min, base * lineScale)
   return (
     <TaskCanvasLayer>
       {props.error ? <p className="text-sm text-destructive">读取失败：{props.error}</p> : null}
@@ -287,9 +322,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                   ? props.isPanning
                     ? "grabbing"
                     : "grab"
-                  : props.canDrawMask
-                    ? "none"
-                    : props.canDrawRectangle ||
+                  : props.canDrawRectangle ||
                         props.canDrawPolygon ||
                         props.canDrawBox3d ||
                         props.canDrawKeypoint ||
@@ -300,9 +333,9 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
             >
               <div className="relative h-full w-full min-h-0 min-w-0">
                 <div
-                  className="absolute inset-0 will-change-transform"
+                  className="absolute inset-0"
                   style={{
-                    transform: `translate3d(${props.imageOffset.x}px, ${props.imageOffset.y}px, 0) scale(${props.imageScale})`,
+                    transform: `translate(${props.imageOffset.x}px, ${props.imageOffset.y}px) scale(${props.imageScale})`,
                     transformOrigin: "50% 50%",
                   }}
                 >
@@ -318,8 +351,8 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                     />
                   </div>
                   <div className="pointer-events-none absolute inset-0">
-                <svg className="absolute inset-0 h-full w-full overflow-visible">
-                  {props.renderedMasks.map((item) => {
+                <svg className="ea-annotation-svg absolute inset-0 h-full w-full overflow-visible">
+                  {props.renderedRasterPreviews.map((item) => {
                     const isSelected = props.selectedShapeIndex === item.index
                     const isHovered = props.hoveredShapeIndex === item.index
                     const nudgeT = dragNudgeSvgTransform(props.dragStageNudge, item.shapeId)
@@ -335,7 +368,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           opacity={maskLayerOpacity}
                           className="pointer-events-none"
                         >
-                          <MaskRasterOverlay
+                          <RasterPreviewOverlay
                             shapeId={item.shapeId}
                             stageImageRect={item.stageImageRect}
                             counts={item.raster.counts}
@@ -362,7 +395,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             r={Math.max(1, stageBrushSize / 2)}
                             fill={item.color}
                             stroke={item.color}
-                            strokeWidth={isSelected ? 1.5 : 1}
+                            strokeWidth={lw(isSelected ? 1.5 : 1)}
                           />
                         </g>
                       )
@@ -386,7 +419,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                                 r={Math.max(1, stageBrushSize / 2)}
                                 fill={item.color}
                                 stroke={item.color}
-                                strokeWidth={isSelected ? 1.5 : 1}
+                                strokeWidth={lw(isSelected ? 1.5 : 1)}
                               />
                             )
                           }
@@ -397,7 +430,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                               fill="none"
                               stroke={item.color}
                               strokeOpacity={1}
-                              strokeWidth={Math.max(1, stageBrushSize + (isSelected ? 1.5 : isHovered ? 0.8 : 0))}
+                              strokeWidth={Math.max(lw(1), (stageBrushSize + (isSelected ? 1.5 : isHovered ? 0.8 : 0)) * lineScale)}
                               strokeLinecap="round"
                               strokeLinejoin="round"
                             />
@@ -416,7 +449,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           points={polygonPoints}
                           fill={isSelected || isHovered ? `${item.color}33` : "transparent"}
                           stroke={item.color}
-                          strokeWidth={2}
+                          strokeWidth={lw(2)}
                           className={props.drawingLayerActive ? "pointer-events-none" : "pointer-events-auto"}
                           onMouseEnter={() => props.onHandleRectangleMouseEnter(item.shapeId)}
                           onMouseLeave={() => props.onHandleRectangleMouseLeave(item.shapeId)}
@@ -426,6 +459,33 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             props.onSetSelectedShapeId(item.shapeId)
                           }}
                         />
+                      </g>
+                    )
+                  })}
+                  {props.renderedRectangles.map((item) => {
+                    const isSelected = props.selectedShapeIndex === item.index
+                    const isHovered = props.hoveredShapeIndex === item.index
+                    const nudgeT = dragNudgeSvgTransform(props.dragStageNudge, item.shapeId)
+                    const left = item.left
+                    const top = item.top
+                    const right = item.left + item.width
+                    const bottom = item.top + item.height
+                    return (
+                      <g key={`rect-stroke-${item.shapeId}`} transform={nudgeT} className="pointer-events-none">
+                        <rect
+                          x={left}
+                          y={top}
+                          width={item.width}
+                          height={item.height}
+                          fill={isSelected || isHovered ? `${item.color}33` : "transparent"}
+                          stroke="none"
+                        />
+                        {!item.clippedTop ? <line x1={left} y1={top} x2={right} y2={top} stroke={item.color} strokeWidth={lw(2)} /> : null}
+                        {!item.clippedRight ? <line x1={right} y1={top} x2={right} y2={bottom} stroke={item.color} strokeWidth={lw(2)} /> : null}
+                        {!item.clippedBottom ? (
+                          <line x1={right} y1={bottom} x2={left} y2={bottom} stroke={item.color} strokeWidth={lw(2)} />
+                        ) : null}
+                        {!item.clippedLeft ? <line x1={left} y1={bottom} x2={left} y2={top} stroke={item.color} strokeWidth={lw(2)} /> : null}
                       </g>
                     )
                   })}
@@ -490,7 +550,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             x2={p2.x}
                             y2={p2.y}
                             stroke={item.color}
-                            strokeWidth={isSelected ? 2.25 : isHovered ? 2 : 1.5}
+                            strokeWidth={lw(isSelected ? 2.25 : isHovered ? 2 : 1.5)}
                             className="pointer-events-none"
                           />
                         ))}
@@ -502,7 +562,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             x2={p2.x}
                             y2={p2.y}
                             stroke="#ffffff"
-                            strokeWidth={isSelected ? 3.75 : isHovered ? 3.25 : 3}
+                            strokeWidth={lw(isSelected ? 3.75 : isHovered ? 3.25 : 3)}
                             className="pointer-events-none"
                           />
                         ))}
@@ -519,7 +579,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           points={polygonPoints}
                           fill={isSelected || isHovered ? `${item.color}33` : "transparent"}
                           stroke={item.color}
-                          strokeWidth={2}
+                          strokeWidth={lw(2)}
                           className={props.drawingLayerActive ? "pointer-events-none" : "pointer-events-auto"}
                           onMouseEnter={() => props.onHandleRectangleMouseEnter(item.shapeId)}
                           onMouseLeave={() => props.onHandleRectangleMouseLeave(item.shapeId)}
@@ -537,8 +597,8 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                     const isSelected = props.selectedShapeIndex === item.index
                     const isHovered = props.hoveredShapeIndex === item.index
                     /** 与多边形顶点一致：选中/悬停也用同一视觉半径，外圈白边 1px */
-                    const rVisual = 4.5
-                    const hitR = 14
+                    const rVisual = pointVisualR
+                    const hitR = pointHitR
                     return (
                       <g key={`point-${item.shapeId}`} transform={dragNudgeSvgTransform(props.dragStageNudge, item.shapeId)}>
                         <circle
@@ -561,7 +621,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           r={rVisual}
                           fill={item.color}
                           stroke={isSelected || isHovered ? "#ffffff" : `${item.color}cc`}
-                          strokeWidth={1}
+                          strokeWidth={lw(1)}
                           className="pointer-events-none"
                         />
                       </g>
@@ -587,8 +647,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                       minY = c - minSpan / 2
                       maxY = c + minSpan / 2
                     }
-                    const jointHitR = 12
-                    const jointVisR = isSelected ? 5 : 3.5
+                    const jointVisualR = isSelected ? jointVisRSelected : jointVisR
                     return (
                       <g key={`skeleton-${item.shapeId}`} transform={dragNudgeSvgTransform(props.dragStageNudge, item.shapeId)}>
                         {item.edgeIndexPairs.map(([a, b], edgeI) => {
@@ -603,7 +662,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                               x2={p2.x}
                               y2={p2.y}
                               stroke={item.color}
-                              strokeWidth={isSelected || isHovered ? 2.5 : 2}
+                              strokeWidth={lw(isSelected || isHovered ? 2.5 : 2)}
                               className="pointer-events-none"
                             />
                           )
@@ -615,7 +674,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           height={maxY - minY}
                           fill={isSelected ? `${item.color}1a` : "transparent"}
                           stroke={isSelected ? item.color : "none"}
-                          strokeWidth={isSelected ? 2 : 0}
+                          strokeWidth={isSelected ? lw(2) : 0}
                           strokeDasharray={isSelected ? "5 4" : undefined}
                           className={props.drawingLayerActive ? "pointer-events-none" : "pointer-events-auto cursor-move"}
                           onMouseEnter={() => props.onHandleRectangleMouseEnter(item.shapeId)}
@@ -653,7 +712,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             <circle
                               cx={pt.x}
                               cy={pt.y}
-                              r={jointVisR}
+                              r={jointVisualR}
                               fill={
                                 props.rawHighlightCorner?.shapeId === item.shapeId &&
                                 props.rawHighlightCorner.cornerIndex === j
@@ -661,15 +720,15 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                                   : item.color
                               }
                               stroke="#ffffff"
-                              strokeWidth={1}
+                              strokeWidth={lw(1)}
                               className="pointer-events-none"
                             />
                             <text
                               x={pt.x}
-                              y={pt.y + jointVisR + 10}
+                              y={pt.y + jointVisualR + skeletonLabelOffset}
                               textAnchor="middle"
                               fill={item.color}
-                              fontSize={10}
+                              fontSize={skeletonLabelFontSize}
                               fontWeight={400}
                               className="pointer-events-none"
                             >
@@ -691,15 +750,15 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                         x2={selectedRotationRect.rotateHandle.x}
                         y2={selectedRotationRect.rotateHandle.y}
                         stroke={selectedRotationRect.color}
-                        strokeWidth={2}
+                        strokeWidth={lw(2)}
                       />
                       <circle
                         cx={selectedRotationRect.rotateHandle.x}
                         cy={selectedRotationRect.rotateHandle.y}
-                        r={5}
+                        r={rotateHandleR}
                         fill={selectedRotationRect.color}
                         stroke="#ffffff"
-                        strokeWidth={1}
+                        strokeWidth={lw(1)}
                         className="pointer-events-auto cursor-grab"
                         onMouseDown={props.onHandleRotationHandleMouseDown}
                       />
@@ -708,7 +767,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           key={`rotation-corner-${cornerIndex}`}
                           cx={corner.x}
                           cy={corner.y}
-                          r={4.5}
+                          r={pointVisualR}
                           fill={
                             props.rawHighlightCorner?.shapeId === selectedRotationRect.shapeId &&
                             props.rawHighlightCorner.cornerIndex === cornerIndex
@@ -716,7 +775,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                               : selectedRotationRect.color
                           }
                           stroke="#ffffff"
-                          strokeWidth={1}
+                          strokeWidth={lw(1)}
                           className="pointer-events-auto cursor-nwse-resize"
                           onMouseEnter={() => props.onSetRawHighlightCorner({ shapeId: selectedRotationRect.shapeId, cornerIndex })}
                           onMouseLeave={() =>
@@ -741,7 +800,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           key={`polygon-vertex-${selectedPolygon.index}-${vertexIndex}`}
                           cx={point.x}
                           cy={point.y}
-                          r={4.5}
+                          r={pointVisualR}
                           fill={
                             props.rawHighlightCorner?.shapeId === selectedPolygon.shapeId &&
                             props.rawHighlightCorner.cornerIndex === vertexIndex
@@ -749,7 +808,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                               : selectedPolygon.color
                           }
                           stroke="#ffffff"
-                          strokeWidth={1}
+                          strokeWidth={lw(1)}
                           className="pointer-events-auto cursor-move"
                           onMouseEnter={() => props.onSetRawHighlightCorner({ shapeId: selectedPolygon.shapeId, cornerIndex: vertexIndex })}
                           onMouseLeave={() =>
@@ -776,21 +835,21 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           cx: point.x,
                           cy: point.y,
                           handleIndex: vertexIndex,
-                          r: 4.5,
+                          r: pointVisualR,
                         })),
                         ...cuboidFrontEdgeMidMarkers(b).map((m) => ({
                           key: `cuboid-m-${c.shapeId}-${m.handleIndex}`,
                           cx: m.cx,
                           cy: m.cy,
                           handleIndex: m.handleIndex,
-                          r: 3.5,
+                          r: draftPointR,
                         })),
                         ...cuboidBackVerticalEdgeHandleMarkers(b, t).map((m) => ({
                           key: `cuboid-bt-${c.shapeId}-${m.handleIndex}`,
                           cx: m.cx,
                           cy: m.cy,
                           handleIndex: m.handleIndex,
-                          r: 3.5,
+                          r: draftPointR,
                         })),
                       ]
                       return (
@@ -807,7 +866,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                                   : c.color
                               }
                               stroke="#ffffff"
-                              strokeWidth={1}
+                              strokeWidth={lw(1)}
                               className="pointer-events-auto cursor-move"
                               onMouseEnter={() => props.onSetRawHighlightCorner({ shapeId: c.shapeId, cornerIndex: h.handleIndex })}
                               onMouseLeave={() =>
@@ -842,7 +901,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                     />
                   )
                 })}
-                {props.renderedMasks.map((item) => {
+                {props.renderedRasterPreviews.map((item) => {
                   const isSelected = props.selectedShapeIndex === item.index
                   const isHovered = props.hoveredShapeIndex === item.index
                   const nu = props.dragStageNudge
@@ -850,53 +909,46 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                   return (
                     <div
                       key={`mask-bbox-${item.shapeId}`}
-                      className={`${props.drawingLayerActive ? "pointer-events-none" : "pointer-events-auto"} absolute border border-dashed`}
+                      className="pointer-events-none absolute border border-dashed"
                       style={{
                         left: item.left,
                         top: item.top,
                         width: item.width,
                         height: item.height,
                         borderColor: item.color,
-                        borderWidth: isSelected ? 2 : 1,
+                        borderWidth: isSelected ? stroke2 : stroke1,
                         opacity: isSelected || isHovered ? 0.9 : 0.45,
                         backgroundColor: isSelected ? `${item.color}1a` : "transparent",
                         transform: match ? `translate3d(${nu!.dx}px, ${nu!.dy}px, 0)` : undefined,
-                      }}
-                      onMouseEnter={() => props.onHandleRectangleMouseEnter(item.shapeId)}
-                      onMouseLeave={() => props.onHandleRectangleMouseLeave(item.shapeId)}
-                      onMouseDown={(event) => props.onHandleMaskMouseDown(item.shapeId, event)}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        props.onSetSelectedShapeId(item.shapeId)
                       }}
                     />
                   )
                 })}
                 {props.previewRect ? (
                   <div
-                    className="absolute z-10 border-2 border-dashed"
+                    className="absolute z-10 border-dashed"
                     style={{
                       left: props.previewRect.left,
                       top: props.previewRect.top,
                       width: props.previewRect.width,
                       height: props.previewRect.height,
                       borderColor: props.pendingRectColor,
-                      borderLeftWidth: props.previewRect.clippedLeft ? 0 : 2,
-                      borderTopWidth: props.previewRect.clippedTop ? 0 : 2,
-                      borderRightWidth: props.previewRect.clippedRight ? 0 : 2,
-                      borderBottomWidth: props.previewRect.clippedBottom ? 0 : 2,
+                      borderLeftWidth: props.previewRect.clippedLeft ? 0 : stroke2,
+                      borderTopWidth: props.previewRect.clippedTop ? 0 : stroke2,
+                      borderRightWidth: props.previewRect.clippedRight ? 0 : stroke2,
+                      borderBottomWidth: props.previewRect.clippedBottom ? 0 : stroke2,
                       backgroundColor: `${props.pendingRectColor}33`,
                     }}
                   />
                 ) : null}
                 {props.polygonDraftStagePoints.length >= 2 ? (
-                  <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
+                  <svg className="ea-annotation-svg pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
                     <polyline
                       points={props.polygonDraftStagePoints.map((pt) => `${pt.x},${pt.y}`).join(" ")}
                       fill="none"
                       stroke={props.pendingRectColor}
                       strokeDasharray="5 4"
-                      strokeWidth={2}
+                      strokeWidth={lw(2)}
                     />
                     {props.polygonDraftStagePoints.slice(0, -1).map((pt, index) => {
                       const isHovered = props.hoveredDraftVertexIndex === index
@@ -906,61 +958,27 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             <circle
                               cx={pt.x}
                               cy={pt.y}
-                              r={8}
+                              r={draftPointHoverHaloR}
                               fill={`${props.pendingRectColor}22`}
                               stroke={props.pendingRectColor}
-                              strokeWidth={1.5}
+                              strokeWidth={lw(1.5)}
                             />
                           ) : null}
-                          <circle cx={pt.x} cy={pt.y} r={isHovered ? 5 : 3.5} fill={props.pendingRectColor} stroke="#ffffff" strokeWidth={1} />
+                          <circle
+                            cx={pt.x}
+                            cy={pt.y}
+                            r={isHovered ? draftPointHoverR : draftPointR}
+                            fill={props.pendingRectColor}
+                            stroke="#ffffff"
+                            strokeWidth={lw(1)}
+                          />
                         </g>
                       )
                     })}
                   </svg>
                 ) : null}
-                {props.canDrawMask && props.maskDraftStagePoints.length >= 1 ? (
-                  <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
-                    {props.maskDraftStagePoints.length === 1 ? (
-                      <g opacity={0.75}>
-                        <circle
-                          cx={props.maskDraftStagePoints[0]?.x ?? 0}
-                          cy={props.maskDraftStagePoints[0]?.y ?? 0}
-                          r={Math.max(1, (props.maskBrushSize * props.imageFitScale) / 2)}
-                          fill={props.maskDrawMode === "eraser" ? "#ef4444" : props.pendingRectColor}
-                          stroke={props.maskDrawMode === "eraser" ? "#ef4444" : props.pendingRectColor}
-                          strokeWidth={1}
-                        />
-                      </g>
-                    ) : (
-                      <g opacity={0.75}>
-                        <polyline
-                          points={props.maskDraftStagePoints.map((pt) => `${pt.x},${pt.y}`).join(" ")}
-                          fill="none"
-                          stroke={props.maskDrawMode === "eraser" ? "#ef4444" : props.pendingRectColor}
-                          strokeOpacity={1}
-                          strokeWidth={Math.max(1, props.maskBrushSize * props.imageFitScale)}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </g>
-                    )}
-                  </svg>
-                ) : null}
-                {props.canDrawMask && props.maskCursorStagePoint ? (
-                  <svg className="pointer-events-none absolute inset-0 z-20 h-full w-full overflow-visible">
-                    <circle
-                      cx={props.maskCursorStagePoint.x}
-                      cy={props.maskCursorStagePoint.y}
-                      r={Math.max(1, (props.maskBrushSize * props.imageFitScale) / 2)}
-                      fill="transparent"
-                      stroke={props.maskDrawMode === "eraser" ? "#ef4444" : props.pendingRectColor}
-                      strokeWidth={1.5}
-                      opacity={0.95}
-                    />
-                  </svg>
-                ) : null}
                 {props.canDrawBox3d && props.box3dDraftBaseStagePoints.length === 4 && props.box3dPreviewTopStagePoints.length === 4 ? (
-                  <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
+                  <svg className="ea-annotation-svg pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
                     {(() => {
                       const f = props.box3dDraftBaseStagePoints
                       const k = props.box3dPreviewTopStagePoints
@@ -968,7 +986,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                       const { behind: draftBehind, front: draftFront } = cuboidWireframeEdgeSegmentsLayered(f, k)
                       return (
                         <g>
-                          <polygon points={kStr} fill={`${props.pendingRectColor}18`} stroke={props.pendingRectColor} strokeWidth={1.5} strokeDasharray="4 3" />
+                          <polygon points={kStr} fill={`${props.pendingRectColor}18`} stroke={props.pendingRectColor} strokeWidth={lw(1.5)} strokeDasharray="4 3" />
                           {draftBehind.map(([p1, p2], j) => (
                             <line
                               key={`box3d-draft-b-${j}`}
@@ -977,7 +995,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                               x2={p2.x}
                               y2={p2.y}
                               stroke={props.pendingRectColor}
-                              strokeWidth={1.5}
+                              strokeWidth={lw(1.5)}
                               strokeDasharray="4 3"
                             />
                           ))}
@@ -989,7 +1007,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                               x2={p2.x}
                               y2={p2.y}
                               stroke="#ffffff"
-                              strokeWidth={2.5}
+                              strokeWidth={lw(2.5)}
                             />
                           ))}
                         </g>
@@ -1022,10 +1040,13 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                             <button
                               key={handle.id}
                               type="button"
-                              className="pointer-events-auto absolute z-20 box-border h-[9px] w-[9px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white"
+                              className="pointer-events-auto absolute z-20 box-border -translate-x-1/2 -translate-y-1/2 rounded-full border border-white"
                               style={{
                                 left: handle.x,
                                 top: handle.y,
+                                width: rectResizeHandleSize,
+                                height: rectResizeHandleSize,
+                                borderWidth: rectResizeHandleBorder,
                                 cursor: `${handle.id}-resize`,
                                 backgroundColor: rect.color,
                               }}
@@ -1040,12 +1061,10 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                   </div>
                   {props.drawingLayerActive ? (
                     <div
-                      className={`absolute inset-0 z-10 ${props.canDrawMask ? "cursor-none" : "cursor-crosshair"}`}
-                      onMouseDown={props.canDrawMask ? props.onCreateMaskDraft : undefined}
+                      className="absolute inset-0 z-10 cursor-crosshair"
+                      onMouseDown={undefined}
                       onMouseMove={
-                        props.canDrawMask
-                          ? props.onAppendMaskDraftPoint
-                          : props.canDrawPolygon
+                        props.canDrawPolygon
                             ? props.onHandlePolygonDrawMove
                             : props.canDrawBox3d
                               ? props.onHandleBox3dDrawMove
@@ -1055,19 +1074,10 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                                   ? undefined
                                   : props.onHandleRectDrawMove
                       }
-                      onMouseUp={props.canDrawMask ? props.onCommitMaskStroke : undefined}
-                      onMouseLeave={
-                        props.canDrawMask
-                          ? () => {
-                              props.onCommitMaskStroke()
-                              props.onClearMaskTransientState()
-                            }
-                          : undefined
-                      }
+                      onMouseUp={undefined}
+                      onMouseLeave={undefined}
                       onClick={
-                        props.canDrawMask
-                          ? undefined
-                          : props.canDrawPolygon
+                        props.canDrawPolygon
                             ? props.onHandlePolygonDrawClick
                             : props.canDrawBox3d
                               ? props.onHandleBox3dDrawClick
@@ -1077,7 +1087,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                                   ? props.onHandleKeypointDrawClick
                                   : props.onHandleRectDrawClick
                       }
-                      onDoubleClick={props.canDrawMask ? undefined : props.canDrawPolygon ? props.onHandlePolygonDrawDoubleClick : undefined}
+                      onDoubleClick={props.canDrawPolygon ? props.onHandlePolygonDrawDoubleClick : undefined}
                     />
                   ) : null}
                   {props.diffusionOverlayActive ? (
@@ -1093,17 +1103,17 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                   {props.diffusionProcessRects.map((pr) => (
                     <div
                       key={pr.id}
-                      className="pointer-events-none absolute z-[27] box-border border-2 border-dashed"
+                      className="pointer-events-none absolute z-[27] box-border border-dashed"
                       style={{
                         left: pr.left,
                         top: pr.top,
                         width: pr.width,
                         height: pr.height,
                         borderColor: pr.color,
-                        borderLeftWidth: pr.clippedLeft ? 0 : 2,
-                        borderTopWidth: pr.clippedTop ? 0 : 2,
-                        borderRightWidth: pr.clippedRight ? 0 : 2,
-                        borderBottomWidth: pr.clippedBottom ? 0 : 2,
+                        borderLeftWidth: pr.clippedLeft ? 0 : stroke2,
+                        borderTopWidth: pr.clippedTop ? 0 : stroke2,
+                        borderRightWidth: pr.clippedRight ? 0 : stroke2,
+                        borderBottomWidth: pr.clippedBottom ? 0 : stroke2,
                         backgroundColor: `${pr.color}22`,
                         boxShadow: `0 0 0 1px rgba(255,255,255,0.7), 0 0 8px ${pr.color}66`,
                       }}
@@ -1123,10 +1133,10 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                         width: props.diffusionSeedRect.width,
                         height: props.diffusionSeedRect.height,
                         borderColor: props.diffusionSeedColor,
-                        borderLeftWidth: props.diffusionSeedRect.clippedLeft ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
-                        borderTopWidth: props.diffusionSeedRect.clippedTop ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
-                        borderRightWidth: props.diffusionSeedRect.clippedRight ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
-                        borderBottomWidth: props.diffusionSeedRect.clippedBottom ? 0 : props.diffusionSeedRectCommitted ? 4 : 2,
+                        borderLeftWidth: props.diffusionSeedRect.clippedLeft ? 0 : props.diffusionSeedRectCommitted ? stroke4 : stroke2,
+                        borderTopWidth: props.diffusionSeedRect.clippedTop ? 0 : props.diffusionSeedRectCommitted ? stroke4 : stroke2,
+                        borderRightWidth: props.diffusionSeedRect.clippedRight ? 0 : props.diffusionSeedRectCommitted ? stroke4 : stroke2,
+                        borderBottomWidth: props.diffusionSeedRect.clippedBottom ? 0 : props.diffusionSeedRectCommitted ? stroke4 : stroke2,
                         backgroundColor: props.diffusionSeedRectCommitted
                           ? `${props.diffusionSeedColor}28`
                           : `${props.diffusionSeedColor}33`,
@@ -1148,35 +1158,35 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                         onMouseMove={props.onSam2OverlayMouseMove}
                         onMouseLeave={props.onSam2OverlayMouseLeave}
                       />
-                      <svg className="pointer-events-none absolute inset-0 z-[23] h-full w-full overflow-visible">
+                      <svg className="ea-annotation-svg pointer-events-none absolute inset-0 z-[23] h-full w-full overflow-visible">
                         {props.sam2StagePoints.map((p) => (
                           <circle
                             key={p.id}
                             cx={p.stageX}
                             cy={p.stageY}
-                            r={6}
+                            r={sam2PromptPointR}
                             fill={p.label === 1 ? props.sam2PointPositiveColor : props.sam2PointNegativeColor}
                             stroke={p.label === 1 ? "#ffffff" : "#64748b"}
-                            strokeWidth={1.5}
+                            strokeWidth={lw(1.5)}
                           />
                         ))}
                         {props.sam2AutoPreviewRect ? (
-                          <Sam2AutoPromptGuides rect={props.sam2AutoPreviewRect} stroke="#22d3ee" />
+                          <Sam2AutoPromptGuides rect={props.sam2AutoPreviewRect} stroke="#22d3ee" strokeWidth={lw(2)} />
                         ) : null}
                       </svg>
                       {props.sam2PreviewRect ? (
                         <div
-                          className="pointer-events-none absolute z-[23] border-2 border-dashed"
+                          className="pointer-events-none absolute z-[23] border-dashed"
                           style={{
                             left: props.sam2PreviewRect.left,
                             top: props.sam2PreviewRect.top,
                             width: props.sam2PreviewRect.width,
                             height: props.sam2PreviewRect.height,
                             borderColor: props.sam2PointPositiveColor,
-                            borderLeftWidth: props.sam2PreviewRect.clippedLeft ? 0 : 2,
-                            borderTopWidth: props.sam2PreviewRect.clippedTop ? 0 : 2,
-                            borderRightWidth: props.sam2PreviewRect.clippedRight ? 0 : 2,
-                            borderBottomWidth: props.sam2PreviewRect.clippedBottom ? 0 : 2,
+                            borderLeftWidth: props.sam2PreviewRect.clippedLeft ? 0 : stroke2,
+                            borderTopWidth: props.sam2PreviewRect.clippedTop ? 0 : stroke2,
+                            borderRightWidth: props.sam2PreviewRect.clippedRight ? 0 : stroke2,
+                            borderBottomWidth: props.sam2PreviewRect.clippedBottom ? 0 : stroke2,
                             backgroundColor: `${props.sam2PointPositiveColor}33`,
                           }}
                         />

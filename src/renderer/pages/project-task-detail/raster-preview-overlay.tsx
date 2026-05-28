@@ -1,10 +1,10 @@
 /**
- * 在 SVG 内用 foreignObject + canvas 绘制 RLE 二值 mask（与图像同分辨率）。
+ * 在 SVG 内用 foreignObject + canvas 绘制 RLE 二值光栅预览（与图像同分辨率）。
  */
 import { decodeRowMajorRleToBinary } from "@/lib/mask-raster-rle"
 import { useLayoutEffect, useRef } from "react"
 
-type MaskRasterOverlayProps = {
+type RasterPreviewOverlayProps = {
   shapeId: string
   stageImageRect: { left: number; top: number; width: number; height: number }
   counts: number[]
@@ -31,7 +31,14 @@ function parseRgb(color: string): { r: number; g: number; b: number } {
   return { r: 245, g: 158, b: 11 }
 }
 
-export function MaskRasterOverlay({ shapeId, stageImageRect, counts, imageWidth, imageHeight, color }: MaskRasterOverlayProps) {
+export function RasterPreviewOverlay({
+  shapeId,
+  stageImageRect,
+  counts,
+  imageWidth,
+  imageHeight,
+  color,
+}: RasterPreviewOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const { r, g, b } = parseRgb(color)
 
@@ -62,7 +69,7 @@ export function MaskRasterOverlay({ shapeId, stageImageRect, counts, imageWidth,
 
   return (
     <foreignObject
-      key={`mask-raster-fo-${shapeId}`}
+      key={`raster-preview-fo-${shapeId}`}
       x={left}
       y={top}
       width={width}

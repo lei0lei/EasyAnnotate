@@ -3,7 +3,6 @@ type XAnyLabelShapeType =
   | "rotation"
   | "polygon"
   | "point"
-  | "mask"
   | "line"
   | "linestrip"
   | "circle"
@@ -36,6 +35,24 @@ export type XAnyLabelFile = {
   imageWidth: number
 }
 
+const NORMALIZED_SHAPE_TYPES: XAnyLabelShapeType[] = [
+  "rectangle",
+  "rotation",
+  "polygon",
+  "point",
+  "line",
+  "linestrip",
+  "circle",
+  "cuboid2d",
+  "skeleton",
+]
+
+function normalizePositiveDimension(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
+  const rounded = Math.round(value)
+  return rounded > 0 ? rounded : fallback
+}
+
 function fileNameFromPath(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/")
   const parts = normalized.split("/").filter(Boolean)
@@ -65,24 +82,49 @@ function normalizeShape(input: unknown): XAnyLabelShape | undefined {
   if (typeof value.label !== "string") return undefined
   if (!Array.isArray(value.points)) return undefined
   if (typeof value.shape_type !== "string") return undefined
+  const normalizedPoints = value.points
+    .map((pt) => {
+      if (!Array.isArray(pt) || pt.length < 2) return undefined
+      const x = Number(pt[0])
+      const y = Number(pt[1])
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined
+      return [x, y]
+    })
+    .filter((pt): pt is number[] => !!pt)
+  const shapeTypeRaw = value.shape_type.trim()
+  const attrs = value.attributes && typeof value.attributes === "object" ? (value.attributes as Record<string, unknown>) : {}
+  const shapeType = NORMALIZED_SHAPE_TYPES.includes(shapeTypeRaw as XAnyLabelShapeType)
+    ? (shapeTypeRaw as XAnyLabelShape["shape_type"])
+    : null
+  if (!shapeType) return undefined
+  if (normalizedPoints.length < 1) return undefined
+  const points =
+    shapeType === "rectangle" && normalizedPoints.length === 2
+      ? (() => {
+          const p1 = normalizedPoints[0]!
+          const p2 = normalizedPoints[1]!
+          const left = Math.min(p1[0], p2[0])
+          const right = Math.max(p1[0], p2[0])
+          const top = Math.min(p1[1], p2[1])
+          const bottom = Math.max(p1[1], p2[1])
+          return [
+            [left, top],
+            [right, top],
+            [right, bottom],
+            [left, bottom],
+          ]
+        })()
+      : normalizedPoints
   return {
     label: value.label,
     score: typeof value.score === "number" ? value.score : null,
-    points: value.points
-      .map((pt) => {
-        if (!Array.isArray(pt) || pt.length < 2) return undefined
-        const x = Number(pt[0])
-        const y = Number(pt[1])
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined
-        return [x, y]
-      })
-      .filter((pt): pt is number[] => !!pt),
+    points,
     group_id: typeof value.group_id === "number" ? value.group_id : null,
     description: typeof value.description === "string" ? value.description : null,
     difficult: value.difficult === true,
-    shape_type: value.shape_type as XAnyLabelShape["shape_type"],
+    shape_type: shapeType,
     flags: value.flags && typeof value.flags === "object" ? (value.flags as Record<string, unknown>) : null,
-    attributes: value.attributes && typeof value.attributes === "object" ? (value.attributes as Record<string, unknown>) : {},
+    attributes: attrs,
     kie_linking: Array.isArray(value.kie_linking) ? value.kie_linking : [],
   }
 }
@@ -110,8 +152,8 @@ export function normalizeXAnyLabelDoc(payload: {
       description: typeof obj.description === "string" || obj.description === null ? obj.description : null,
       imagePath: typeof obj.imagePath === "string" && obj.imagePath.trim() ? obj.imagePath : fallback.imagePath,
       imageData: typeof obj.imageData === "string" ? obj.imageData : null,
-      imageHeight: typeof obj.imageHeight === "number" && Number.isFinite(obj.imageHeight) ? obj.imageHeight : fallback.imageHeight,
-      imageWidth: typeof obj.imageWidth === "number" && Number.isFinite(obj.imageWidth) ? obj.imageWidth : fallback.imageWidth,
+      imageHeight: normalizePositiveDimension(obj.imageHeight, fallback.imageHeight),
+      imageWidth: normalizePositiveDimension(obj.imageWidth, fallback.imageWidth),
     }
   } catch {
     return fallback

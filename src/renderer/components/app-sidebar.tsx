@@ -1,6 +1,5 @@
 import { cn } from "@/lib/utils"
 import {
-  Activity,
   Cpu,
   FolderKanban,
   GitBranch,
@@ -14,15 +13,14 @@ import {
 import { memo } from "react"
 import { NavLink } from "react-router-dom"
 
-const nav: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
+const nav: { to: string; label: string; icon: LucideIcon; end?: boolean; disabled?: boolean }[] = [
   { to: "/", label: "Home", icon: Home, end: true },
   { to: "/projects", label: "Projects", icon: FolderKanban },
   { to: "/models", label: "Models", icon: Cpu },
-  { to: "/workflows", label: "Workflows", icon: GitBranch },
-  { to: "/monitor", label: "Monitor", icon: MonitorIcon },
+  { to: "/workflows", label: "Workflows", icon: GitBranch, disabled: true },
+  { to: "/monitor", label: "Monitor", icon: MonitorIcon, disabled: true },
   { to: "/backends", label: "Backends", icon: Server },
   { to: "/settings", label: "Settings", icon: Settings },
-  { to: "/events", label: "Events", icon: Activity },
 ]
 
 type AppSidebarProps = {
@@ -52,46 +50,66 @@ function AppSidebarInner({ collapsed }: AppSidebarProps) {
           expanded ? "px-2" : "px-1",
         )}
       >
-        {nav.map(({ to, label, icon: Icon, end: endProp }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={endProp ?? false}
-            title={label}
-            aria-label={label}
-            className={({ isActive }) =>
-              cn(
-                "group/nav flex items-center rounded-lg py-2.5 text-sm font-medium outline-none transition-colors duration-100",
-                "focus:outline-none focus-visible:outline-none focus-visible:ring-0",
-                expanded ? "gap-3 px-3" : "justify-center px-0",
-                "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
-                isActive &&
-                  "bg-primary/10 text-primary shadow-sm ring-1 ring-primary/15 dark:bg-primary/15 dark:ring-primary/25",
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <Icon
-                  className={cn(
-                    "pointer-events-none h-[18px] w-[18px] shrink-0 transition-transform duration-100",
-                    "group-hover/nav:scale-105",
-                    isActive && "text-primary",
-                  )}
-                  aria-hidden
-                />
-                <span
-                  className={cn(
-                    "min-w-0 truncate",
-                    expanded ? "opacity-100" : "sr-only",
-                  )}
-                >
-                  {label}
-                </span>
-              </>
-            )}
-          </NavLink>
-        ))}
+        {nav.map(({ to, label, icon: Icon, end: endProp, disabled }) => {
+          if (disabled) {
+            return (
+              <div
+                key={to}
+                title={`${label} (disabled)`}
+                aria-label={`${label} (disabled)`}
+                aria-disabled="true"
+                className={cn(
+                  "group/nav flex cursor-not-allowed items-center rounded-lg py-2.5 text-sm font-medium opacity-45",
+                  expanded ? "gap-3 px-3" : "justify-center px-0",
+                  "text-muted-foreground",
+                )}
+              >
+                <Icon className="pointer-events-none h-[18px] w-[18px] shrink-0" aria-hidden />
+                <span className={cn("min-w-0 truncate", expanded ? "opacity-100" : "sr-only")}>{label}</span>
+              </div>
+            )
+          }
+          return (
+            <NavLink
+              key={to}
+              to={to}
+              end={endProp ?? false}
+              title={label}
+              aria-label={label}
+              className={({ isActive }) =>
+                cn(
+                  "group/nav flex items-center rounded-lg py-2.5 text-sm font-medium outline-none transition-colors duration-100",
+                  "focus:outline-none focus-visible:outline-none focus-visible:ring-0",
+                  expanded ? "gap-3 px-3" : "justify-center px-0",
+                  "text-muted-foreground hover:bg-accent/70 hover:text-foreground",
+                  isActive &&
+                    "bg-primary/10 text-primary shadow-sm ring-1 ring-primary/15 dark:bg-primary/15 dark:ring-primary/25",
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <Icon
+                    className={cn(
+                      "pointer-events-none h-[18px] w-[18px] shrink-0 transition-transform duration-100",
+                      "group-hover/nav:scale-105",
+                      isActive && "text-primary",
+                    )}
+                    aria-hidden
+                  />
+                  <span
+                    className={cn(
+                      "min-w-0 truncate",
+                      expanded ? "opacity-100" : "sr-only",
+                    )}
+                  >
+                    {label}
+                  </span>
+                </>
+              )}
+            </NavLink>
+          )
+        })}
       </nav>
 
       <div className={cn("mt-auto border-t border-border/50 bg-muted/30", expanded ? "p-2" : "p-1")}>

@@ -4,13 +4,6 @@
  * 边界：专注拖拽会话，不负责工具切换与面板状态。
  */
 import { useEffect, useRef } from "react"
-import {
-  decodeRowMajorRleToBinary,
-  encodeBinaryToRowMajorRle,
-  foregroundBBoxInclusive,
-  readMaskRle,
-  translateBinaryMask,
-} from "@/lib/mask-raster-rle"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import { isDragSessionActive } from "@/pages/project-task-detail/drag-session-utils"
 import type { DragStageNudge } from "@/pages/project-task-detail/page-sections"
@@ -25,7 +18,7 @@ import {
   computeSkeletonGroupDragPoints,
   computeSkeletonVertexDragPoints,
 } from "@/pages/project-task-detail/interaction-ops"
-import type { DragLiveMaskRleOverride, DragLivePointsOverride, DragVertexLiveOverride } from "@/pages/project-task-detail/rendered-shapes"
+import type { DragLivePointsOverride, DragVertexLiveOverride } from "@/pages/project-task-detail/rendered-shapes"
 import type { Point } from "@/pages/project-task-detail/types"
 import type { ImageGeometry } from "@/pages/project-task-detail/canvas-geometry"
 import type { AnnotationDocRef, ImageSize, RawHighlightCorner, StageElementRef } from "@/pages/project-task-detail/hook-shared"
@@ -39,34 +32,16 @@ type UseDragSessionsParams = {
   getCurrentImageGeometry: () => ImageGeometry | null
   stageToImageWithGeometry: (stagePoint: Point, geometry: ImageGeometry) => Point
   updateShapePoints: (shapeIndex: number, points: number[][], shouldPersist: boolean) => void
-  updateMaskRle: (
-    shapeIndex: number,
-    payload: { counts: number[]; w: number; h: number; brushSize: number },
-    shouldPersist: boolean,
-  ) => void
   setRawHighlightCorner: (value: RawHighlightCorner) => void
   setDragLivePoints: (value: DragLivePointsOverride | null) => void
   setDragCuboidLivePoints: (value: DragLivePointsOverride | null) => void
   setDragVertexLive: (value: DragVertexLiveOverride | null) => void
-  setDragLiveMaskRle: (value: DragLiveMaskRleOverride | null) => void
   setDragStageNudge: (value: DragStageNudge | null) => void
   /** 图像坐标系下的平移向量 → stage 像素位移（用于 CSS/SVG translate，避免每帧重建 rendered*） */
   projectImageDeltaToStage: (dix: number, diy: number) => { dx: number; dy: number }
 }
 
-type MaskRleDragSnap = {
-  shapeIndex: number
-  startX: number
-  startY: number
-  data: Uint8Array
-  w: number
-  h: number
-  brushSize: number
-}
-
-type PendingDragFlush =
-  | { kind: "points"; shapeIndex: number; points: number[][] }
-  | { kind: "mask"; shapeIndex: number; counts: number[]; w: number; h: number; brushSize: number }
+type PendingDragFlush = { kind: "points"; shapeIndex: number; points: number[][] }
 
 function shapeStableIdFromDoc(doc: XAnyLabelFile | null | undefined, index: number): string | null {
   const s = doc?.shapes[index]
@@ -78,8 +53,6 @@ function dragCuboidLiveCacheKey(override: DragLivePointsOverride): string {
 }
 
 export function useDragSessions(params: UseDragSessionsParams) {
-  /** 避免 effect 因 doc/callback 依赖反复执行时从「已平移后的图」重新解码，再用全量 dx 平移导致位移叠加 */
-  const maskRleDragSnapshotRef = useRef<MaskRleDragSnap | null>(null)
   const pendingDragFlushRef = useRef<PendingDragFlush | null>(null)
   /** 与上一帧 cuboid 预览相同则跳过 setState，减少 React 提交 */
   const dragCuboidLiveKeyRef = useRef<string | null>(null)
@@ -91,12 +64,10 @@ export function useDragSessions(params: UseDragSessionsParams) {
     getCurrentImageGeometry,
     stageToImageWithGeometry,
     updateShapePoints,
-    updateMaskRle,
     setRawHighlightCorner,
     setDragLivePoints,
     setDragCuboidLivePoints,
     setDragVertexLive,
-    setDragLiveMaskRle,
     setDragStageNudge,
     projectImageDeltaToStage,
   } = params
@@ -129,7 +100,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
       setDragLivePoints(null)
       setDragCuboidLivePoints(null)
       setDragVertexLive(null)
-      setDragLiveMaskRle(null)
       setDragStageNudge(null)
     }
   }, [
@@ -137,7 +107,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
     polygonVertexDragAction,
     rotationDragAction,
     rotationTransformAction,
-    setDragLiveMaskRle,
     setDragCuboidLivePoints,
     setDragLivePoints,
     setDragVertexLive,
@@ -146,82 +115,16 @@ export function useDragSessions(params: UseDragSessionsParams) {
   ])
 
   useEffect(() => {
-    if (!shapeDragAction) {
-      maskRleDragSnapshotRef.current = null
-      return
-    }
+    if (!shapeDragAction) return
     pendingDragFlushRef.current = null
     let rafId = 0
     let latestPointer: { clientX: number; clientY: number } | null = null
-
-    const shape0 = annotationDocRef.current?.shapes[shapeDragAction.shapeIndex]
-    if (shapeDragAction.kind === "move" && shape0?.shape_type === "mask") {
-      const rle = readMaskRle(shape0.attributes)
-      if (rle && rle.w === imageNaturalSize.width && rle.h === imageNaturalSize.height) {
-        const cur = maskRleDragSnapshotRef.current
-        const needInit =
-          !cur ||
-          cur.shapeIndex !== shapeDragAction.shapeIndex ||
-          cur.startX !== shapeDragAction.start.x ||
-          cur.startY !== shapeDragAction.start.y
-        if (needInit) {
-          const data = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-          const brushSize =
-            typeof shape0.attributes?.brushSize === "number"
-              ? Math.max(1, Number(shape0.attributes.brushSize))
-              : typeof shape0.attributes?.maskBrushSize === "number"
-                ? Math.max(1, Number(shape0.attributes.maskBrushSize))
-                : 16
-          maskRleDragSnapshotRef.current = {
-            shapeIndex: shapeDragAction.shapeIndex,
-            startX: shapeDragAction.start.x,
-            startY: shapeDragAction.start.y,
-            data,
-            w: rle.w,
-            h: rle.h,
-            brushSize,
-          }
-        }
-      } else {
-        maskRleDragSnapshotRef.current = null
-      }
-    } else {
-      maskRleDragSnapshotRef.current = null
-    }
 
     const applyShapeDragAtPointer = (pointer: { clientX: number; clientY: number }) => {
       const geometry = getCurrentImageGeometry()
       const rect = stageRef.current?.getBoundingClientRect()
       if (!geometry || !rect) return
       const point = stageToImageWithGeometry({ x: pointer.clientX - rect.left, y: pointer.clientY - rect.top }, geometry)
-      const snap = maskRleDragSnapshotRef.current
-      if (snap && shapeDragAction.kind === "move" && snap.shapeIndex === shapeDragAction.shapeIndex) {
-        const dx = Math.round(point.x - shapeDragAction.start.x)
-        const dy = Math.round(point.y - shapeDragAction.start.y)
-        const bbox = foregroundBBoxInclusive(snap.data, snap.w, snap.h)
-        if (!bbox) return
-        const clampedDx = Math.max(-bbox.minX, Math.min(imageNaturalSize.width - 1 - bbox.maxX, dx))
-        const clampedDy = Math.max(-bbox.minY, Math.min(imageNaturalSize.height - 1 - bbox.maxY, dy))
-        const moved = translateBinaryMask(snap.data, snap.w, snap.h, clampedDx, clampedDy)
-        const counts = encodeBinaryToRowMajorRle(moved)
-        pendingDragFlushRef.current = {
-          kind: "mask",
-          shapeIndex: shapeDragAction.shapeIndex,
-          counts,
-          w: snap.w,
-          h: snap.h,
-          brushSize: snap.brushSize,
-        }
-        const sid = shapeStableIdFromDoc(annotationDocRef.current, shapeDragAction.shapeIndex)
-        const { dx: stageDx, dy: stageDy } = projectImageDeltaToStage(clampedDx, clampedDy)
-        if (sid) setDragStageNudge({ shapeId: sid, dx: stageDx, dy: stageDy })
-        else setDragStageNudge(null)
-        setDragLiveMaskRle(null)
-        setDragLivePoints(null)
-        dragCuboidLiveKeyRef.current = null
-        setDragCuboidLivePoints(null)
-        return
-      }
       const nextPoints = computeRectangleDragPoints(shapeDragAction, point, imageNaturalSize)
       if (!nextPoints) return
       pendingDragFlushRef.current = { kind: "points", shapeIndex: shapeDragAction.shapeIndex, points: nextPoints }
@@ -237,13 +140,11 @@ export function useDragSessions(params: UseDragSessionsParams) {
         setDragLivePoints(null)
         dragCuboidLiveKeyRef.current = null
         setDragCuboidLivePoints(null)
-        setDragLiveMaskRle(null)
       } else {
         setDragStageNudge(null)
         dragCuboidLiveKeyRef.current = null
         setDragCuboidLivePoints(null)
         setDragLivePoints({ shapeIndex: shapeDragAction.shapeIndex, points: nextPoints })
-        setDragLiveMaskRle(null)
       }
     }
 
@@ -270,15 +171,12 @@ export function useDragSessions(params: UseDragSessionsParams) {
       }
       const pending = pendingDragFlushRef.current
       pendingDragFlushRef.current = null
-      if (pending?.kind === "mask") {
-        updateMaskRle(pending.shapeIndex, { counts: pending.counts, w: pending.w, h: pending.h, brushSize: pending.brushSize }, false)
-      } else if (pending?.kind === "points") {
+      if (pending?.kind === "points") {
         updateShapePoints(pending.shapeIndex, pending.points, false)
       }
       setDragLivePoints(null)
       dragCuboidLiveKeyRef.current = null
       setDragCuboidLivePoints(null)
-      setDragLiveMaskRle(null)
       setDragStageNudge(null)
       setShapeDragAction(null)
     }
@@ -295,14 +193,12 @@ export function useDragSessions(params: UseDragSessionsParams) {
     imageNaturalSize,
     projectImageDeltaToStage,
     setDragCuboidLivePoints,
-    setDragLiveMaskRle,
     setDragLivePoints,
     setDragStageNudge,
     setShapeDragAction,
     shapeDragAction,
     stageRef,
     stageToImageWithGeometry,
-    updateMaskRle,
     updateShapePoints,
   ])
 
@@ -357,7 +253,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
         dragCuboidLiveKeyRef.current = null
         setDragCuboidLivePoints(null)
       }
-      setDragLiveMaskRle(null)
     }
 
     const processFrame = () => {
@@ -389,7 +284,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
       setDragLivePoints(null)
       dragCuboidLiveKeyRef.current = null
       setDragCuboidLivePoints(null)
-      setDragLiveMaskRle(null)
       setDragStageNudge(null)
       setPolygonDragAction(null)
     }
@@ -407,7 +301,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
     polygonDragAction,
     projectImageDeltaToStage,
     setDragCuboidLivePoints,
-    setDragLiveMaskRle,
     setDragLivePoints,
     setDragStageNudge,
     setPolygonDragAction,
@@ -433,7 +326,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
       dragCuboidLiveKeyRef.current = null
       setDragCuboidLivePoints(null)
       setDragLivePoints({ shapeIndex: rotationDragAction.shapeIndex, points: nextPoints })
-      setDragLiveMaskRle(null)
     }
 
     const processRotateFrame = () => {
@@ -465,7 +357,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
       setDragLivePoints(null)
       dragCuboidLiveKeyRef.current = null
       setDragCuboidLivePoints(null)
-      setDragLiveMaskRle(null)
       setDragStageNudge(null)
       setRotationDragAction(null)
     }
@@ -480,7 +371,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
     getCurrentImageGeometry,
     rotationDragAction,
     setDragCuboidLivePoints,
-    setDragLiveMaskRle,
     setDragLivePoints,
     setDragStageNudge,
     setRotationDragAction,
@@ -544,7 +434,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
           })
         } else setDragVertexLive(null)
       }
-      setDragLiveMaskRle(null)
     }
 
     const processFrame = () => {
@@ -577,7 +466,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
       dragCuboidLiveKeyRef.current = null
       setDragCuboidLivePoints(null)
       setDragVertexLive(null)
-      setDragLiveMaskRle(null)
       setDragStageNudge(null)
       setPolygonVertexDragAction(null)
     }
@@ -594,7 +482,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
     imageNaturalSize,
     polygonVertexDragAction,
     setDragCuboidLivePoints,
-    setDragLiveMaskRle,
     setDragLivePoints,
     setDragVertexLive,
     setDragStageNudge,
@@ -629,13 +516,11 @@ export function useDragSessions(params: UseDragSessionsParams) {
         setDragLivePoints(null)
         dragCuboidLiveKeyRef.current = null
         setDragCuboidLivePoints(null)
-        setDragLiveMaskRle(null)
       } else {
         setDragStageNudge(null)
         dragCuboidLiveKeyRef.current = null
         setDragCuboidLivePoints(null)
         setDragLivePoints({ shapeIndex: rotationTransformAction.shapeIndex, points: nextPoints })
-        setDragLiveMaskRle(null)
       }
     }
 
@@ -668,7 +553,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
       setDragLivePoints(null)
       dragCuboidLiveKeyRef.current = null
       setDragCuboidLivePoints(null)
-      setDragLiveMaskRle(null)
       setDragStageNudge(null)
       setRotationTransformAction(null)
       setRawHighlightCorner(null)
@@ -686,7 +570,6 @@ export function useDragSessions(params: UseDragSessionsParams) {
     projectImageDeltaToStage,
     rotationTransformAction,
     setDragCuboidLivePoints,
-    setDragLiveMaskRle,
     setDragLivePoints,
     setDragStageNudge,
     setRawHighlightCorner,

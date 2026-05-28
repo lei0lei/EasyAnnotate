@@ -1,191 +1,261 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import {
-  GitBranch,
-  LineChart,
-  Link2,
+  ArrowLeft,
+  Box,
+  ChevronRight,
+  Database,
+  Layers,
+  Rocket,
   Server,
-  Sparkles,
-  Wifi,
+  type LucideIcon,
 } from "lucide-react"
-import type { ReactNode } from "react"
+import { Link, useParams } from "react-router-dom"
 
-function StatusPill({ children, variant = "neutral" }: { children: ReactNode; variant?: "neutral" | "warn" }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium",
-        variant === "warn"
-          ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200"
-          : "border-border bg-muted/50 text-muted-foreground",
-      )}
-    >
-      <span
-        className={cn(
-          "h-1.5 w-1.5 rounded-full",
-          variant === "warn" ? "bg-amber-500" : "bg-muted-foreground/50",
-        )}
-        aria-hidden
-      />
-      {children}
-    </span>
-  )
+type RouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+type RouteItem = {
+  method: RouteMethod
+  path: string
+}
+
+type BackendRouteGroup = {
+  id: string
+  title: string
+  desc: string
+  icon: LucideIcon
+  routes: RouteItem[]
+}
+
+const GROUPS: BackendRouteGroup[] = [
+  { id: "health", title: "Health", desc: "服务健康检查", icon: Server, routes: [{ method: "GET", path: "/health" }] },
+  {
+    id: "models",
+    title: "Models",
+    desc: "模型推理与特征接口（含 upload）",
+    icon: Box,
+    routes: [
+      { method: "GET", path: "/api/v1/models" },
+      { method: "POST", path: "/api/v1/models/{model_id:path}/predict" },
+      { method: "POST", path: "/api/v1/models/{model_id:path}/encode-image" },
+      { method: "POST", path: "/api/v1/models/{model_id:path}/patch-features" },
+      { method: "POST", path: "/api/v1/models/{model_id:path}/predict-upload" },
+      { method: "POST", path: "/api/v1/models/{model_id:path}/encode-image-upload" },
+      { method: "POST", path: "/api/v1/models/{model_id:path}/patch-features-upload" },
+    ],
+  },
+  {
+    id: "model-assets",
+    title: "Model Assets",
+    desc: "模型资源文件与下载",
+    icon: Database,
+    routes: [
+      { method: "GET", path: "/api/v1/model-assets" },
+      { method: "GET", path: "/api/v1/model-assets/{asset_id:path}/status" },
+      { method: "GET", path: "/api/v1/model-assets/{asset_id:path}/decoder-onnx" },
+      { method: "POST", path: "/api/v1/model-assets/{asset_id:path}/ensure" },
+    ],
+  },
+  {
+    id: "model-runtime",
+    title: "Model Runtime",
+    desc: "模型运行时启停与状态",
+    icon: Layers,
+    routes: [
+      { method: "GET", path: "/api/v1/model-runtime/catalog" },
+      { method: "GET", path: "/api/v1/model-runtime/status" },
+      { method: "POST", path: "/api/v1/model-runtime/{category_id}/start" },
+      { method: "POST", path: "/api/v1/model-runtime/{category_id}/stop" },
+    ],
+  },
+  {
+    id: "training-yolo",
+    title: "Training YOLO",
+    desc: "YOLO 训练任务、数据与历史",
+    icon: Rocket,
+    routes: [
+      { method: "GET", path: "/api/v1/training/yolo/catalog" },
+      { method: "GET", path: "/api/v1/training/yolo/models" },
+      { method: "GET", path: "/api/v1/training/yolo/history" },
+      { method: "GET", path: "/api/v1/training/yolo/history/{job_slug}/results" },
+      { method: "GET", path: "/api/v1/training/yolo/history/{job_slug}/results/image" },
+      { method: "GET", path: "/api/v1/training/yolo/history/{job_slug}/models" },
+      { method: "GET", path: "/api/v1/training/yolo/history/{job_slug}/models/download-info" },
+      { method: "GET", path: "/api/v1/training/yolo/history/{job_slug}/models/file" },
+      { method: "GET", path: "/api/v1/training/yolo/history/{job_slug}/logs" },
+      { method: "DELETE", path: "/api/v1/training/yolo/history/{job_slug}" },
+      { method: "POST", path: "/api/v1/training/yolo/jobs/prepare" },
+      { method: "GET", path: "/api/v1/training/yolo/workspace" },
+      { method: "GET", path: "/api/v1/training/yolo/devices" },
+      { method: "GET", path: "/api/v1/training/yolo/status" },
+      { method: "POST", path: "/api/v1/training/yolo/dataset/unpack" },
+      { method: "POST", path: "/api/v1/training/yolo/dataset/upload/init" },
+      { method: "PUT", path: "/api/v1/training/yolo/dataset/upload/chunk" },
+      { method: "POST", path: "/api/v1/training/yolo/dataset/upload/complete" },
+      { method: "POST", path: "/api/v1/training/yolo/dataset/upload" },
+      { method: "POST", path: "/api/v1/training/yolo/base-model/select" },
+      { method: "POST", path: "/api/v1/training/yolo/base-model/upload" },
+      { method: "POST", path: "/api/v1/training/yolo/base-model/validate" },
+      { method: "POST", path: "/api/v1/training/yolo/start" },
+    ],
+  },
+  {
+    id: "training-dinov2",
+    title: "Training DINOv2",
+    desc: "DINOv2 训练任务、数据与状态",
+    icon: Rocket,
+    routes: [
+      { method: "GET", path: "/api/v1/training/dinov2/catalog" },
+      { method: "GET", path: "/api/v1/training/dinov2/models" },
+      { method: "GET", path: "/api/v1/training/dinov2/history" },
+      { method: "POST", path: "/api/v1/training/dinov2/jobs/prepare" },
+      { method: "GET", path: "/api/v1/training/dinov2/workspace" },
+      { method: "GET", path: "/api/v1/training/dinov2/devices" },
+      { method: "GET", path: "/api/v1/training/dinov2/status" },
+      { method: "POST", path: "/api/v1/training/dinov2/dataset/unpack" },
+      { method: "POST", path: "/api/v1/training/dinov2/dataset/upload" },
+      { method: "POST", path: "/api/v1/training/dinov2/base-model/select" },
+      { method: "POST", path: "/api/v1/training/dinov2/base-model/upload" },
+      { method: "POST", path: "/api/v1/training/dinov2/start" },
+    ],
+  },
+  {
+    id: "yolo-batch",
+    title: "YOLO Batch",
+    desc: "批量标注模型管理与预测",
+    icon: Layers,
+    routes: [
+      { method: "GET", path: "/api/v1/yolo-batch/catalog" },
+      { method: "GET", path: "/api/v1/yolo-batch/models" },
+      { method: "GET", path: "/api/v1/yolo-batch/status" },
+      { method: "GET", path: "/api/v1/yolo-batch/models/{model_slug}" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/prepare" },
+      { method: "PATCH", path: "/api/v1/yolo-batch/models/{model_slug}" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/data-yaml/upload/init" },
+      { method: "PUT", path: "/api/v1/yolo-batch/models/{model_slug}/data-yaml/upload/chunk" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/data-yaml/upload/complete" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/weights/upload/init" },
+      { method: "PUT", path: "/api/v1/yolo-batch/models/{model_slug}/weights/upload/chunk" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/weights/upload/complete" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/data-yaml/confirm" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/weights/confirm" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/data-yaml/upload" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/weights/upload" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/finalize" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/start" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/stop" },
+      { method: "DELETE", path: "/api/v1/yolo-batch/models/{model_slug}" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/predict" },
+      { method: "POST", path: "/api/v1/yolo-batch/models/{model_slug}/predict-upload" },
+    ],
+  },
+]
+
+function methodClassName(method: RouteMethod): string {
+  switch (method) {
+    case "GET":
+      return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+    case "POST":
+      return "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+    case "PUT":
+      return "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+    case "PATCH":
+      return "bg-violet-500/10 text-violet-600 dark:text-violet-400"
+    case "DELETE":
+      return "bg-rose-500/10 text-rose-600 dark:text-rose-400"
+    default:
+      return "bg-muted text-muted-foreground"
+  }
 }
 
 export default function BackendsPage() {
+  const { groupId } = useParams<{ groupId?: string }>()
+  const activeGroup = GROUPS.find((group) => group.id === groupId)
+  const inDetail = Boolean(activeGroup)
+
   return (
-    <div className="min-h-full bg-background">
-      <div className="mx-auto w-full max-w-5xl space-y-8 px-6 py-8 pb-12">
-        <header>
-          <div className="flex items-center gap-2">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Server className="h-5 w-5" aria-hidden />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">Backends</h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                查看与后端（WebSocket / REST）连通性占位，以及自动标注、工作流与训练相关服务入口。当前仅为界面，不含真实连接与发现。
-              </p>
-            </div>
-          </div>
-        </header>
-
-        <section className="space-y-3">
-          <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">连接与可用性</h2>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card className="border-border/80 shadow-sm">
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <Wifi className="h-4 w-4" aria-hidden />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">WebSocket</CardTitle>
-                      <CardDescription className="text-xs">实时推流、任务与日志（双工）</CardDescription>
-                    </div>
-                  </div>
-                  <StatusPill>未检测</StatusPill>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="space-y-1.5">
-                  <span className="text-xs font-medium text-foreground/80">端点（占位）</span>
-                  <Input readOnly value="wss://api.example.com/v1/ws" className="font-mono text-xs" tabIndex={-1} />
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3">
-                  <p className="text-xs text-muted-foreground">后续：握手、心跳与订阅能力探测</p>
-                  <Button type="button" size="sm" variant="secondary" disabled>
-                    检测连接
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-border/80 shadow-sm">
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <Link2 className="h-4 w-4" aria-hidden />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">RESTful API</CardTitle>
-                      <CardDescription className="text-xs">模型、工作流与训练任务的 HTTP 接口</CardDescription>
-                    </div>
-                  </div>
-                  <StatusPill>未检测</StatusPill>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="space-y-1.5">
-                  <span className="text-xs font-medium text-foreground/80">Base URL（占位）</span>
-                  <Input readOnly value="https://api.example.com/v1" className="font-mono text-xs" tabIndex={-1} />
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3">
-                  <p className="text-xs text-muted-foreground">后续：/health、OpenAPI 与凭据</p>
-                  <Button type="button" size="sm" variant="secondary" disabled>
-                    检测连接
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </section>
-
-        <Separator className="bg-border/60" />
-
-        <section className="space-y-3">
-          <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">服务与能力（占位）</h2>
-          <p className="text-xs text-muted-foreground">
-            以下区块对应后端将暴露的：自动标注模型、工作流模型/编排、以及训练流程；列表与健康状态尚为静态示例。
+    <div className="mx-auto w-full max-w-5xl space-y-8 px-6 py-8 pb-12">
+      <div className="flex items-start gap-3">
+        <Button asChild variant="ghost" size="icon" className="shrink-0" aria-label="返回">
+          <Link to={inDetail ? "/backends" : "/"}>
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+        </Button>
+        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Server className="h-5 w-5" aria-hidden />
+        </div>
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Backends</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            后端路由看板。每个大项是一个 board，点击进入可查看该分组下的详细路由。
           </p>
-          <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-3">
-            <Card className="border-border/80 shadow-sm">
-              <CardHeader>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Sparkles className="h-5 w-5" aria-hidden />
-                </div>
-                <CardTitle className="text-base">自动标注模型</CardTitle>
-                <CardDescription className="text-xs">预标注、辅助框与类别建议等推理服务</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <ul className="text-xs text-muted-foreground">
-                  <li>· 模型列表与版本</li>
-                  <li>· 能力：检测 / 分割 / …</li>
-                  <li>· 运行态：排队与 GPU</li>
-                </ul>
-                <div className="pt-1">
-                  <StatusPill variant="warn">未接入</StatusPill>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-border/80 shadow-sm">
-              <CardHeader>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <GitBranch className="h-5 w-5" aria-hidden />
-                </div>
-                <CardTitle className="text-base">工作流模型</CardTitle>
-                <CardDescription className="text-xs">与客户端 Workflows 对应的编排与执行后端</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <ul className="text-xs text-muted-foreground">
-                  <li>· 图定义与算子注册</li>
-                  <li>· 一次运行与重放</li>
-                  <li>· 与 WS 推送的衔接</li>
-                </ul>
-                <div className="pt-1">
-                  <StatusPill variant="warn">未接入</StatusPill>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-border/80 shadow-sm">
-              <CardHeader>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <LineChart className="h-5 w-5" aria-hidden />
-                </div>
-                <CardTitle className="text-base">训练流程</CardTitle>
-                <CardDescription className="text-xs">任务创建、数据管道、训练日志与产物</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <ul className="text-xs text-muted-foreground">
-                  <li>· 实验与超参</li>
-                  <li>· 指标与 checkpoint</li>
-                  <li>· 状态机：待运行 / 运行中 / 成功</li>
-                </ul>
-                <div className="pt-1">
-                  <StatusPill variant="warn">未接入</StatusPill>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </section>
+        </div>
       </div>
+
+      {!inDetail ? (
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-lg">后端路由分组</CardTitle>
+            <CardDescription>按能力域分组展示，便于后续做状态探测与告警展示。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {GROUPS.map((group) => {
+                const Icon = group.icon
+                return (
+                  <li key={group.id}>
+                    <Link to={`/backends/${group.id}`} className="group block rounded-lg">
+                      <div className="rounded-lg border border-border/80 bg-card p-4 transition-all hover:border-primary/40 hover:shadow-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-start gap-3">
+                            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                              <Icon className="h-4 w-4" aria-hidden />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-foreground">{group.title}</div>
+                              <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{group.desc}</div>
+                            </div>
+                          </div>
+                          <ChevronRight
+                            className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+                            aria-hidden
+                          />
+                        </div>
+                        <div className="mt-3 text-xs text-muted-foreground">{group.routes.length} routes</div>
+                      </div>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-lg">{activeGroup.title}</CardTitle>
+            <CardDescription>{activeGroup.desc}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {activeGroup.routes.map((route) => (
+              <div
+                key={`${route.method}:${route.path}`}
+                className="flex flex-col gap-2 rounded-md border border-border/70 px-3 py-2 sm:flex-row sm:items-center"
+              >
+                <span
+                  className={cn(
+                    "inline-flex w-fit min-w-[64px] justify-center rounded px-2 py-1 text-xs font-semibold",
+                    methodClassName(route.method),
+                  )}
+                >
+                  {route.method}
+                </span>
+                <code className="text-xs text-foreground/90 sm:text-sm">{route.path}</code>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

@@ -41,6 +41,19 @@ function dimensionsFromPredict(predict: YoloBatchPredictResult): { width: number
   return { width: Math.round(w), height: Math.round(h) }
 }
 
+function detectionDebugSummary(predict: YoloBatchPredictResult): string {
+  const detections = predict.results?.[0]?.detections ?? []
+  if (detections.length <= 0) return "detections=0"
+  const sample = detections
+    .slice(0, 6)
+    .map((det) => {
+      const name = (det.class_name ?? "").trim()
+      return `${det.class_id}:${name || "<empty>"}`
+    })
+    .join(", ")
+  return `detections=${detections.length}; sample=[${sample}]`
+}
+
 export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateParams): Promise<void> {
   const { projectId, taskId, modelSlug, projectTags, signal, onProgress } = params
 
@@ -137,8 +150,10 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     }
 
     const fromPredict = dimensionsFromPredict(predict)
-    const imageWidth = info.width > 0 ? info.width : fromPredict.width
-    const imageHeight = info.height > 0 ? info.height : fromPredict.height
+    // 坐标基准统一：优先使用 YOLO 推理返回的原图尺寸（orig_shape）。
+    // 这样可避免“预测坐标按 A 尺寸、文档按 B 尺寸写入”导致的加载期二次缩放偏移。
+    const imageWidth = fromPredict.width > 0 ? fromPredict.width : info.width
+    const imageHeight = fromPredict.height > 0 ? fromPredict.height : info.height
     if (imageWidth <= 0 || imageHeight <= 0) {
       onProgress({
         phase: "error",
@@ -159,6 +174,29 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
       imageHeight,
       imageWidth,
     }).shapes
+
+    if (newShapes.length <= 0) {
+      const detections = predict.results?.[0]?.detections ?? []
+      if (detections.length > 0) {
+        onProgress({
+          phase: "error",
+          done: i,
+          total,
+          errorMessage:
+            `该图片有模型检测结果，但全部未转为标注（常见原因：类别名映射失败）。` +
+            ` 调试信息：${detectionDebugSummary(predict)}`,
+        })
+        return
+      }
+      onProgress({
+        phase: "running",
+        done: i + 1,
+        total,
+        currentFile: imagePath,
+        statusMessage: "未检测到目标，已跳过",
+      })
+      continue
+    }
 
     onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "写入标注…" })
 

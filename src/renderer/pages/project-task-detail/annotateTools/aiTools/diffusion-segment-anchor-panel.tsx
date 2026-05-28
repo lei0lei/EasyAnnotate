@@ -296,7 +296,7 @@ export function DiffusionSegmentAnchorPanel({
 
       <div className="mt-3 space-y-2 border-t border-border/70 pt-2">
         <div className="text-[11px] text-muted-foreground">输出类型</div>
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-2 gap-1">
           <button
             type="button"
             className={cn(
@@ -308,18 +308,6 @@ export function DiffusionSegmentAnchorPanel({
             onClick={() => onOutputFormatChange("polygon")}
           >
             多边形
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "inline-flex min-h-7 items-center justify-center rounded border px-0.5 py-1 text-[11px] leading-tight",
-              outputFormat === "mask"
-                ? "border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-300"
-                : "border-border text-muted-foreground hover:bg-accent",
-            )}
-            onClick={() => onOutputFormatChange("mask")}
-          >
-            掩码
           </button>
           <button
             type="button"

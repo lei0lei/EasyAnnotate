@@ -6,7 +6,6 @@
 import { useCallback } from "react"
 import type { MouseEvent as ReactMouseEvent } from "react"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
-import { readMaskRle } from "@/lib/mask-raster-rle"
 import { computeRotationCenterAndStartAngle } from "@/pages/project-task-detail/interaction-ops"
 import type {
   Point,
@@ -258,33 +257,6 @@ export function useTaskCanvasInteractions(params: UseTaskCanvasInteractionsParam
     [annotationDocRef, drawingLayerActive, getImagePointFromMouseEvent, onSelectShapeIndex, rightToolMode, setPolygonDragAction],
   )
 
-  const handleMaskMouseDown = useCallback(
-    (shapeIndex: number, event: ReactMouseEvent<HTMLElement>) => {
-      if (drawingLayerActive || rightToolMode !== "select") return
-      if (event.button !== 0) return
-      event.preventDefault()
-      event.stopPropagation()
-      const point = getImagePointFromMouseEvent(event)
-      if (!point) return
-      const currentDoc = annotationDocRef.current
-      const shape = currentDoc?.shapes[shapeIndex]
-      if (!shape || shape.shape_type !== "mask") return
-      const rle = readMaskRle(shape.attributes)
-      const hasRle =
-        !!currentDoc && rle !== null && rle.w === currentDoc.imageWidth && rle.h === currentDoc.imageHeight
-      if (!hasRle && shape.points.length < 1) return
-      setShapeDragAction({
-        kind: "move",
-        shapeIndex,
-        start: point,
-        originalPoints: shape.points.map((p) => [Number(p[0] ?? 0), Number(p[1] ?? 0)]),
-        shapeType: "mask",
-      })
-      onSelectShapeIndex(shapeIndex)
-    },
-    [annotationDocRef, drawingLayerActive, getImagePointFromMouseEvent, onSelectShapeIndex, rightToolMode, setShapeDragAction],
-  )
-
   const handlePointMouseDown = useCallback(
     (shapeIndex: number, event: ReactMouseEvent<Element>) => {
       if (drawingLayerActive || rightToolMode !== "select") return
@@ -310,7 +282,6 @@ export function useTaskCanvasInteractions(params: UseTaskCanvasInteractionsParam
 
   return {
     handleRectangleMouseDown,
-    handleMaskMouseDown,
     handlePointMouseDown,
     handlePolygonMouseDown,
     handleCuboidFaceMouseDown,

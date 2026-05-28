@@ -35,7 +35,6 @@ import {
   Shuffle,
   Sparkles,
   Tags,
-  Trash2,
   type LucideIcon,
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
@@ -45,6 +44,21 @@ type SourceStats = {
   imageCount: number
   classCount: number
   annotationFileCount: number
+}
+const EXPORT_LOG_SEPARATOR = "\n---EXPORT_LOG---\n"
+
+function splitExportJobMessage(rawMessage: string): { statusMessage: string; logLines: string[] } {
+  const message = (rawMessage || "").trim()
+  if (!message) return { statusMessage: "", logLines: [] }
+  const idx = message.indexOf(EXPORT_LOG_SEPARATOR)
+  if (idx < 0) return { statusMessage: message, logLines: [] }
+  const statusMessage = message.slice(0, idx).trim()
+  const logsRaw = message.slice(idx + EXPORT_LOG_SEPARATOR.length)
+  const logLines = logsRaw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return { statusMessage, logLines }
 }
 
 const PREPROCESS_OPTIONS = [
@@ -139,6 +153,11 @@ function createExportVersion(scope: ExportVersionItem["scope"], orderIndex: numb
   }
 }
 
+function isScopeMatched(versionScope: ExportVersionItem["scope"], currentScope: ExportVersionItem["scope"]): boolean {
+  if (currentScope.kind === "project") return versionScope.kind === "project"
+  return versionScope.kind === "task" && versionScope.taskId === currentScope.taskId
+}
+
 export default function ProjectExportPage() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>()
   const location = useLocation()
@@ -147,7 +166,6 @@ export default function ProjectExportPage() {
   const [sourceStats, setSourceStats] = useState<SourceStats>({ imageCount: 0, classCount: 0, annotationFileCount: 0 })
   const [sourceRefreshTick, setSourceRefreshTick] = useState(0)
   const [allVersions, setAllVersions] = useState<ExportVersionItem[]>([])
-  const [activeVersionId, setActiveVersionId] = useState("")
   /** 预处理：平铺选板 → 单项设置 */
   const [preprocessUi, setPreprocessUi] = useState<"closed" | "pick" | "settings">("closed")
   const [preprocessDraftType, setPreprocessDraftType] = useState<(typeof PREPROCESS_OPTIONS)[number]>("切块")
@@ -160,7 +178,7 @@ export default function ProjectExportPage() {
   const [activeExportJobId, setActiveExportJobId] = useState("")
   const [exportMessage, setExportMessage] = useState("")
   const [exportProgress, setExportProgress] = useState(0)
-  const [saving, setSaving] = useState(false)
+  const [exportLogLines, setExportLogLines] = useState<string[]>([])
   const [hydrated, setHydrated] = useState(false)
   const [projectTasks, setProjectTasks] = useState<ProjectTaskItem[]>([])
 
@@ -172,15 +190,12 @@ export default function ProjectExportPage() {
     return { kind: "project" }
   }, [taskId])
 
-  const visibleVersions = useMemo(() => {
-    return [...allVersions].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  const activeVersion = useMemo(() => {
+    return [...allVersions]
+      .filter((item) => isScopeMatched(item.scope, scope))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
   }, [allVersions, scope])
-
-  const activeVersion = useMemo(
-    () => visibleVersions.find((item) => item.id === activeVersionId),
-    [activeVersionId, visibleVersions],
-  )
-  const showKeepProjectStructureToggle = activeVersion?.scope.kind === "project"
+  const showKeepProjectStructureToggle = scope.kind === "project"
 
   const trainRatio = activeVersion?.trainBoundary ?? 70
   const valRatio = Math.max(0, (activeVersion?.valBoundary ?? 90) - trainRatio)
@@ -204,16 +219,24 @@ export default function ProjectExportPage() {
   }, [projectId])
 
   useEffect(() => {
+    if (!hydrated) return
+    setAllVersions((prev) => {
+      const scoped = [...prev]
+        .filter((item) => isScopeMatched(item.scope, scope))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      const selected = scoped[0] ?? createExportVersion(scope, 1)
+      const others = prev.filter((item) => !isScopeMatched(item.scope, scope))
+      if (scoped.length === 1 && scoped[0].id === selected.id) return prev
+      return [selected, ...others]
+    })
+  }, [hydrated, scope])
+
+  useEffect(() => {
     if (!projectId || !hydrated) return
     void saveProjectExportVersions(projectId, allVersions).then(({ errorMessage }) => {
       if (errorMessage) setExportMessage(`保存导出版本失败：${errorMessage}`)
     })
   }, [allVersions, hydrated, projectId])
-
-  useEffect(() => {
-    if (!activeVersionId || visibleVersions.some((item) => item.id === activeVersionId)) return
-    setActiveVersionId(visibleVersions[0]?.id ?? "")
-  }, [activeVersionId, visibleVersions])
 
   useEffect(() => {
     setSourceRefreshTick((v) => v + 1)
@@ -292,33 +315,11 @@ export default function ProjectExportPage() {
     )
   }
 
-  function handleCreateVersion() {
-    const next = createExportVersion(scope, visibleVersions.length + 1)
-    setAllVersions((prev) => [next, ...prev])
-    setActiveVersionId(next.id)
-  }
-
-  function handleDeleteVersion() {
-    if (!activeVersion || !projectId) return
-    setAllVersions((prev) => prev.filter((item) => item.id !== activeVersion.id))
-    const remaining = visibleVersions.filter((item) => item.id !== activeVersion.id)
-    setActiveVersionId(remaining[0]?.id ?? "")
-  }
-
-  async function handleSaveVersions() {
-    if (!projectId || !hydrated) return
-    setSaving(true)
-    const { errorMessage } = await saveProjectExportVersions(projectId, allVersions)
-    if (errorMessage) {
-      setExportMessage(`保存导出版本失败：${errorMessage}`)
-    }
-    setSaving(false)
-  }
-
   function handleExport() {
     if (exporting || !activeVersion) return
     setExporting(true)
     setExportProgress(0)
+    setExportLogLines([])
     setExportMessage("正在启动导出…")
     void startDatasetExport({
       projectId: projectId || "",
@@ -350,8 +351,10 @@ export default function ProjectExportPage() {
         if (!alive) return
         const current = jobs.find((item) => item.id === activeExportJobId)
         if (!current) return
+        const parsed = splitExportJobMessage(current.message || "")
         setExportProgress(Math.max(0, Math.min(100, current.progress)))
-        setExportMessage(current.message || `导出进度 ${current.progress}%`)
+        setExportMessage(parsed.statusMessage || `导出进度 ${current.progress}%`)
+        setExportLogLines(parsed.logLines)
         if (current.status === "success") {
           setExporting(false)
           setActiveExportJobId("")
@@ -428,51 +431,16 @@ export default function ProjectExportPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <Card className="border-border">
-          <CardHeader className="space-y-3">
-            <CardTitle className="text-base font-medium">Versions</CardTitle>
-            <Button type="button" variant="outline" className="w-full justify-start gap-2" onClick={handleCreateVersion}>
-              <Plus className="h-4 w-4" />
-              创建版本
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {visibleVersions.map((version) => {
-              const active = version.id === activeVersionId
-              return (
-                <button
-                  key={version.id}
-                  type="button"
-                  className={`w-full rounded-md border-2 px-3 py-2 text-left transition-colors ${
-                    active
-                      ? "border-primary/50 bg-primary/10 text-foreground"
-                      : "border-border/70 bg-background text-muted-foreground hover:bg-accent"
-                  }`}
-                  onClick={() => setActiveVersionId(version.id)}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-medium">{version.name}</p>
-                    <span className="text-[11px]">{version.status === "ready" ? "Ready" : "Draft"}</span>
-                  </div>
-                  <p className="mt-1 text-xs">{new Date(version.createdAt).toLocaleString()}</p>
-                </button>
-              )
-            })}
-            {visibleVersions.length === 0 ? <p className="text-xs text-muted-foreground">还没有 Version，请先创建。</p> : null}
-          </CardContent>
-        </Card>
-
-        <div className="space-y-4">
+      <div className="space-y-4">
           <Card className="border-border">
             <CardHeader>
-              <CardTitle className="text-base font-medium">Version Name</CardTitle>
+              <CardTitle className="text-base font-medium">Name</CardTitle>
             </CardHeader>
             <CardContent>
               <Input
                 value={activeVersion?.name ?? ""}
                 onChange={(e) => updateActiveVersion({ name: e.target.value })}
-                placeholder="输入 Version 名称"
+                placeholder="输入导出名称"
                 disabled={!activeVersion}
                 spellCheck={false}
               />
@@ -611,6 +579,7 @@ export default function ProjectExportPage() {
                 <option value="yolo-segment">Yolo Segment</option>
                 <option value="yolo-pose">Yolo Pose</option>
                 <option value="voc">Pascal VOC</option>
+                <option value="xanylabeling">XAnyLabeling (Internal)</option>
               </select>
             </CardContent>
           </Card>
@@ -652,13 +621,6 @@ export default function ProjectExportPage() {
                 ) : null}
               </div>
               <div className="flex gap-2">
-                <Button type="button" variant="outline" onClick={handleSaveVersions} disabled={!activeVersion || saving || !hydrated}>
-                  {saving ? "保存中..." : "保存"}
-                </Button>
-                <Button type="button" variant="destructive" onClick={handleDeleteVersion} disabled={!activeVersion || exporting}>
-                  <Trash2 className="h-4 w-4" />
-                  删除
-                </Button>
                 <Button type="button" onClick={handleExport} disabled={exporting || !activeVersion}>
                   <Download className="h-4 w-4" />
                   {exporting ? "导出中..." : "导出"}
@@ -680,9 +642,18 @@ export default function ProjectExportPage() {
                   {exportMessage ? <p className="text-xs text-muted-foreground">{exportMessage}</p> : null}
                 </div>
               ) : null}
+              {exportLogLines.length > 0 ? (
+                <div className="w-full rounded-md border-2 border-border/70 bg-muted/20 p-3">
+                  <p className="mb-2 text-xs font-medium text-foreground">导出日志（逐图耗时）</p>
+                  <div className="max-h-44 overflow-auto rounded bg-background px-2 py-1">
+                    <pre className="whitespace-pre-wrap break-all text-[11px] leading-5 text-muted-foreground">
+                      {exportLogLines.join("\n")}
+                    </pre>
+                  </div>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
-        </div>
       </div>
 
       {preprocessUi === "pick" ? (

@@ -1,3 +1,4 @@
+import { ipc } from "@/gen/ipc"
 import { loadAppConfig } from "@/lib/app-config-storage"
 
 /**
@@ -25,6 +26,69 @@ function normalizeBasePath(input: string): string {
   const withLeading = t.startsWith("/") ? t : `/${t}`
   return withLeading.replace(/\/+$/, "")
 }
+
+function normalizePort(protocol: string, port: string): string {
+  const p = port.trim()
+  if (p) return p
+  return protocol === "https:" ? "443" : "80"
+}
+
+function isConfiguredBackendUrl(rawUrl: string): boolean {
+  try {
+    const target = new URL(rawUrl, window.location.href)
+    if (target.protocol !== "http:" && target.protocol !== "https:") return false
+    const configured = new URL(backendHttpOrigin())
+    if (configured.protocol !== target.protocol) return false
+    if (configured.hostname !== target.hostname) return false
+    return normalizePort(configured.protocol, configured.port) === normalizePort(target.protocol, target.port)
+  } catch {
+    return false
+  }
+}
+
+let backendFetchProxyInstalled = false
+let nativeFetchRef: typeof fetch | null = null
+
+async function proxyFetchViaMainProcess(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const request = new Request(input, init)
+  const url = request.url
+  if (!isConfiguredBackendUrl(url)) {
+    return (nativeFetchRef ?? fetch)(input, init)
+  }
+  if (init?.signal?.aborted) {
+    throw new Error("请求已取消")
+  }
+  const method = request.method || "GET"
+  const headers = Object.fromEntries(request.headers.entries())
+  const bodyBytes =
+    method === "GET" || method === "HEAD" ? new Uint8Array() : new Uint8Array(await request.arrayBuffer().catch(() => new ArrayBuffer(0)))
+  const proxied = await ipc.app.ProxyBackendHttp({
+    url,
+    method,
+    headers,
+    body: bodyBytes,
+    timeoutMs: 180_000,
+  })
+  if (!proxied.ok) {
+    throw new Error(proxied.errorMessage || `请求失败：${url}`)
+  }
+  return new Response(proxied.body, {
+    status: proxied.status || 500,
+    statusText: proxied.statusText || "",
+    headers: proxied.headers,
+  })
+}
+
+function ensureBackendFetchProxyInstalled(): void {
+  if (backendFetchProxyInstalled) return
+  nativeFetchRef = window.fetch.bind(window)
+  window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    return await proxyFetchViaMainProcess(input, init)
+  }) as typeof fetch
+  backendFetchProxyInstalled = true
+}
+
+ensureBackendFetchProxyInstalled()
 
 export function apiV1Root(): string {
   const { basePath } = loadAppConfig().backend
@@ -86,12 +150,9 @@ export async function fetchWithTimeout(
   init?: RequestInit,
   timeoutMs = 60_000,
 ): Promise<Response> {
-  try {
-    return await fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) })
-  } catch (e) {
-    if (e instanceof Error && e.name === "TimeoutError") {
-      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`)
-    }
-    throw e
-  }
+  const safeTimeout = Math.max(500, timeoutMs)
+  const timeoutPromise = new Promise<Response>((_, reject) => {
+    window.setTimeout(() => reject(new Error(`请求超时（${Math.round(safeTimeout / 1000)} 秒）`)), safeTimeout)
+  })
+  return await Promise.race([fetch(input, init), timeoutPromise])
 }

@@ -245,6 +245,56 @@ export async function saveTaskFiles(payload: {
   }
 }
 
+export async function importAnnotatedTaskZip(payload: {
+  projectId: string
+  taskId: string
+  subset: string
+  zipPath: string
+  importFormat: string
+}): Promise<{
+  errorMessage: string
+  savedPaths: string[]
+  importedImageCount: number
+  importedAnnotationCount: number
+  detectedFormat: string
+}> {
+  const response = await ipc.app.ImportAnnotatedTaskZip({
+    globalConfigDir: globalConfigDir(),
+    projectId: payload.projectId,
+    taskId: payload.taskId,
+    subset: payload.subset,
+    zipPath: payload.zipPath,
+    importFormat: payload.importFormat,
+  })
+  return {
+    errorMessage: response.errorMessage || "",
+    savedPaths: response.savedPaths ?? [],
+    importedImageCount: Math.max(0, Math.floor(Number(response.importedImageCount) || 0)),
+    importedAnnotationCount: Math.max(0, Math.floor(Number(response.importedAnnotationCount) || 0)),
+    detectedFormat: response.detectedFormat || "",
+  }
+}
+
+export async function importTaskImageZip(payload: {
+  projectId: string
+  taskId: string
+  subset: string
+  zipPath: string
+}): Promise<{ errorMessage: string; savedPaths: string[]; importedImageCount: number }> {
+  const response = await ipc.app.ImportTaskImageZip({
+    globalConfigDir: globalConfigDir(),
+    projectId: payload.projectId,
+    taskId: payload.taskId,
+    subset: payload.subset,
+    zipPath: payload.zipPath,
+  })
+  return {
+    errorMessage: response.errorMessage || "",
+    savedPaths: response.savedPaths ?? [],
+    importedImageCount: Math.max(0, Math.floor(Number(response.importedImageCount) || 0)),
+  }
+}
+
 export async function listTaskFiles(payload: {
   projectId: string
   taskId: string
@@ -332,6 +382,22 @@ async function appendImageAnnotationShapesViaReadWrite(payload: {
     return { jsonPath: "", errorMessage: "shapes_json 解析失败。" }
   }
 
+  const normalizedIncoming = normalizeXAnyLabelDoc({
+    imagePath: payload.imagePath,
+    imageWidth: payload.imageWidth,
+    imageHeight: payload.imageHeight,
+    rawJsonText: JSON.stringify({
+      version: "2.5.4",
+      flags: {},
+      shapes: incoming,
+      description: null,
+      imagePath: payload.imagePath,
+      imageData: null,
+      imageHeight: payload.imageHeight,
+      imageWidth: payload.imageWidth,
+    }),
+  }).shapes
+
   const read = await readImageAnnotation(payload.imagePath)
   if (read.errorMessage) {
     return { jsonPath: "", errorMessage: read.errorMessage }
@@ -350,7 +416,7 @@ async function appendImageAnnotationShapesViaReadWrite(payload: {
         imageHeight: payload.imageHeight,
       })
 
-  doc.shapes = [...doc.shapes, ...incoming]
+  doc.shapes = [...doc.shapes, ...normalizedIncoming]
   doc.imageWidth = payload.imageWidth
   doc.imageHeight = payload.imageHeight
 

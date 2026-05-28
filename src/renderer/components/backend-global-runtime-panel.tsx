@@ -2,6 +2,7 @@
  * 后端模型管理：全局 SAM（sam2 / mobile_sam 互斥）与 DINOv2 启停。
  */
 import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
 import { getGlobalDinov2ModelId, setGlobalDinov2ModelId } from "@/lib/global-dinov2-prefs"
 import { GLOBAL_DINOV2_RUNTIME_CATEGORY_ID } from "@/lib/global-dinov2-runtime"
 import {
@@ -32,8 +33,9 @@ import {
 import { GpuSwitch } from "@/pages/models-backend"
 import { RuntimeCategoryFlatSection } from "@/pages/runtime-category-flat-section"
 import { cn } from "@/lib/utils"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { Loader2 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react"
+import { Link } from "react-router-dom"
 
 function SamGlobalRuntimeBlock({
   rows,
@@ -376,19 +378,17 @@ export function BackendGlobalRuntimePanel() {
 }
 
 function BackendRuntimeError({ error }: { error: string }) {
+  void error
   return (
-    <div
-      className={cn(
-        "flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive",
-      )}
-      role="alert"
-    >
-      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-      <div>
-        <p className="font-medium">无法连接后端</p>
-        <p className="mt-1 text-destructive/90">{error}</p>
-      </div>
-    </div>
+    <Card className={cn("border-border/80", "border-destructive/40")}>
+      <CardContent className="flex items-center gap-2 py-4 text-sm">
+        <span className="h-2 w-2 rounded-full bg-red-500" />
+        <span>后端未连接，请先在设置中启动本地或连接远程后端</span>
+        <Button type="button" variant="outline" size="sm" className="ml-auto" asChild>
+          <Link to="/settings">设置</Link>
+        </Button>
+      </CardContent>
+    </Card>
   )
 }
 

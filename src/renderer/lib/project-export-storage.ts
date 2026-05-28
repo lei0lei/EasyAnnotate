@@ -1,7 +1,7 @@
 import { getProjectExportVersionsFromDisk, saveProjectExportVersionsToDisk } from "@/lib/projects-api"
 import { STORAGE_KEYS } from "@/lib/storage/keys"
 
-export type ExportFormat = "coco" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose" | "voc"
+export type ExportFormat = "coco" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose" | "voc" | "xanylabeling"
 
 export type ExportPipelineStep = {
   id: string
@@ -67,7 +67,8 @@ function isExportFormat(data: unknown): data is ExportFormat {
     data === "yolo-obb" ||
     data === "yolo-segment" ||
     data === "yolo-pose" ||
-    data === "voc"
+    data === "voc" ||
+    data === "xanylabeling"
   )
 }
 

@@ -86,11 +86,6 @@ def export_ultralytics_result(r: Any, task: str) -> dict[str, Any]:
             confs = []
             cls_ids = []
         xy_list = r.masks.xy if hasattr(r.masks, "xy") else []
-        xyxy_list = (
-            boxes.xyxy.cpu().numpy().tolist()
-            if boxes is not None and len(boxes) > 0
-            else []
-        )
         for i, poly in enumerate(xy_list):
             pts = [[float(p[0]), float(p[1])] for p in poly]
             if len(pts) < 3:
@@ -99,11 +94,8 @@ def export_ultralytics_result(r: Any, task: str) -> dict[str, Any]:
             conf = float(confs[i]) if i < len(confs) else 0.0
             shape_type = "polygon"
             if len(pts) > _MAX_POLYGON_VERTS:
-                if i < len(xyxy_list):
-                    pts = _xyxy_to_rect_points(xyxy_list[i])
-                    shape_type = "rectangle"
-                else:
-                    pts = _downsample_polygon(pts, _MAX_POLYGON_VERTS)
+                # 保持分割语义：仅做顶点下采样，不降级为 rectangle。
+                pts = _downsample_polygon(pts, _MAX_POLYGON_VERTS)
             detections.append(
                 _detection_entry(
                     class_id=cid,

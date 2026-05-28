@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useRef, type RefObject } from "react"
 import { TaskRectLabelPicker } from "@/pages/project-task-detail/components"
 import { Box3dToolButton } from "./box3d-tool-button"
-import { MaskToolButton } from "./circle-tool-button"
 import { KeypointToolButton } from "./keypoint-tool-button"
 import { PolygonToolButton } from "./polygon-tool-button"
 import { RectToolButton } from "./rect-tool-button"
@@ -15,7 +14,7 @@ import { SelectToolButton } from "./select-tool-button"
 import { SkeletonToolButton } from "./skeleton-tool-button"
 import type { TaskToolPaletteProps } from "./types"
 
-type ToolRefKey = "rectangle" | "rotation" | "polygon" | "mask" | "keypoint" | "box3d" | "skeleton"
+type ToolRefKey = "rectangle" | "rotation" | "polygon" | "keypoint" | "box3d" | "skeleton"
 
 export function TaskToolPalette({
   rightToolMode,
@@ -23,7 +22,6 @@ export function TaskToolPalette({
   onStartRectTool,
   onStartRotRectTool,
   onStartPolygonTool,
-  onStartMaskTool,
   onStartKeypointTool,
   onStartBox3dTool,
   onStartSkeletonTool,
@@ -34,7 +32,6 @@ export function TaskToolPalette({
   const refRect = useRef<HTMLDivElement | null>(null)
   const refRotRect = useRef<HTMLDivElement | null>(null)
   const refPolygon = useRef<HTMLDivElement | null>(null)
-  const refMask = useRef<HTMLDivElement | null>(null)
   const refKeypoint = useRef<HTMLDivElement | null>(null)
   const refBox3d = useRef<HTMLDivElement | null>(null)
   const refSkeleton = useRef<HTMLDivElement | null>(null)
@@ -46,7 +43,6 @@ export function TaskToolPalette({
       rectangle: refRect,
       rotation: refRotRect,
       polygon: refPolygon,
-      mask: refMask,
       keypoint: refKeypoint,
       box3d: refBox3d,
       skeleton: refSkeleton,
@@ -93,9 +89,6 @@ export function TaskToolPalette({
             onStartPolygonTool={onStartPolygonTool}
             onClearSelection={onClearSelection}
           />
-        </div>
-        <div ref={refMask} className="inline-flex">
-          <MaskToolButton active={rightToolMode === "mask"} onStartMaskTool={onStartMaskTool} />
         </div>
         <div ref={refKeypoint} className="inline-flex">
           <KeypointToolButton active={rightToolMode === "keypoint"} onStartKeypointTool={onStartKeypointTool} />

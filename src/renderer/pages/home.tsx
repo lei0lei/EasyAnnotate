@@ -277,12 +277,7 @@ export default function HomePage() {
             <Card className="border-border">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base font-semibold">最近导出</CardTitle>
-                <CardDescription>
-                  来自导出任务
-                  <Link to="/events" className="ml-1 text-primary underline-offset-4 hover:underline">
-                    Events
-                  </Link>
-                </CardDescription>
+                <CardDescription>来自导出任务</CardDescription>
               </CardHeader>
               <CardContent className="pt-0">
                 {loading ? (

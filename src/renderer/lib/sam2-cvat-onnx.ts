@@ -295,8 +295,17 @@ function masksTensorToRleInEncodeSpace(
     crop = new Uint8Array(md.length)
     for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0
   } else if (md instanceof Float32Array) {
-    crop = new Uint8Array(md.length)
-    for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0.5 ? 1 : 0
+    const binarize = (threshold: number): Uint8Array => {
+      const out = new Uint8Array(md.length)
+      for (let i = 0; i < md.length; i += 1) out[i] = md[i]! > threshold ? 1 : 0
+      return out
+    }
+    // 某些导出的 decoder 输出为 logits，阈值 0.5 会过严导致“有 embeddings 但无前景”。
+    // 先用 0.5；若无前景则回退到 0.0 以提升兼容性。
+    crop = binarize(0.5)
+    if (!maskBinaryHasForeground(crop)) {
+      crop = binarize(0.0)
+    }
   } else if (md instanceof Int32Array) {
     crop = new Uint8Array(md.length)
     for (let i = 0; i < md.length; i += 1) crop[i] = md[i]! > 0 ? 1 : 0

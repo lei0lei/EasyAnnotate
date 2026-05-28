@@ -1,9 +1,10 @@
-import fs, { createWriteStream } from "node:fs";
+import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { app, BrowserWindow, ipc, Theme } from '@mobrowser/api';
 import { Person } from './gen/greet';
 import { parseImageDimensionsFromHeader } from './image-dimensions';
@@ -45,6 +46,10 @@ import {
   ReadImageFileResponse,
   SaveTaskFilesRequest,
   SaveTaskFilesResponse,
+  ImportTaskImageZipRequest,
+  ImportTaskImageZipResponse,
+  ImportAnnotatedTaskZipRequest,
+  ImportAnnotatedTaskZipResponse,
   WriteImageAnnotationRequest,
   WriteImageAnnotationResponse,
   AppendImageAnnotationShapesRequest,
@@ -121,6 +126,118 @@ function sanitizeSegment(value: string): string {
   return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
 }
 
+function maybeDecodePathValue(value: string): string {
+  if (!/%[0-9a-fA-F]{2}/.test(value)) return value
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function decodeUtf8FromBytes(bytes: Uint8Array): string {
+  try {
+    const decoded = new TextDecoder("utf-8", { fatal: false }).decode(bytes)
+    if (!decoded || decoded.includes("\ufffd")) return ""
+    return decoded
+  } catch {
+    return ""
+  }
+}
+
+function maybeRecoverUtf8Mojibake(value: string): string {
+  const input = value || ""
+  if (!input) return input
+  const bytes = Uint8Array.from(input, (ch) => ch.charCodeAt(0) & 0xff)
+  const decoded = decodeUtf8FromBytes(bytes)
+  return decoded || input
+}
+
+function maybeRecoverUtf8FromUtf16Units(value: string): string {
+  const input = value || ""
+  if (!input) return input
+  const bytes = new Uint8Array(input.length * 2)
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i)
+    bytes[i * 2] = code & 0xff
+    bytes[i * 2 + 1] = (code >> 8) & 0xff
+  }
+  const decoded = decodeUtf8FromBytes(bytes)
+  return decoded || input
+}
+
+function maybeDecodeUnicodeEscapes(value: string): string {
+  const input = value || ""
+  if (!/\\u[0-9a-fA-F]{4}/.test(input)) return input
+  try {
+    return input.replace(/\\u([0-9a-fA-F]{4})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+  } catch {
+    return input
+  }
+}
+
+function normalizeIpcFilePath(rawPath: string): string {
+  const input = (rawPath || "").trim()
+  if (!input) return ""
+  if (!/^file:\/\//i.test(input)) return maybeDecodePathValue(input)
+  try {
+    const parsed = new URL(input)
+    let pathname = maybeDecodePathValue(parsed.pathname || "")
+    if (process.platform === "win32" && /^\/[A-Za-z]:\//.test(pathname)) {
+      pathname = pathname.slice(1)
+    }
+    const normalizedPath = pathname.replace(/\//g, path.sep)
+    if (parsed.host) {
+      if (process.platform === "win32") {
+        return `\\\\${parsed.host}${normalizedPath.startsWith(path.sep) ? "" : path.sep}${normalizedPath}`
+      }
+      return `//${parsed.host}${normalizedPath.startsWith(path.sep) ? "" : path.sep}${normalizedPath}`
+    }
+    return normalizedPath
+  } catch {
+    return maybeDecodePathValue(input)
+  }
+}
+
+function pathExistsSafe(filePath: string): boolean {
+  if (!filePath) return false
+  try {
+    return fs.existsSync(filePath)
+  } catch {
+    return false
+  }
+}
+
+function resolveExistingIpcPath(rawPath: string): string {
+  const trimmed = (rawPath || "").trim()
+  if (!trimmed) return ""
+  const attempts: string[] = []
+  const seen = new Set<string>()
+  const push = (candidate: string) => {
+    const value = candidate.trim()
+    if (!value || seen.has(value)) return
+    seen.add(value)
+    attempts.push(value)
+  }
+
+  push(trimmed)
+  push(maybeDecodePathValue(trimmed))
+  push(maybeDecodeUnicodeEscapes(trimmed))
+
+  const snapshot = [...attempts]
+  for (const candidate of snapshot) {
+    push(maybeRecoverUtf8Mojibake(candidate))
+    push(maybeRecoverUtf8FromUtf16Units(candidate))
+  }
+
+  for (const candidate of attempts) {
+    const normalized = normalizeIpcFilePath(candidate)
+    if (pathExistsSafe(normalized)) return normalized
+  }
+
+  return normalizeIpcFilePath(attempts[0] || trimmed)
+}
+
 function buildUniqueFilePath(dir: string, fileName: string): string {
   const ext = path.extname(fileName)
   const baseName = path.basename(fileName, ext)
@@ -136,6 +253,9 @@ function buildUniqueFilePath(dir: string, fileName: string): string {
 const YOLO_CHUNK_SIZE = 5 * 1024 * 1024
 const YOLO_MODEL_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 60 * 1000
 const YOLO_MODEL_CHUNK_TIMEOUT_MS = 15 * 60 * 1000
+// 自动标注任务（尤其分割/点位密集）JSON 体积会显著增大，4MB 过于保守会导致“文件有标注但界面不显示”。
+const MAX_ANNOTATION_JSON_BYTES = 32 * 1024 * 1024
+const MAX_IMAGE_IPC_BYTES = 24 * 1024 * 1024
 
 type YoloModelDownloadJob = {
   status: "pending" | "success" | "failed"
@@ -248,6 +368,267 @@ function httpGetRange(url: string, start: number, end: number): Promise<Buffer> 
   })
 }
 
+function buildRemoteHealthUrl(protocol: string, host: string, port: string, basePath: string): string {
+  const scheme = protocol.trim().toLowerCase() === "https" ? "https" : "http"
+  const h = host.trim() || "127.0.0.1"
+  const p = (port.trim() || "8000").replace(/^:/, "")
+  const rawBase = basePath.trim()
+  const normalizedBase = rawBase ? (rawBase.startsWith("/") ? rawBase : `/${rawBase}`).replace(/\/+$/, "") : ""
+  return `${scheme}://${h}:${p}${normalizedBase}/health`
+}
+
+function probeRemoteHealthViaNodeHttp(url: string, timeoutMs: number): Promise<{ ok: boolean; httpStatus: number; reason: string }> {
+  return new Promise((resolve) => {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      resolve({ ok: false, httpStatus: 0, reason: "无效 URL" })
+      return
+    }
+    const lib = parsed.protocol === "https:" ? https : http
+    const req = lib.get(
+      url,
+      {
+        headers: { Accept: "application/json,text/plain,*/*" },
+      },
+      (res) => {
+        const status = res.statusCode ?? 0
+        res.resume()
+        if (status >= 200 && status < 300) {
+          resolve({ ok: true, httpStatus: status, reason: "" })
+        } else {
+          resolve({ ok: false, httpStatus: status, reason: `HTTP ${status}` })
+        }
+      },
+    )
+    req.setTimeout(Math.max(500, timeoutMs), () => {
+      req.destroy(new Error(`连接超时（>${Math.max(500, timeoutMs)}ms）`))
+    })
+    req.on("error", (err) => {
+      resolve({ ok: false, httpStatus: 0, reason: err instanceof Error ? err.message : String(err) })
+    })
+  })
+}
+
+function normalizeNodeResponseHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === "string") {
+      out[key] = value
+      continue
+    }
+    if (Array.isArray(value)) {
+      out[key] = value.join(", ")
+    }
+  }
+  return out
+}
+
+function proxyBackendHttpViaNodeHttp(args: {
+  url: string
+  method: string
+  headers: Record<string, string>
+  body: Uint8Array
+  timeoutMs: number
+}): Promise<{
+  ok: boolean
+  status: number
+  statusText: string
+  headers: Record<string, string>
+  body: Uint8Array
+  errorMessage: string
+}> {
+  return new Promise((resolve) => {
+    let parsed: URL
+    try {
+      parsed = new URL(args.url)
+    } catch {
+      resolve({
+        ok: false,
+        status: 0,
+        statusText: "",
+        headers: {},
+        body: new Uint8Array(),
+        errorMessage: "无效 URL",
+      })
+      return
+    }
+    const lib = parsed.protocol === "https:" ? https : http
+    const req = lib.request(
+      parsed,
+      {
+        method: (args.method || "GET").toUpperCase(),
+        headers: args.headers,
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+        res.on("end", () => {
+          const body = Buffer.concat(chunks)
+          const status = res.statusCode ?? 0
+          resolve({
+            ok: true,
+            status,
+            statusText: res.statusMessage || "",
+            headers: normalizeNodeResponseHeaders(res.headers),
+            body: new Uint8Array(body),
+            errorMessage: "",
+          })
+        })
+      },
+    )
+    req.setTimeout(Math.max(500, args.timeoutMs), () => {
+      req.destroy(new Error(`请求超时（>${Math.max(500, args.timeoutMs)}ms）`))
+    })
+    req.on("error", (err) => {
+      resolve({
+        ok: false,
+        status: 0,
+        statusText: "",
+        headers: {},
+        body: new Uint8Array(),
+        errorMessage: err instanceof Error ? err.message : String(err),
+      })
+    })
+    if (args.body && args.body.byteLength > 0) {
+      req.write(Buffer.from(args.body))
+    }
+    req.end()
+  })
+}
+
+function mimeTypeFromPath(pathValue: string): string {
+  const lower = pathValue.trim().toLowerCase()
+  if (lower.endsWith(".png")) return "image/png"
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg"
+  if (lower.endsWith(".webp")) return "image/webp"
+  if (lower.endsWith(".bmp")) return "image/bmp"
+  if (lower.endsWith(".gif")) return "image/gif"
+  return "application/octet-stream"
+}
+
+async function proxyBackendImageUpload(args: {
+  url: string
+  imagePath: string
+  payloadJson: string
+  timeoutMs: number
+}): Promise<{
+  ok: boolean
+  status: number
+  statusText: string
+  headers: Record<string, string>
+  body: Uint8Array
+  errorMessage: string
+}> {
+  const pathValue = args.imagePath.trim()
+  if (!pathValue) {
+    return {
+      ok: false,
+      status: 0,
+      statusText: "",
+      headers: {},
+      body: new Uint8Array(),
+      errorMessage: "图片路径为空",
+    }
+  }
+  if (!fs.existsSync(pathValue)) {
+    return {
+      ok: false,
+      status: 0,
+      statusText: "",
+      headers: {},
+      body: new Uint8Array(),
+      errorMessage: `图片不存在：${pathValue}`,
+    }
+  }
+  try {
+    const bytes = fs.readFileSync(pathValue)
+    let parsed: URL
+    try {
+      parsed = new URL(args.url)
+    } catch {
+      return {
+        ok: false,
+        status: 0,
+        statusText: "",
+        headers: {},
+        body: new Uint8Array(),
+        errorMessage: "无效 URL",
+      }
+    }
+    const boundary = `----ea-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    const payloadText = args.payloadJson.trim()
+    const fileName = path.basename(pathValue) || "image.bin"
+    const fileHeader =
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="image"; filename="${fileName.replace(/"/g, '\\"')}"\r\n` +
+      `Content-Type: ${mimeTypeFromPath(pathValue)}\r\n\r\n`
+    const parts: Buffer[] = [Buffer.from(fileHeader, "utf8"), bytes, Buffer.from("\r\n", "utf8")]
+    if (payloadText) {
+      const payloadPart =
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="payload_json"\r\n` +
+        `Content-Type: application/json\r\n\r\n` +
+        `${payloadText}\r\n`
+      parts.push(Buffer.from(payloadPart, "utf8"))
+    }
+    parts.push(Buffer.from(`--${boundary}--\r\n`, "utf8"))
+    const requestBody = Buffer.concat(parts)
+    const lib = parsed.protocol === "https:" ? https : http
+    const timeoutMs = Math.max(500, args.timeoutMs)
+    return await new Promise((resolve) => {
+      const req = lib.request(
+        parsed,
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            "Content-Length": String(requestBody.byteLength),
+          },
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+          res.on("end", () => {
+            resolve({
+              ok: true,
+              status: res.statusCode ?? 0,
+              statusText: res.statusMessage || "",
+              headers: normalizeNodeResponseHeaders(res.headers),
+              body: new Uint8Array(Buffer.concat(chunks)),
+              errorMessage: "",
+            })
+          })
+        },
+      )
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`请求超时（>${timeoutMs}ms）`)))
+      req.on("error", (err) => {
+        resolve({
+          ok: false,
+          status: 0,
+          statusText: "",
+          headers: {},
+          body: new Uint8Array(),
+          errorMessage: err instanceof Error ? err.message : String(err),
+        })
+      })
+      req.write(requestBody)
+      req.end()
+    })
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      statusText: "",
+      headers: {},
+      body: new Uint8Array(),
+      errorMessage: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 async function downloadUrlToFile(url: string, destPath: string): Promise<void> {
   const info = await httpGetJson(modelDownloadInfoUrlFromFileUrl(url), 60_000)
   const totalSize = Number(info.total_size)
@@ -316,6 +697,375 @@ function collectTaskFiles(taskRootDir: string): Array<{ subset: string; filePath
 function resolveAnnotationJsonPath(imagePath: string): string {
   const parsed = path.parse(imagePath)
   return path.join(parsed.dir, `${parsed.name}.json`)
+}
+
+function resolveSystemTarExecutable(): string {
+  if (process.platform === "win32") {
+    const tarExe = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
+    if (fs.existsSync(tarExe)) return tarExe
+  }
+  return "tar"
+}
+
+function walkFilesRecursive(rootDir: string): string[] {
+  if (!fs.existsSync(rootDir)) return []
+  const out: string[] = []
+  const stack = [rootDir]
+  while (stack.length > 0) {
+    const dir = stack.pop()!
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absPath = path.join(dir, ent.name)
+      if (ent.isDirectory()) {
+        stack.push(absPath)
+        continue
+      }
+      if (ent.isFile()) out.push(absPath)
+    }
+  }
+  return out
+}
+
+function toPosixRelative(baseDir: string, absPath: string): string {
+  return path.relative(baseDir, absPath).replace(/\\/g, "/").replace(/^\/+/, "")
+}
+
+function parseYoloClassNames(rawYaml: string): string[] {
+  const trimmed = rawYaml.trim()
+  if (!trimmed) return []
+  const out: string[] = []
+
+  const inline = trimmed.match(/(?:^|\n)\s*names\s*:\s*\[([^\]]*)\]/m)
+  if (inline) {
+    const values = inline[1]
+      .split(",")
+      .map((v) => v.trim().replace(/^['"]|['"]$/g, ""))
+      .filter(Boolean)
+    if (values.length > 0) return values
+  }
+
+  const lines = rawYaml.split(/\r?\n/)
+  const namesStart = lines.findIndex((line) => /^\s*names\s*:\s*$/.test(line))
+  if (namesStart < 0) return []
+  for (let i = namesStart + 1; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (!line.trim()) continue
+    const listHit = line.match(/^\s*-\s*(.+)\s*$/)
+    if (listHit) {
+      const value = listHit[1].trim().replace(/^['"]|['"]$/g, "")
+      if (value) out.push(value)
+      continue
+    }
+    const mapHit = line.match(/^\s*\d+\s*:\s*(.+)\s*$/)
+    if (mapHit) {
+      const value = mapHit[1].trim().replace(/^['"]|['"]$/g, "")
+      if (value) out.push(value)
+      continue
+    }
+    if (/^\S/.test(line)) break
+  }
+  return out
+}
+
+async function readYoloClassNamesFromExtractedZip(extractedRoot: string): Promise<string[]> {
+  const files = walkFilesRecursive(extractedRoot)
+  for (const filePath of files) {
+    const base = path.basename(filePath).toLowerCase()
+    if (base !== "data.yaml" && base !== "data.yml" && base !== "classes.txt") continue
+    try {
+      const raw = await fs.promises.readFile(filePath, "utf8")
+      if (base === "classes.txt") {
+        const classes = raw
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+        if (classes.length > 0) return classes
+        continue
+      }
+      const names = parseYoloClassNames(raw)
+      if (names.length > 0) return names
+    } catch {
+      // ignore invalid class files
+    }
+  }
+  return []
+}
+
+function resolveYoloTxtForImage(
+  relImagePath: string,
+  txtSet: Set<string>,
+  txtByBaseName: Map<string, string[]>,
+): string | null {
+  const normalized = relImagePath.replace(/\\/g, "/")
+  const noExt = normalized.replace(/\.[^.]+$/, "")
+  const sameDir = `${noExt}.txt`.toLowerCase()
+  if (txtSet.has(sameDir)) return sameDir
+
+  const labelsMirror = `${noExt}.txt`.replace(/(^|\/)images\//i, "$1labels/").toLowerCase()
+  if (txtSet.has(labelsMirror)) return labelsMirror
+
+  const stem = path.posix.basename(noExt).toLowerCase()
+  const hits = txtByBaseName.get(`${stem}.txt`) ?? []
+  return hits[0] ?? null
+}
+
+type ImportedShapeRecord = {
+  label: string
+  score: number | null
+  points: number[][]
+  group_id: number | null
+  description: string | null
+  difficult: boolean
+  shape_type: "rectangle" | "rotation" | "polygon"
+  flags: Record<string, unknown> | null
+  attributes: Record<string, unknown>
+  kie_linking: unknown[]
+}
+
+function parseImageSizeFromFile(filePath: string): { width: number; height: number } {
+  try {
+    const header = readFileHeader(filePath)
+    const format = detectImageFormat(header)
+    const size = parseImageDimensionsFromHeader(header, format)
+    return {
+      width: Math.max(1, Math.round(size.width || 0)),
+      height: Math.max(1, Math.round(size.height || 0)),
+    }
+  } catch {
+    return { width: 1, height: 1 }
+  }
+}
+
+function parseYoloDetectTxtToShapes(
+  txtContent: string,
+  labels: string[],
+  imageWidth: number,
+  imageHeight: number,
+): ImportedShapeRecord[] {
+  return parseYoloTxtToShapesForTarget(txtContent, labels, imageWidth, imageHeight, "yolo-detect")
+}
+
+type YoloImportTargetFormat = "yolo-detect" | "yolo-obb" | "yolo-segment"
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value))
+}
+
+function bboxFromPoints(points: number[][]): { left: number; right: number; top: number; bottom: number } | null {
+  if (!points.length) return null
+  let left = Number.POSITIVE_INFINITY
+  let right = Number.NEGATIVE_INFINITY
+  let top = Number.POSITIVE_INFINITY
+  let bottom = Number.NEGATIVE_INFINITY
+  for (const pt of points) {
+    const x = Number(pt[0] ?? NaN)
+    const y = Number(pt[1] ?? NaN)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    left = Math.min(left, x)
+    right = Math.max(right, x)
+    top = Math.min(top, y)
+    bottom = Math.max(bottom, y)
+  }
+  if (!Number.isFinite(left) || !Number.isFinite(right) || !Number.isFinite(top) || !Number.isFinite(bottom)) return null
+  return { left, right, top, bottom }
+}
+
+function rectCornersFromBbox(bbox: { left: number; right: number; top: number; bottom: number }): number[][] {
+  return [
+    [bbox.left, bbox.top],
+    [bbox.right, bbox.top],
+    [bbox.right, bbox.bottom],
+    [bbox.left, bbox.bottom],
+  ]
+}
+
+function parseYoloLineToShape(
+  line: string,
+  labels: string[],
+  imageWidth: number,
+  imageHeight: number,
+  options?: { preferObbForLen9?: boolean },
+): ImportedShapeRecord | null {
+  const values = line.split(/\s+/).map((v) => Number(v))
+  if (values.length < 5 || values.some((v) => !Number.isFinite(v))) return null
+  const classId = Math.max(0, Math.floor(values[0]))
+  const label = labels[classId] ?? `class_${classId}`
+
+  // YOLO detect: class cx cy w h
+  if (values.length === 5) {
+    const [cx, cy, w, h] = values.slice(1)
+    const x1 = (cx - w / 2) * imageWidth
+    const y1 = (cy - h / 2) * imageHeight
+    const x2 = (cx + w / 2) * imageWidth
+    const y2 = (cy + h / 2) * imageHeight
+    const bbox = {
+      left: Math.min(x1, x2),
+      right: Math.max(x1, x2),
+      top: Math.min(y1, y2),
+      bottom: Math.max(y1, y2),
+    }
+    return {
+      label,
+      score: null,
+      points: rectCornersFromBbox(bbox),
+      group_id: null,
+      description: null,
+      difficult: false,
+      shape_type: "rectangle",
+      flags: null,
+      attributes: {},
+      kie_linking: [],
+    }
+  }
+
+  // YOLO segment / OBB: class x1 y1 x2 y2 ...
+  const coords = values.slice(1)
+  if (coords.length < 6 || coords.length % 2 !== 0) return null
+  const points: number[][] = []
+  for (let i = 0; i < coords.length; i += 2) {
+    const x = clamp01(coords[i]) * imageWidth
+    const y = clamp01(coords[i + 1]) * imageHeight
+    points.push([x, y])
+  }
+  if (points.length < 3) return null
+  const shouldTreatAsObb = options?.preferObbForLen9 === true && values.length === 9
+  return {
+    label,
+    score: null,
+    points: shouldTreatAsObb ? points.slice(0, 4) : points,
+    group_id: null,
+    description: null,
+    difficult: false,
+    shape_type: shouldTreatAsObb ? "rotation" : "polygon",
+    flags: null,
+    attributes: {},
+    kie_linking: [],
+  }
+}
+
+function coerceImportedShapeToTarget(shape: ImportedShapeRecord, target: YoloImportTargetFormat): ImportedShapeRecord | null {
+  if (target === "yolo-segment") {
+    if (shape.shape_type === "polygon") return shape
+    return {
+      ...shape,
+      shape_type: "polygon",
+      points: shape.points.slice(0, 4),
+    }
+  }
+  const bbox = bboxFromPoints(shape.points)
+  if (!bbox) return null
+  const rectPoints = rectCornersFromBbox(bbox)
+  if (target === "yolo-detect") {
+    return {
+      ...shape,
+      shape_type: "rectangle",
+      points: rectPoints,
+    }
+  }
+  // target === "yolo-obb"
+  if (shape.shape_type === "rotation" && shape.points.length >= 4) return shape
+  return {
+    ...shape,
+    shape_type: "rotation",
+    points: rectPoints,
+  }
+}
+
+function parseYoloTxtToShapesForTarget(
+  txtContent: string,
+  labels: string[],
+  imageWidth: number,
+  imageHeight: number,
+  target: YoloImportTargetFormat,
+): ImportedShapeRecord[] {
+  const lines = txtContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const out: ImportedShapeRecord[] = []
+  for (const line of lines) {
+    const parsed = parseYoloLineToShape(line, labels, imageWidth, imageHeight, {
+      preferObbForLen9: target === "yolo-obb",
+    })
+    if (!parsed) continue
+    const coerced = coerceImportedShapeToTarget(parsed, target)
+    if (!coerced) continue
+    out.push(coerced)
+  }
+  return out
+}
+
+function parseYoloObbTxtToShapes(
+  txtContent: string,
+  labels: string[],
+  imageWidth: number,
+  imageHeight: number,
+): ImportedShapeRecord[] {
+  return parseYoloTxtToShapesForTarget(txtContent, labels, imageWidth, imageHeight, "yolo-obb")
+}
+
+function parseYoloSegmentTxtToShapes(
+  txtContent: string,
+  labels: string[],
+  imageWidth: number,
+  imageHeight: number,
+): ImportedShapeRecord[] {
+  return parseYoloTxtToShapesForTarget(txtContent, labels, imageWidth, imageHeight, "yolo-segment")
+}
+
+function createXAnyDocJson(params: {
+  imageFileName: string
+  imageWidth: number
+  imageHeight: number
+  shapes: ImportedShapeRecord[]
+}): string {
+  return JSON.stringify(
+    {
+      version: "2.5.4",
+      flags: {},
+      shapes: params.shapes,
+      description: null,
+      imagePath: params.imageFileName,
+      imageData: null,
+      imageHeight: params.imageHeight,
+      imageWidth: params.imageWidth,
+    },
+    null,
+    2,
+  )
+}
+
+async function extractZipToTempDir(zipPath: string, tempRoot: string): Promise<{ ok: boolean; extractDir: string; errorMessage: string }> {
+  const extractDir = path.join(tempRoot, "unzipped")
+  await fs.promises.mkdir(extractDir, { recursive: true })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(resolveSystemTarExecutable(), ["-xf", zipPath, "-C", extractDir], {
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "pipe"],
+      })
+      let stderr = ""
+      child.stderr?.setEncoding("utf8")
+      child.stderr?.on("data", (chunk: string) => {
+        stderr += chunk
+      })
+      child.on("error", reject)
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve()
+          return
+        }
+        const errMsg = stderr.trim()
+        reject(new Error(errMsg ? `解压 zip 失败：${errMsg}` : `解压 zip 失败（退出码 ${code ?? "unknown"}）`))
+      })
+    })
+    return { ok: true, extractDir, errorMessage: "" }
+  } catch (error) {
+    return {
+      ok: false,
+      extractDir,
+      errorMessage: error instanceof Error ? error.message : "解压 zip 失败，请检查压缩包是否损坏。",
+    }
+  }
 }
 
 function readFileHeader(filePath: string, maxBytes = 256 * 1024): Buffer {
@@ -531,7 +1281,7 @@ ipc.registerService(AppService({
       })
       return {
         canceled: result.canceled,
-        paths: result.paths ?? [],
+        paths: (result.paths ?? []).map((item) => resolveExistingIpcPath(item)),
         errorMessage: "",
       }
     } catch (error) {
@@ -751,39 +1501,68 @@ ipc.registerService(AppService({
           : path.dirname(project.configFilePath)
       const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(request.taskId))
       if (rawSubset === "__DELETE_TASK__") {
-        fs.rmSync(taskRootDir, { recursive: true, force: true })
+        await fs.promises.rm(taskRootDir, { recursive: true, force: true })
         await deleteTaskArtifacts(request.databaseDir, request.projectId, request.taskId)
         return { errorMessage: "", savedPaths: [] }
       }
       const subset = sanitizeSegment(rawSubset || "default")
       const taskDir = path.join(taskRootDir, subset)
-      fs.mkdirSync(taskDir, { recursive: true })
+      await fs.promises.mkdir(taskDir, { recursive: true })
 
       const savedPaths: string[] = []
+      const failedCopies: Array<{ sourcePath: string; reason: string }> = []
       for (const file of request.files) {
-        const sourcePath = (file.sourcePath || "").trim()
-        const fileName = path.basename(file.fileName || sourcePath).trim()
-        if (!fileName) continue
+        const rawSourcePath = (file.sourcePath || "").trim()
+        const sourcePath = resolveExistingIpcPath(rawSourcePath)
+        const rawFileName = (file.fileName || rawSourcePath || sourcePath).trim()
+        const fileName = path.basename(rawFileName).trim()
+        if (!fileName) {
+          failedCopies.push({
+            sourcePath: rawSourcePath || sourcePath || "(empty)",
+            reason: `文件名为空（rawFileName=${JSON.stringify(rawFileName)}）`,
+          })
+          continue
+        }
         const targetPath = buildUniqueFilePath(taskDir, fileName)
         if (sourcePath) {
           try {
-            fs.copyFileSync(sourcePath, targetPath)
+            await fs.promises.copyFile(sourcePath, targetPath)
             savedPaths.push(targetPath)
             continue
-          } catch {
+          } catch (error) {
             // Fallback to content write when source path cannot be copied.
+            failedCopies.push({
+              sourcePath: rawSourcePath || sourcePath,
+              reason:
+                `copy 失败（resolved=${JSON.stringify(sourcePath)}）: ` +
+                `${error instanceof Error ? error.message : String(error)}`,
+            })
           }
+        } else {
+          failedCopies.push({
+            sourcePath: rawSourcePath || "(empty)",
+            reason: "路径为空或不可解析",
+          })
         }
         const content = file.content
         if (content && content.length > 0) {
-          fs.writeFileSync(targetPath, Buffer.from(content))
+          await fs.promises.writeFile(targetPath, Buffer.from(content))
           savedPaths.push(targetPath)
+        } else {
+          failedCopies.push({
+            sourcePath: rawSourcePath || sourcePath || "(empty)",
+            reason: "无 sourcePath 且无 content",
+          })
         }
       }
 
       if (savedPaths.length === 0 && request.files.length > 0) {
+        const firstFailure = failedCopies[0]
+        const detail = firstFailure
+          ? `；示例：${firstFailure.sourcePath}（${firstFailure.reason}）`
+          : ""
         return {
-          errorMessage: "没有可保存的有效文件（缺少路径且无文件内容）。",
+          errorMessage: `没有可保存的有效文件（缺少路径且无文件内容，或路径不可访问）${detail}`,
           savedPaths: [],
         }
       }
@@ -793,6 +1572,312 @@ ipc.registerService(AppService({
       return {
         errorMessage: error instanceof Error ? error.message : String(error),
         savedPaths: [],
+      }
+    }
+  },
+  async ImportTaskImageZip(request: ImportTaskImageZipRequest): Promise<ImportTaskImageZipResponse> {
+    let tempRoot = ""
+    try {
+      tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "easyannotate-task-imagezip-"))
+      const project = getProject(request.globalConfigDir, request.projectId)
+      if (!project) {
+        return { errorMessage: "项目不存在。", savedPaths: [], importedImageCount: 0 }
+      }
+      const zipPath = resolveExistingIpcPath(request.zipPath || "")
+      if (!zipPath) {
+        return { errorMessage: "请选择 zip 文件。", savedPaths: [], importedImageCount: 0 }
+      }
+      if (!zipPath.toLowerCase().endsWith(".zip")) {
+        return { errorMessage: "仅支持 .zip 文件。", savedPaths: [], importedImageCount: 0 }
+      }
+      if (!fs.existsSync(zipPath)) {
+        return { errorMessage: "zip 文件不存在。", savedPaths: [], importedImageCount: 0 }
+      }
+
+      const extract = await extractZipToTempDir(zipPath, tempRoot)
+      if (!extract.ok) {
+        return { errorMessage: extract.errorMessage, savedPaths: [], importedImageCount: 0 }
+      }
+
+      const imageExts = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
+      const images = walkFilesRecursive(extract.extractDir).filter((p) => imageExts.has(path.extname(p).toLowerCase()))
+      if (images.length <= 0) {
+        return { errorMessage: "zip 内未找到可导入图片。", savedPaths: [], importedImageCount: 0 }
+      }
+
+      const rawSubset = (request.subset || "").trim()
+      const baseRoot =
+        project.storageType === "local" && project.localPath
+          ? project.localPath
+          : path.dirname(project.configFilePath)
+      const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(request.taskId))
+      const subset = sanitizeSegment(rawSubset || "default")
+      const taskDir = path.join(taskRootDir, subset)
+      await fs.promises.mkdir(taskDir, { recursive: true })
+
+      const savedPaths: string[] = []
+      for (const srcImagePath of images) {
+        const targetImagePath = buildUniqueFilePath(taskDir, path.basename(srcImagePath))
+        await fs.promises.copyFile(srcImagePath, targetImagePath)
+        savedPaths.push(targetImagePath)
+      }
+      return { errorMessage: "", savedPaths, importedImageCount: savedPaths.length }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        savedPaths: [],
+        importedImageCount: 0,
+      }
+    } finally {
+      if (tempRoot) {
+        await fs.promises.rm(tempRoot, { recursive: true, force: true })
+      }
+    }
+  },
+  async ImportAnnotatedTaskZip(request: ImportAnnotatedTaskZipRequest): Promise<ImportAnnotatedTaskZipResponse> {
+    let tempRoot = ""
+    try {
+      tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "easyannotate-task-import-"))
+      const importFormat = (request.importFormat || "xanylabeling").trim().toLowerCase()
+      const allowFormats = new Set(["xanylabeling", "yolo-detect", "yolo-obb", "yolo-segment", "yolo-pose"])
+      if (!allowFormats.has(importFormat)) {
+        return {
+          errorMessage: `不支持的导入格式：${importFormat}`,
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+      if (
+        importFormat !== "xanylabeling" &&
+        importFormat !== "yolo-detect" &&
+        importFormat !== "yolo-obb" &&
+        importFormat !== "yolo-segment"
+      ) {
+        return {
+          errorMessage: `导入格式 ${importFormat} 暂未实现，当前支持 xanylabeling / yolo-detect / yolo-obb / yolo-segment。`,
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+      const project = getProject(request.globalConfigDir, request.projectId)
+      if (!project) {
+        return {
+          errorMessage: "项目不存在。",
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+      const zipPath = resolveExistingIpcPath(request.zipPath || "")
+      if (!zipPath) {
+        return {
+          errorMessage: "请选择 zip 文件。",
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+      if (!zipPath.toLowerCase().endsWith(".zip")) {
+        return {
+          errorMessage: "仅支持 .zip 文件。",
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+      if (!fs.existsSync(zipPath)) {
+        return {
+          errorMessage: "zip 文件不存在。",
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+
+      const extract = await extractZipToTempDir(zipPath, tempRoot)
+      if (!extract.ok) {
+        return {
+          errorMessage: extract.errorMessage,
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+      const extractDir = extract.extractDir
+
+      const allFiles = walkFilesRecursive(extractDir)
+      const imageExts = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
+      const images = allFiles.filter((p) => imageExts.has(path.extname(p).toLowerCase()))
+      if (images.length <= 0) {
+        return {
+          errorMessage: "zip 内未找到可导入图片。",
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+
+      const txtSet = new Set<string>()
+      const txtPathByRelLower = new Map<string, string>()
+      const txtByBaseName = new Map<string, string[]>()
+      const xanyJsonByImageRelLower = new Map<string, string>()
+      for (const filePath of allFiles) {
+        const relLower = toPosixRelative(extractDir, filePath).toLowerCase()
+        const ext = path.extname(filePath).toLowerCase()
+        if ((importFormat === "yolo-detect" || importFormat === "yolo-obb" || importFormat === "yolo-segment") && ext === ".txt") {
+          txtSet.add(relLower)
+          txtPathByRelLower.set(relLower, filePath)
+          const base = path.basename(filePath).toLowerCase()
+          const arr = txtByBaseName.get(base) ?? []
+          arr.push(relLower)
+          txtByBaseName.set(base, arr)
+          continue
+        }
+        if (ext === ".json") {
+          try {
+            const raw = await fs.promises.readFile(filePath, "utf8")
+            const parsed = JSON.parse(raw) as { shapes?: unknown }
+            if (Array.isArray(parsed.shapes)) {
+              const relNoExt = relLower.replace(/\.json$/i, "")
+              for (const imageExt of imageExts) {
+                xanyJsonByImageRelLower.set(`${relNoExt}${imageExt}`, filePath)
+              }
+            }
+          } catch {
+            // ignore invalid json
+          }
+        }
+      }
+
+      const detectedFormat: "xanylabeling" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "" =
+        importFormat === "xanylabeling"
+          ? images.some((img) => xanyJsonByImageRelLower.has(toPosixRelative(extractDir, img).toLowerCase()))
+            ? "xanylabeling"
+            : ""
+          : importFormat === "yolo-detect"
+            ? images.some((img) => Boolean(resolveYoloTxtForImage(toPosixRelative(extractDir, img), txtSet, txtByBaseName)))
+              ? "yolo-detect"
+              : ""
+            : importFormat === "yolo-obb"
+              ? images.some((img) => Boolean(resolveYoloTxtForImage(toPosixRelative(extractDir, img), txtSet, txtByBaseName)))
+                ? "yolo-obb"
+                : ""
+              : images.some((img) => Boolean(resolveYoloTxtForImage(toPosixRelative(extractDir, img), txtSet, txtByBaseName)))
+                ? "yolo-segment"
+                : ""
+      if (!detectedFormat) {
+        return {
+          errorMessage:
+            importFormat === "xanylabeling"
+              ? "未识别到标注格式：请提供 XAnyLabeling(json) 标注压缩包。"
+              : importFormat === "yolo-detect"
+                ? "未识别到标注格式：请提供 YOLO Detect(txt) 标注压缩包。"
+                : importFormat === "yolo-obb"
+                  ? "未识别到标注格式：请提供 YOLO OBB(txt) 标注压缩包。"
+                  : "未识别到标注格式：请提供 YOLO Segment(txt) 标注压缩包。",
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat: "",
+        }
+      }
+
+      const rawSubset = (request.subset || "").trim()
+      const baseRoot =
+        project.storageType === "local" && project.localPath
+          ? project.localPath
+          : path.dirname(project.configFilePath)
+      const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(request.taskId))
+      const subset = sanitizeSegment(rawSubset || "default")
+      const taskDir = path.join(taskRootDir, subset)
+      await fs.promises.mkdir(taskDir, { recursive: true })
+
+      const savedPaths: string[] = []
+      let importedImageCount = 0
+      let importedAnnotationCount = 0
+      const projectTagNames = (project.tags ?? []).map((tag) => tag.name.trim()).filter(Boolean)
+      const yoloNames = importFormat === "xanylabeling" ? [] : await readYoloClassNamesFromExtractedZip(extractDir)
+      const yoloClassNames = yoloNames.length > 0 ? yoloNames : projectTagNames
+
+      for (const srcImagePath of images) {
+        const imageName = path.basename(srcImagePath)
+        const targetImagePath = buildUniqueFilePath(taskDir, imageName)
+        await fs.promises.copyFile(srcImagePath, targetImagePath)
+        savedPaths.push(targetImagePath)
+        importedImageCount += 1
+
+        const targetJsonPath = resolveAnnotationJsonPath(targetImagePath)
+        if (importFormat === "xanylabeling") {
+          const relImageLower = toPosixRelative(extractDir, srcImagePath).toLowerCase()
+          const srcJsonPath = xanyJsonByImageRelLower.get(relImageLower)
+          if (!srcJsonPath || !fs.existsSync(srcJsonPath)) continue
+          await fs.promises.copyFile(srcJsonPath, targetJsonPath)
+          savedPaths.push(targetJsonPath)
+          importedAnnotationCount += 1
+          continue
+        }
+        const relImagePath = toPosixRelative(extractDir, srcImagePath)
+        const txtRel = resolveYoloTxtForImage(relImagePath, txtSet, txtByBaseName)
+        if (!txtRel) continue
+        const txtAbsPath = txtPathByRelLower.get(txtRel)
+        if (!txtAbsPath) continue
+        const txtRaw = await fs.promises.readFile(txtAbsPath, "utf8")
+        const { width, height } = parseImageSizeFromFile(srcImagePath)
+        const shapes =
+          importFormat === "yolo-obb"
+            ? parseYoloObbTxtToShapes(txtRaw, yoloClassNames, width, height)
+            : importFormat === "yolo-segment"
+              ? parseYoloSegmentTxtToShapes(txtRaw, yoloClassNames, width, height)
+              : parseYoloDetectTxtToShapes(txtRaw, yoloClassNames, width, height)
+        const jsonText = createXAnyDocJson({
+          imageFileName: path.basename(targetImagePath),
+          imageWidth: width,
+          imageHeight: height,
+          shapes,
+        })
+        await fs.promises.writeFile(targetJsonPath, jsonText, "utf8")
+        savedPaths.push(targetJsonPath)
+        importedAnnotationCount += 1
+      }
+
+      if (importedImageCount <= 0) {
+        return {
+          errorMessage: "zip 内没有可导入图片。",
+          savedPaths: [],
+          importedImageCount: 0,
+          importedAnnotationCount: 0,
+          detectedFormat,
+        }
+      }
+
+      return {
+        errorMessage: "",
+        savedPaths,
+        importedImageCount,
+        importedAnnotationCount,
+        detectedFormat,
+      }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        savedPaths: [],
+        importedImageCount: 0,
+        importedAnnotationCount: 0,
+        detectedFormat: "",
+      }
+    } finally {
+      if (tempRoot) {
+        await fs.promises.rm(tempRoot, { recursive: true, force: true })
       }
     }
   },
@@ -889,7 +1974,7 @@ ipc.registerService(AppService({
   },
   async ReadImageFile(request: ReadImageFileRequest): Promise<ReadImageFileResponse> {
     try {
-      const filePath = (request.path || "").trim()
+      const filePath = resolveExistingIpcPath(request.path || "")
       if (!filePath) {
         return { content: Buffer.alloc(0), errorMessage: "图片路径为空。" }
       }
@@ -899,6 +1984,15 @@ ipc.registerService(AppService({
       const stat = fs.statSync(filePath)
       if (!stat.isFile()) {
         return { content: Buffer.alloc(0), errorMessage: "图片路径不是文件。" }
+      }
+      if (stat.size > MAX_IMAGE_IPC_BYTES) {
+        return {
+          content: Buffer.alloc(0),
+          errorMessage:
+            `图片文件过大（${Math.floor(stat.size / 1024 / 1024)} MB），` +
+            `超过 IPC 读取上限 ${Math.floor(MAX_IMAGE_IPC_BYTES / 1024 / 1024)} MB。` +
+            "请先压缩图片或改用更小分辨率后再标注。",
+        }
       }
       const content = fs.readFileSync(filePath)
       return { content, errorMessage: "" }
@@ -918,6 +2012,19 @@ ipc.registerService(AppService({
       const jsonPath = resolveAnnotationJsonPath(imagePath)
       if (!fs.existsSync(jsonPath)) {
         return { jsonText: "", exists: false, errorMessage: "" }
+      }
+      const stat = fs.statSync(jsonPath)
+      if (!stat.isFile()) {
+        return { jsonText: "", exists: false, errorMessage: "标注路径不是文件。" }
+      }
+      if (stat.size > MAX_ANNOTATION_JSON_BYTES) {
+        return {
+          jsonText: "",
+          exists: true,
+          errorMessage:
+            `标注文件过大（${Math.floor(stat.size / 1024)} KB），已拒绝读取以避免崩溃。` +
+            "请清理该图片对应 json 后重试。",
+        }
       }
       const content = fs.readFileSync(jsonPath, "utf8")
       return {
@@ -1162,7 +2269,7 @@ ipc.registerService(AppService({
         return { canceled: true, jobId: "", errorMessage: "项目不存在。" }
       }
       const exportFormat = (request.exportFormat || "coco").trim()
-      const allowFormats = new Set(["coco", "voc", "yolo-detect", "yolo-obb", "yolo-segment", "yolo-pose"])
+      const allowFormats = new Set(["coco", "voc", "yolo-detect", "yolo-obb", "yolo-segment", "yolo-pose", "xanylabeling"])
       if (!allowFormats.has(exportFormat)) {
         return { canceled: true, jobId: "", errorMessage: `不支持的导出格式：${exportFormat}` }
       }
@@ -1193,7 +2300,7 @@ ipc.registerService(AppService({
         project,
         projectId,
         taskId: taskId || undefined,
-        exportFormat: exportFormat as "coco" | "voc" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose",
+        exportFormat: exportFormat as any,
         keepProjectStructure,
         trainBoundary,
         valBoundary,
@@ -1317,6 +2424,55 @@ ipc.registerService(AppService({
   async GetLocalBackendStatus(_request) {
     const reachable = await probeLocalBackendHealth()
     return { reachable }
+  },
+  async ProbeRemoteBackendHealth(request) {
+    const healthUrl = buildRemoteHealthUrl(request.protocol, request.host, request.port, request.basePath)
+    const timeoutMs = Number.isFinite(request.timeoutMs) ? request.timeoutMs : 5000
+    const result = await probeRemoteHealthViaNodeHttp(healthUrl, timeoutMs)
+    return {
+      ok: result.ok,
+      healthUrl,
+      reason: result.reason,
+      httpStatus: result.httpStatus,
+    }
+  },
+  async ProxyBackendHttp(request) {
+    const method = (request.method || "GET").trim() || "GET"
+    const headers = { ...(request.headers || {}) } as Record<string, string>
+    const body = request.body instanceof Uint8Array ? request.body : new Uint8Array()
+    const timeoutMs = Number.isFinite(request.timeoutMs) && request.timeoutMs > 0 ? request.timeoutMs : 60_000
+    const result = await proxyBackendHttpViaNodeHttp({
+      url: request.url,
+      method,
+      headers,
+      body,
+      timeoutMs,
+    })
+    return {
+      ok: result.ok,
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+      body: result.body,
+      errorMessage: result.errorMessage,
+    }
+  },
+  async ProxyBackendImageUpload(request) {
+    const timeoutMs = Number.isFinite(request.timeoutMs) && request.timeoutMs > 0 ? request.timeoutMs : 120_000
+    const result = await proxyBackendImageUpload({
+      url: request.url,
+      imagePath: request.imagePath,
+      payloadJson: request.payloadJson || "",
+      timeoutMs,
+    })
+    return {
+      ok: result.ok,
+      status: result.status,
+      statusText: result.statusText,
+      headers: result.headers,
+      body: result.body,
+      errorMessage: result.errorMessage,
+    }
   },
   async StartLocalBackend(request) {
     return await startEmbeddedPythonBackend(request.backendDirectory)

@@ -5,13 +5,13 @@
  */
 export type LeftPanelMode = "labels" | "attributes"
 export type LabelsTab = "layers" | "classes"
-export type RightToolMode = "select" | "rect" | "rotRect" | "circle" | "polygon" | "text" | "mask" | "keypoint" | "box3d" | "skeleton"
+export type RightToolMode = "select" | "rect" | "rotRect" | "circle" | "polygon" | "text" | "keypoint" | "box3d" | "skeleton"
 
 export type Point = { x: number; y: number }
 export type ResizeHandle = "nw" | "ne" | "se" | "sw"
 
 export type ShapeDragAction =
-  | { kind: "move"; shapeIndex: number; start: Point; originalPoints: number[][]; shapeType?: "rectangle" | "mask" | "point" }
+  | { kind: "move"; shapeIndex: number; start: Point; originalPoints: number[][]; shapeType?: "rectangle" | "point" }
   | { kind: "resize"; shapeIndex: number; handle: ResizeHandle; start: Point; originalPoints: number[][] }
 
 export type PolygonVertexDragAction = {
@@ -94,7 +94,7 @@ export type RenderedSkeleton = {
   pointLabels: string[]
 }
 
-export type RenderedMask = {
+export type RenderedRasterPreview = {
   index: number
   shapeId: string
   label: string

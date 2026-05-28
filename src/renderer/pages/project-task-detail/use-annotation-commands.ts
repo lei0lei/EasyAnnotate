@@ -57,7 +57,7 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
     hiddenClassLabels: [...params.hiddenClassLabels],
   })
   const shapeManagement = useShapeManagement(params)
-  const { updateShapePoints: patchDocShapePoints, updateMaskShapeRle: patchDocMaskRle } = shapeManagement
+  const { updateShapePoints: patchDocShapePoints } = shapeManagement
   const resolveShapeIdFromDoc = useCallback((doc: XAnyLabelFile | null, shapeIndex: number | null | undefined) => {
     if (shapeIndex === null || shapeIndex === undefined) return undefined
     return getShapeStableIdAtIndex(doc, shapeIndex) ?? undefined
@@ -149,28 +149,6 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
     [commitDoc, patchDocShapePoints, resolveShapeIdFromDoc],
   )
 
-  const applyMaskRlePatch = useCallback(
-    (shapeIndex: number, payload: { counts: number[]; w: number; h: number; brushSize: number }, options?: { persist?: boolean }) => {
-      const shouldPersist = options?.persist ?? false
-      const nextDoc = patchDocMaskRle(shapeIndex, payload)
-      if (shouldPersist) {
-        if (nextDoc) {
-          commitDoc(nextDoc, {
-            source: "command",
-            shapeId: resolveShapeIdFromDoc(nextDoc, shapeIndex),
-          })
-        }
-      } else {
-        dirtyRef.current = true
-        lastDirtyEventRef.current = {
-          source: "command",
-          shapeId: resolveShapeIdFromDoc(nextDoc, shapeIndex),
-        }
-      }
-    },
-    [commitDoc, patchDocMaskRle, resolveShapeIdFromDoc],
-  )
-
   const persistIfDirty = useCallback(() => {
     if (!dirtyRef.current || !params.annotationDoc) return
     const dirtyEvent = lastDirtyEventRef.current
@@ -239,51 +217,39 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
   const createShape = useCallback(
     ({ imagePath, imageWidth, imageHeight, shape }: CreateShapeParams) => {
       const shapeId = createShapeStableId()
-      let created: CreateShapeResult | null = null
-      let nextDocForCommit: XAnyLabelFile | null = null
-
-      params.setAnnotationDoc((prev) => {
-        const workingDoc =
-          prev ??
-          createXAnyLabelTemplate({
-            imagePath,
-            imageWidth,
-            imageHeight,
-          })
-        const nextDoc = cloneAnnotationDoc({
-          ...workingDoc,
-          shapes: [
-            ...workingDoc.shapes,
-            {
-              ...shape,
-              attributes: {
-                ...shape.attributes,
-                __eaShapeId: shapeId,
-              },
-            },
-          ],
+      const workingDoc =
+        params.annotationDoc ??
+        createXAnyLabelTemplate({
+          imagePath,
+          imageWidth,
+          imageHeight,
         })
-        created = {
-          shapeIndex: nextDoc.shapes.length - 1,
-          shapeId,
-        }
-        nextDocForCommit = nextDoc
-        return nextDoc
+      const nextDoc = cloneAnnotationDoc({
+        ...workingDoc,
+        imageWidth,
+        imageHeight,
+        shapes: [
+          ...workingDoc.shapes,
+          {
+            ...shape,
+            attributes: {
+              ...shape.attributes,
+              __eaShapeId: shapeId,
+            },
+          },
+        ],
+      })
+      const created: CreateShapeResult = {
+        shapeIndex: nextDoc.shapes.length - 1,
+        shapeId,
+      }
+      params.setAnnotationDoc(nextDoc)
+      commitDoc(nextDoc, {
+        source: "command",
+        shapeId,
       })
 
-      if (nextDocForCommit) {
-        commitDoc(nextDocForCommit, {
-          source: "command",
-          shapeId,
-        })
-      }
-
-      if (created) return created
-
-      return {
-        shapeIndex: 0,
-        shapeId,
-      } satisfies CreateShapeResult
+      return created
     },
     [commitDoc, params],
   )
@@ -405,7 +371,6 @@ export function useAnnotationCommands(params: UseAnnotationCommandsParams) {
     setHoveredShape,
     clearSelection,
     applyShapePatch,
-    applyMaskRlePatch,
     markInteractionDirty,
     lastDirtyEventRef,
     persistIfDirty,

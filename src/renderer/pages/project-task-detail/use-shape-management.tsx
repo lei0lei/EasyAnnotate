@@ -15,7 +15,6 @@ import {
 } from "@/pages/project-task-detail/shape-ops"
 import { roundPointsToInt } from "@/pages/project-task-detail/utils"
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
-import { writeMaskRleAttributes } from "@/lib/mask-raster-rle"
 import { useCallback, type Dispatch, type SetStateAction } from "react"
 import type { RawHighlightCorner } from "@/pages/project-task-detail/hook-shared"
 
@@ -124,29 +123,6 @@ export function useShapeManagement(params: UseShapeManagementParams) {
     return nextDocForPersist
   }, [params.setAnnotationDoc])
 
-  const updateMaskShapeRle = useCallback(
-    (shapeIndex: number, payload: { counts: number[]; w: number; h: number; brushSize: number }): XAnyLabelFile | null => {
-      let nextDocForPersist: XAnyLabelFile | null = null
-      params.setAnnotationDoc((prev) => {
-        if (!prev) return prev
-        const nextShapes = prev.shapes.map((shape, index) =>
-          index === shapeIndex
-            ? {
-                ...shape,
-                points: [],
-                attributes: writeMaskRleAttributes(shape.attributes ?? {}, payload),
-              }
-            : shape,
-        )
-        const nextDoc = normalizeDocPointsToInt({ ...prev, shapes: nextShapes })
-        nextDocForPersist = nextDoc
-        return nextDoc
-      })
-      return nextDocForPersist
-    },
-    [params.setAnnotationDoc],
-  )
-
   const formatPosition = (point: number[] | undefined): string => formatPositionText(point)
 
   const renderPositionBox = (
@@ -179,7 +155,6 @@ export function useShapeManagement(params: UseShapeManagementParams) {
     toggleClassVisibility,
     reorderShapeLayer,
     updateShapePoints,
-    updateMaskShapeRle,
     formatPosition,
     renderPositionBox,
   }
