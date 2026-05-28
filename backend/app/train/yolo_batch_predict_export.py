@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# 分割 mask 轮廓顶点过多时，经 IPC/HTTP 传 JSON 易触发桌面端原生层闪退（0xc0000409）。
-_MAX_POLYGON_VERTS = 256
-
 
 def _names_map(r: Any) -> dict[int, str]:
     return {int(k): str(v) for k, v in (getattr(r, "names", None) or {}).items()}
@@ -41,13 +38,6 @@ def _xyxy_to_rect_points(xyxy: list[float]) -> list[list[float]]:
         [x2, y2],
         [x1, y2],
     ]
-
-
-def _downsample_polygon(pts: list[list[float]], max_verts: int) -> list[list[float]]:
-    if len(pts) <= max_verts:
-        return pts
-    step = max(1, len(pts) // max_verts)
-    return pts[::step][:max_verts]
 
 
 def export_ultralytics_result(r: Any, task: str) -> dict[str, Any]:
@@ -93,9 +83,6 @@ def export_ultralytics_result(r: Any, task: str) -> dict[str, Any]:
             cid = int(cls_ids[i]) if i < len(cls_ids) else 0
             conf = float(confs[i]) if i < len(confs) else 0.0
             shape_type = "polygon"
-            if len(pts) > _MAX_POLYGON_VERTS:
-                # 保持分割语义：仅做顶点下采样，不降级为 rectangle。
-                pts = _downsample_polygon(pts, _MAX_POLYGON_VERTS)
             detections.append(
                 _detection_entry(
                     class_id=cid,

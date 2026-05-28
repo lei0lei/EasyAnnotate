@@ -1,9 +1,3 @@
-import {
-  MASK_RLE_COUNTS_KEY,
-  MASK_RLE_H_KEY,
-  MASK_RLE_W_KEY,
-  encodeBinaryToRowMajorRle,
-} from "@/lib/mask-raster-rle"
 import type { ProjectTag } from "@/lib/projects-api"
 import type { XAnyLabelShape } from "@/lib/xanylabeling-format"
 
@@ -15,7 +9,6 @@ export type YoloBatchDetection = {
   points: number[][]
   group_id?: number
   keypoint_index?: number
-  mask_rle?: { counts: number[]; w: number; h: number }
 }
 
 export type YoloBatchPredictResult = {
@@ -50,14 +43,6 @@ function resolveLabel(className: string | null | undefined, allowed: Set<string>
   return null
 }
 
-const MAX_POLYGON_VERTS = 256
-
-function downsamplePolygon(points: number[][]): number[][] {
-  if (points.length <= MAX_POLYGON_VERTS) return points
-  const step = Math.max(1, Math.floor(points.length / MAX_POLYGON_VERTS))
-  return points.filter((_, idx) => idx % step === 0).slice(0, MAX_POLYGON_VERTS)
-}
-
 function clampPoints(points: number[][], imageW: number, imageH: number): number[][] {
   const w = Math.max(1, imageW)
   const h = Math.max(1, imageH)
@@ -72,7 +57,7 @@ function clampPoints(points: number[][], imageW: number, imageH: number): number
 
 function baseShape(
   label: string,
-  score: number,
+  score: number | null,
   shape_type: XAnyLabelShape["shape_type"],
   points: number[][],
   attributes: Record<string, unknown> = {},
@@ -117,28 +102,12 @@ export function yoloDetectionsToShapes(
       ]
     }
 
-    if (shapeType === "polygon") {
-      points = downsamplePolygon(points)
-    }
-
     if (shapeType === "point" && points.length < 1) continue
     if (shapeType === "polygon" && points.length < 3) continue
     if ((shapeType === "rectangle" || shapeType === "rotation") && points.length < 4) continue
 
     const groupId =
       typeof det.group_id === "number" && Number.isFinite(det.group_id) ? Math.floor(det.group_id) : null
-
-    if (det.mask_rle && det.mask_rle.w > 0 && det.mask_rle.h > 0) {
-      shapes.push(
-        baseShape(label, score, "mask", [], {
-          [MASK_RLE_COUNTS_KEY]: det.mask_rle.counts,
-          [MASK_RLE_W_KEY]: det.mask_rle.w,
-          [MASK_RLE_H_KEY]: det.mask_rle.h,
-          brushSize: 1,
-        }),
-      )
-      continue
-    }
 
     shapes.push(baseShape(label, score, shapeType, points, {}, groupId))
   }
@@ -156,18 +125,3 @@ export function yoloPredictResultToShapes(
   return yoloDetectionsToShapes(block.detections, allowedLabels, imageW, imageH)
 }
 
-/** 将二值 mask（行主序）编码为 shape（用于后续扩展 segment RLE 上传）。 */
-export function maskBinaryToShape(
-  label: string,
-  score: number,
-  flat: Uint8Array,
-  w: number,
-  h: number,
-): XAnyLabelShape {
-  return baseShape(label, score, "mask", [], {
-    [MASK_RLE_COUNTS_KEY]: encodeBinaryToRowMajorRle(flat),
-    [MASK_RLE_W_KEY]: w,
-    [MASK_RLE_H_KEY]: h,
-    brushSize: 1,
-  })
-}
