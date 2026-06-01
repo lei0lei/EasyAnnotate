@@ -9,10 +9,12 @@ import { getProject, listTaskFiles, readImageFile, type ProjectItem, type TaskFi
 import { guessMimeType } from "@/pages/project-task-detail/utils"
 
 type ToolResetAction = { type: "clearRectPoints" } | { type: "resetForNewFile" }
+const TASK_FILES_BATCH_SIZE = 10
 
 type UseTaskBootstrapParams = {
   projectId?: string
   taskId?: string
+  currentIndex: number
   files: TaskFileItem[]
   imagePathCandidates: string[]
   currentFilePath: string
@@ -45,6 +47,7 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
   const {
     projectId,
     taskId,
+    currentIndex,
     files,
     imagePathCandidates,
     currentFilePath,
@@ -76,6 +79,8 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
   const resetDocForNewFileRef = useRef(resetDocForNewFile)
   const clearToolTransientInteractionsRef = useRef(clearToolTransientInteractions)
   const lastResetFilePathRef = useRef<string | null>(null)
+  const allTaskFilesRef = useRef<TaskFileItem[]>([])
+  const loadedTaskFilesCountRef = useRef(0)
 
   useEffect(() => {
     dispatchToolRef.current = dispatchTool
@@ -89,20 +94,60 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     clearToolTransientInteractionsRef.current = clearToolTransientInteractions
   }, [clearToolTransientInteractions])
 
+  const applyInitialFilesBatch = useCallback(
+    (nextFiles: TaskFileItem[]) => {
+      allTaskFilesRef.current = nextFiles
+      const initialCount = Math.min(nextFiles.length, TASK_FILES_BATCH_SIZE)
+      loadedTaskFilesCountRef.current = initialCount
+      if (initialCount <= 0) {
+        setFiles([])
+        return
+      }
+      if (initialCount >= nextFiles.length) {
+        setFiles(nextFiles)
+        return
+      }
+      setFiles(nextFiles.slice(0, initialCount))
+    },
+    [setFiles],
+  )
+
+  const clearFilesPaginationState = useCallback(() => {
+    allTaskFilesRef.current = []
+    loadedTaskFilesCountRef.current = 0
+  }, [])
+
+  const maybeLoadNextFilesBatch = useCallback(() => {
+    const allFiles = allTaskFilesRef.current
+    const loadedCount = loadedTaskFilesCountRef.current
+    if (allFiles.length === 0) return
+    if (loadedCount >= allFiles.length) return
+    if (currentIndex < loadedCount - 1) return
+    const nextCount = Math.min(allFiles.length, loadedCount + TASK_FILES_BATCH_SIZE)
+    loadedTaskFilesCountRef.current = nextCount
+    setFiles(allFiles.slice(0, nextCount))
+    setImageLoadingHint(`任务文件按分页加载：${nextCount}/${allFiles.length}`)
+  }, [currentIndex, setFiles, setImageLoadingHint])
+
   const reloadTaskFiles = useCallback(async () => {
     if (!projectId || !taskId) return
     setImageLoadingHint("正在读取任务文件列表...")
     const result = await listTaskFiles({ projectId, taskId })
     if (result.errorMessage) {
+      clearFilesPaginationState()
       setError(result.errorMessage)
       setFiles([])
       setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
       return
     }
     setError(null)
-    setFiles(result.files)
-    setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
-  }, [projectId, setError, setFiles, setImageLoadingHint, taskId])
+    applyInitialFilesBatch(result.files)
+    if (result.files.length > TASK_FILES_BATCH_SIZE) {
+      setImageLoadingHint(`任务文件已分页加载 ${TASK_FILES_BATCH_SIZE}/${result.files.length} 项，翻到末尾继续加载`)
+    } else {
+      setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
+    }
+  }, [applyInitialFilesBatch, clearFilesPaginationState, projectId, setError, setFiles, setImageLoadingHint, taskId])
 
   useEffect(() => {
     let alive = true
@@ -123,19 +168,24 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     void listTaskFiles({ projectId, taskId }).then((result) => {
       if (!alive) return
       if (result.errorMessage) {
+        clearFilesPaginationState()
         setError(result.errorMessage)
         setFiles([])
         setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
         return
       }
       setError(null)
-      setFiles(result.files)
-      setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
+      applyInitialFilesBatch(result.files)
+      if (result.files.length > TASK_FILES_BATCH_SIZE) {
+        setImageLoadingHint(`任务文件已分页加载 ${TASK_FILES_BATCH_SIZE}/${result.files.length} 项，翻到末尾继续加载`)
+      } else {
+        setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
+      }
     })
     return () => {
       alive = false
     }
-  }, [projectId, setError, setFiles, setImageLoadingHint, taskId])
+  }, [applyInitialFilesBatch, clearFilesPaginationState, projectId, setError, setFiles, setImageLoadingHint, taskId])
 
   useEffect(() => {
     setCurrentIndex((index) => {
@@ -143,6 +193,10 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
       return Math.min(index, files.length - 1)
     })
   }, [files, setCurrentIndex])
+
+  useEffect(() => {
+    maybeLoadNextFilesBatch()
+  }, [currentIndex, maybeLoadNextFilesBatch])
 
   const handleImageDecodeError = useCallback(() => {
     // 仍由 bootstrap 的顺序候选读取承担主要回退策略；这里保留接口兼容。
@@ -225,6 +279,12 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     setHiddenClassLabels([])
     setLabelsTab("layers")
   }, [currentFilePath, panStartRef, setHiddenClassLabels, setHiddenShapeIndexes, setImageNaturalSize, setImageOffset, setImageScale, setIsPanning, setLabelsTab, setSelectedShapeIndex])
+
+  useEffect(() => {
+    return () => {
+      clearFilesPaginationState()
+    }
+  }, [clearFilesPaginationState])
 
   useEffect(() => {
     let observer: ResizeObserver | null = null

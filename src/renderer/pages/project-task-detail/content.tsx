@@ -461,6 +461,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const { reloadTaskFiles, handleImageDecodeError } = useTaskBootstrap({
     projectId,
     taskId,
+    currentIndex,
     files,
     imagePathCandidates,
     currentFilePath: currentFile?.filePath ?? "",
