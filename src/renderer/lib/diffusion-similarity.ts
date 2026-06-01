@@ -16,7 +16,7 @@ export type DiffusionCandidateBoxStrategy = "peak_score_extent" | "peak_fixed_se
 
 export type DiffusionSimilaritySearchOptions = {
   seedBbox: [number, number, number, number]
-  seedMaskRle?: { counts: number[]; w: number; h: number }
+  seedMask?: { maskBinary: Uint8Array; w: number; h: number }
   similarityThreshold?: number
   maxInstances?: number
   nmsIou?: number
@@ -331,7 +331,7 @@ export function searchSimilarFromPatchFeatures(
 ): DiffusionSimilarityCandidate[] {
   const { proto, gridPack } = buildSeedDinoPrototype(features, {
     seedBbox: options.seedBbox,
-    seedMaskRle: options.seedMaskRle,
+    seedMask: options.seedMask,
   })
   const { grid, meta, gh, gw, dim } = gridPack
 

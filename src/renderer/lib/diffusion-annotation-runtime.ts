@@ -18,7 +18,6 @@ import {
 import type { DiffusionSimilarityCandidate } from "@/lib/diffusion-similarity"
 import { decodeSamBboxOnEncodeCache } from "@/lib/diffusion-sam-decode"
 import {
-  decodeRowMajorRleToBinary,
   foregroundBBoxInclusive,
 } from "@/lib/mask-raster-rle"
 import { fetchSamImageEmbeddings, type Sam2EmbedCache } from "@/lib/sam2-encode-api"
@@ -58,7 +57,7 @@ export type { DiffusionPipelineVisualStep } from "@/lib/diffusion-process-visual
 
 export type RunDiffusionPipelineResult = {
   embedCache: Sam2EmbedCache
-  seedMaskRle: { counts: number[]; w: number; h: number } | null
+  seedMask: { maskBinary: Uint8Array; w: number; h: number } | null
   candidates: DiffusionCandidateResult[]
   similarityCandidates: DiffusionSimilarityCandidate[]
   refinedSuccessCount: number
@@ -69,9 +68,8 @@ export type RunDiffusionPipelineResult = {
   maskNmsFilteredCount: number
 }
 
-function bboxFromMaskRle(rle: { counts: number[]; w: number; h: number }): DiffusionSeedBbox | null {
-  const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-  const fb = foregroundBBoxInclusive(bin, rle.w, rle.h)
+function bboxFromMask(mask: { maskBinary: Uint8Array; w: number; h: number }): DiffusionSeedBbox | null {
+  const fb = foregroundBBoxInclusive(mask.maskBinary, mask.w, mask.h)
   if (!fb) return null
   return { x1: fb.minX, y1: fb.minY, x2: fb.maxX + 1, y2: fb.maxY + 1 }
 }
@@ -108,8 +106,8 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
   const embedCache = await ensureSamEmbedCache(path, samModelId, inferScale, params.embedCache)
 
   onProgress?.("SAM 精化种子…")
-  const seedRle = await decodeSamBboxOnEncodeCache(embedCache.response, seedBbox)
-  const refinedSeedBbox = seedRle ? (bboxFromMaskRle(seedRle) ?? seedBbox) : seedBbox
+  const seedMask = await decodeSamBboxOnEncodeCache(embedCache.response, seedBbox)
+  const refinedSeedBbox = seedMask ? (bboxFromMask(seedMask) ?? seedBbox) : seedBbox
 
   let querySeedBbox: [number, number, number, number] = [
     refinedSeedBbox.x1,
@@ -117,11 +115,11 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
     refinedSeedBbox.x2,
     refinedSeedBbox.y2,
   ]
-  let querySeedMaskRle: { counts: number[]; w: number; h: number } | undefined = undefined
+  let querySeedMask: { maskBinary: Uint8Array; w: number; h: number } | undefined = undefined
   if (seedGuideMode === "mask") {
-    querySeedMaskRle = seedRle ?? undefined
+    querySeedMask = seedMask ?? undefined
   } else if (seedGuideMode === "bbox_and_mask") {
-    querySeedMaskRle = seedRle ?? undefined
+    querySeedMask = seedMask ?? undefined
   }
 
   onProgress?.("DINOv2 提取 patch 特征…")
@@ -129,13 +127,13 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
 
   const { proto: seedDinoProto, gridPack } = buildSeedDinoPrototype(patchFeatures, {
     seedBbox: querySeedBbox,
-    seedMaskRle: querySeedMaskRle,
+    seedMask: querySeedMask,
   })
 
   onProgress?.("前端相似搜索…")
   const similarityCandidates = searchDiffusionSimilarCandidates(patchFeatures, {
     seedBbox: querySeedBbox,
-    seedMaskRle: querySeedMaskRle,
+    seedMask: querySeedMask,
     similarityThreshold: params.similarityThreshold,
     maxInstances: params.maxInstances,
     nmsIou: params.nmsIou,
@@ -177,7 +175,7 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
 
   return {
     embedCache,
-    seedMaskRle: seedRle,
+    seedMask,
     candidates,
     similarityCandidates,
     refinedSuccessCount,

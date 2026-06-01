@@ -126,6 +126,7 @@ export type ProjectTaskCanvasSectionProps = {
   onStageDoubleClick: MouseEventHandler<HTMLDivElement>
   onStageClick: MouseEventHandler<HTMLDivElement>
   isImageLoading: boolean
+  imageLoadingHint: string
   imageObjectUrl: string
   imageLoadError: boolean
   currentFileName: string
@@ -310,9 +311,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
           onDoubleClick={props.onStageDoubleClick}
           onClick={props.onStageClick}
         >
-          {props.isImageLoading ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">图片加载中...</div>
-          ) : props.imageObjectUrl && !props.imageLoadError ? (
+          {props.imageObjectUrl && !props.imageLoadError ? (
             <div
               className="flex h-full w-full items-center justify-center overflow-hidden"
               style={{
@@ -340,16 +339,26 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                   }}
                 >
                   <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
-                    {/* Keep image rendering in sync with canvas-geometry fitScale assumptions. */}
-                    <img
-                      src={props.imageObjectUrl}
-                      alt={props.currentFileName}
-                      className="h-full w-full object-contain select-none"
-                      onError={props.onImageError}
-                      onLoad={props.onImageLoad}
-                      draggable={false}
-                    />
+                    {props.imageObjectUrl ? (
+                      /* Keep image rendering in sync with canvas-geometry fitScale assumptions. */
+                      <img
+                        src={props.imageObjectUrl}
+                        alt={props.currentFileName}
+                        className="h-full w-full object-contain select-none"
+                        onError={props.onImageError}
+                        onLoad={props.onImageLoad}
+                        draggable={false}
+                      />
+                    ) : null}
                   </div>
+                  {props.isImageLoading ? (
+                    <div className="pointer-events-none absolute inset-0 z-[40] flex flex-col items-center justify-center gap-1 text-sm text-muted-foreground">
+                      <div>图片加载中...</div>
+                      <div className="max-w-[80%] truncate text-xs text-muted-foreground/80">
+                        {props.imageLoadingHint || "等待读取图片文件..."}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="pointer-events-none absolute inset-0">
                 <svg className="ea-annotation-svg absolute inset-0 h-full w-full overflow-visible">
                   {props.renderedRasterPreviews.map((item) => {
@@ -371,7 +380,7 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                           <RasterPreviewOverlay
                             shapeId={item.shapeId}
                             stageImageRect={item.stageImageRect}
-                            counts={item.raster.counts}
+                            maskBinary={item.raster.maskBinary}
                             imageWidth={item.raster.imageWidth}
                             imageHeight={item.raster.imageHeight}
                             color={item.color}
@@ -1194,6 +1203,13 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                     </>
                   ) : null}
                 </div>
+              </div>
+            </div>
+          ) : props.isImageLoading ? (
+            <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-muted-foreground">
+              <div>图片加载中...</div>
+              <div className="max-w-[80%] truncate text-xs text-muted-foreground/80">
+                {props.imageLoadingHint || "等待读取图片文件..."}
               </div>
             </div>
           ) : (

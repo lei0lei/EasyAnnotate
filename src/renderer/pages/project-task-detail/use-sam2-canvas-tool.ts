@@ -529,7 +529,6 @@ export function useSam2CanvasTool(params: Params) {
       if (!rectAnchor) {
         if (committedBbox) setCommittedBbox(null)
         setRectAnchor(p)
-        void ensureEmbeddingsForActiveImage()
         return
       }
       const minX = Math.min(rectAnchor.x, p.x)

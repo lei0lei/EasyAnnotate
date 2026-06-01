@@ -3,7 +3,6 @@
  */
 import { decodeBase64ToUint8Array } from "@/lib/base64-binary"
 import type { Dinov2LetterboxMeta, Dinov2PatchFeaturesResponse } from "@/lib/dinov2-patch-features-api"
-import { decodeRowMajorRleToBinary } from "@/lib/mask-raster-rle"
 
 export type DiffusionDinoGrid = {
   grid: Float32Array
@@ -157,7 +156,7 @@ export function cosineSimilarityNormalized(a: Float32Array, b: Float32Array): nu
 
 export type BuildSeedDinoPrototypeOptions = {
   seedBbox: [number, number, number, number]
-  seedMaskRle?: { counts: number[]; w: number; h: number }
+  seedMask?: { maskBinary: Uint8Array; w: number; h: number }
 }
 
 /** 与相似搜索一致：种子区域加权平均 patch 特征 → L2 归一化原型。 */
@@ -189,11 +188,11 @@ export function buildSeedDinoPrototype(
   let seedMask: Uint8Array | null = null
   let maskW = 0
   let maskH = 0
-  const rle = options.seedMaskRle
-  if (rle && rle.w === ow && rle.h === oh) {
-    seedMask = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-    maskW = rle.w
-    maskH = rle.h
+  const mask = options.seedMask
+  if (mask && mask.w === ow && mask.h === oh) {
+    seedMask = mask.maskBinary
+    maskW = mask.w
+    maskH = mask.h
   }
 
   const weights = patchWeightsFromSeed(meta, gh, gw, normBbox, seedMask, maskW, maskH)
@@ -204,23 +203,23 @@ export function buildSeedDinoPrototype(
   return { proto, gridPack }
 }
 
-/** 从 SAM mask（全图 RLE）构建区域 embedding，与种子原型做余弦相似度。 */
-export function dinoEmbeddingFromMaskRle(
+/** 从 SAM mask（全图二值）构建区域 embedding，与种子原型做余弦相似度。 */
+export function dinoEmbeddingFromMask(
   gridPack: DiffusionDinoGrid,
-  maskRle: { counts: number[]; w: number; h: number },
+  mask: { maskBinary: Uint8Array; w: number; h: number },
 ): Float32Array | null {
   const { grid, meta, gh, gw, dim } = gridPack
-  if (maskRle.w !== meta.orig_w || maskRle.h !== meta.orig_h) return null
-  const mask = decodeRowMajorRleToBinary(maskRle.counts, maskRle.w * maskRle.h)
+  if (mask.w !== meta.orig_w || mask.h !== meta.orig_h) return null
+  const bin = mask.maskBinary
   let any = false
-  for (let i = 0; i < mask.length; i += 1) {
-    if (mask[i]) {
+  for (let i = 0; i < bin.length; i += 1) {
+    if (bin[i]) {
       any = true
       break
     }
   }
   if (!any) return null
-  const weights = patchWeightsFromMask(meta, gh, gw, mask, maskRle.w, maskRle.h)
+  const weights = patchWeightsFromMask(meta, gh, gw, bin, mask.w, mask.h)
   try {
     return weightedPrototypeFromPatchWeights(grid, weights, gh, gw, dim)
   } catch {
@@ -231,9 +230,9 @@ export function dinoEmbeddingFromMaskRle(
 export function dinoSimilarityMaskToPrototype(
   gridPack: DiffusionDinoGrid,
   seedProto: Float32Array,
-  maskRle: { counts: number[]; w: number; h: number },
+  mask: { maskBinary: Uint8Array; w: number; h: number },
 ): number | null {
-  const emb = dinoEmbeddingFromMaskRle(gridPack, maskRle)
+  const emb = dinoEmbeddingFromMask(gridPack, mask)
   if (!emb) return null
   return cosineSimilarityNormalized(seedProto, emb)
 }

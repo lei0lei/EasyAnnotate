@@ -2,7 +2,7 @@
  * 扩散候选：按输出格式判断能否标注，并提取多边形顶点（与预览/提交一致）。
  */
 import { contourForYoloExport } from "@/lib/mask-contour"
-import { decodeRowMajorRleToBinary, maskBinaryHasForeground } from "@/lib/mask-raster-rle"
+import { maskBinaryHasForeground } from "@/lib/mask-raster-rle"
 import type { DiffusionCandidateResult } from "@/lib/diffusion-annotation-runtime"
 import type { Sam2AutoAnnotationFormat } from "@/pages/project-task-detail/annotateTools/aiTools/types"
 
@@ -36,9 +36,9 @@ export function extractDiffusionPolygonRing(
   const { x1, y1, x2, y2 } = c.bbox
   if (x2 <= x1 || y2 <= y1) return null
 
-  const d = c.rle
+  const d = c.mask
   if (d && d.w === iw && d.h === ih) {
-    const bin = decodeRowMajorRleToBinary(d.counts, iw * ih)
+    const bin = d.maskBinary
     if (maskBinaryHasForeground(bin)) {
       let ring = contourForYoloExport(bin, iw, ih, contourOptions).map(
         ([x, y]) => [Math.round(x), Math.round(y)] as number[],
@@ -68,7 +68,7 @@ export function isDiffusionCandidateAnnotatable(
 
   if (outputFormat === "box") return true
 
-  const d = c.rle
+  const d = c.mask
   if (!d || d.w !== iw || d.h !== ih) return false
 
   if (outputFormat === "polygon") {

@@ -1126,6 +1126,7 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
     return
   }
   const groupedItems: ExportImageItem[] = []
+  // 保持结构：按任务名导出；重名任务自动追加后缀避免目录冲突。
   if (!req.taskId && req.keepProjectStructure) {
     const taskFolderById = buildUniqueTaskFolderById(allItems, req.taskNameById)
     for (const item of allItems) {
@@ -1136,6 +1137,7 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
         relativeWithinSubset: item.relativeWithinTask,
       })
     }
+    // 任务导出
   } else if (req.taskId) {
     const splitMap = splitByRatio(allItems, req.trainBoundary, req.valBoundary)
     for (const [splitName, splitItems] of splitMap) {
@@ -1147,6 +1149,7 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
         })
       }
     }
+    // 项目导出
   } else {
     const splitMap = splitByRatio(allItems, req.trainBoundary, req.valBoundary)
     for (const [splitName, splitItems] of splitMap) {

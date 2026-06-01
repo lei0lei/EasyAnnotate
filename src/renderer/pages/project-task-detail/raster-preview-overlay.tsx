@@ -1,13 +1,12 @@
 /**
  * 在 SVG 内用 foreignObject + canvas 绘制 RLE 二值光栅预览（与图像同分辨率）。
  */
-import { decodeRowMajorRleToBinary } from "@/lib/mask-raster-rle"
 import { useLayoutEffect, useRef } from "react"
 
 type RasterPreviewOverlayProps = {
   shapeId: string
   stageImageRect: { left: number; top: number; width: number; height: number }
-  counts: number[]
+  maskBinary: Uint8Array
   imageWidth: number
   imageHeight: number
   color: string
@@ -34,7 +33,7 @@ function parseRgb(color: string): { r: number; g: number; b: number } {
 export function RasterPreviewOverlay({
   shapeId,
   stageImageRect,
-  counts,
+  maskBinary,
   imageWidth,
   imageHeight,
   color,
@@ -50,11 +49,10 @@ export function RasterPreviewOverlay({
     const ctx = canvas.getContext("2d")
     if (!ctx) return
     const total = imageWidth * imageHeight
-    const bin = decodeRowMajorRleToBinary(counts, total)
     const img = ctx.createImageData(imageWidth, imageHeight)
     const data = img.data
     for (let i = 0; i < total; i += 1) {
-      if (!bin[i]) continue
+      if (!maskBinary[i]) continue
       const j = i * 4
       data[j] = r
       data[j + 1] = g
@@ -62,7 +60,7 @@ export function RasterPreviewOverlay({
       data[j + 3] = 255
     }
     ctx.putImageData(img, 0, 0)
-  }, [counts, imageHeight, imageWidth, r, g, b])
+  }, [maskBinary, imageHeight, imageWidth, r, g, b])
 
   const { left, top, width, height } = stageImageRect
   if (width < 1 || height < 1) return null

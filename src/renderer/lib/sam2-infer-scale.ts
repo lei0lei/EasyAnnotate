@@ -3,7 +3,7 @@
  */
 import type { Sam2CvatsPrompt } from "@/lib/sam2-cvat-onnx"
 import type { Sam2EncodeImageResponse } from "@/lib/sam2-encode-api"
-import { decodeRowMajorRleToBinary, encodeBinaryToRowMajorRle, maskBinaryHasForeground } from "@/lib/mask-raster-rle"
+import { maskBinaryHasForeground } from "@/lib/mask-raster-rle"
 
 function clampInt(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, Math.round(n)))
@@ -75,17 +75,18 @@ function upscaleBinaryNearest(src: Uint8Array, sw: number, sh: number, fw: numbe
   return dst
 }
 
-/** 将 decoder 输出的编码分辨率 RLE 升采样到 full_image 尺寸（与画布/落盘一致）。 */
-export function upscaleSam2DecoderRleToFullImageIfNeeded(
-  rle: { counts: number[]; w: number; h: number },
+/** 将 decoder 输出的编码分辨率二值 mask 升采样到 full_image 尺寸（与画布/落盘一致）。 */
+export function upscaleSam2DecoderMaskToFullImageIfNeeded(
+  mask: { maskBinary: Uint8Array; w: number; h: number },
   enc: Sam2EncodeImageResponse,
-): { counts: number[]; w: number; h: number } | null {
+): { maskBinary: Uint8Array; w: number; h: number } | null {
   const { sw, sh, fw, fh } = encodeSpaceSize(enc)
-  if (rle.w !== sw || rle.h !== sh) return null
-  if (sw === fw && sh === fh) return rle
-  const total = sw * sh
-  const bin = decodeRowMajorRleToBinary(rle.counts, total)
-  const up = upscaleBinaryNearest(bin, sw, sh, fw, fh)
+  if (mask.w !== sw || mask.h !== sh) return null
+  if (sw === fw && sh === fh) return mask
+  const up = upscaleBinaryNearest(mask.maskBinary, sw, sh, fw, fh)
   if (!maskBinaryHasForeground(up)) return null
-  return { counts: encodeBinaryToRowMajorRle(up), w: fw, h: fh }
+  return { maskBinary: up, w: fw, h: fh }
 }
+
+/** @deprecated use `upscaleSam2DecoderMaskToFullImageIfNeeded` */
+export const upscaleSam2DecoderRleToFullImageIfNeeded = upscaleSam2DecoderMaskToFullImageIfNeeded

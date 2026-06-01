@@ -3,13 +3,12 @@
  */
 import type { DiffusionDinoGrid } from "@/lib/diffusion-dino-embedding"
 import { dinoSimilarityMaskToPrototype } from "@/lib/diffusion-dino-embedding"
-import { decodeRowMajorRleToBinary } from "@/lib/mask-raster-rle"
 
 export type DiffusionRefinedForFilter = {
   id: string
   bbox: { x1: number; y1: number; x2: number; y2: number }
   score: number
-  rle: { counts: number[]; w: number; h: number } | null
+  mask: { maskBinary: Uint8Array; w: number; h: number } | null
   selected: boolean
 }
 
@@ -55,16 +54,16 @@ export function filterDiffusionRefinedByDinoAndMaskIou(
   let dinoRejected = 0
 
   for (const item of items) {
-    if (!item.rle) {
+    if (!item.mask) {
       dinoRejected += 1
       continue
     }
-    const sim = dinoSimilarityMaskToPrototype(options.gridPack, options.seedProto, item.rle)
+    const sim = dinoSimilarityMaskToPrototype(options.gridPack, options.seedProto, item.mask)
     if (sim === null || sim < minSim) {
       dinoRejected += 1
       continue
     }
-    const bin = decodeRowMajorRleToBinary(item.rle.counts, item.rle.w * item.rle.h)
+    const bin = item.mask.maskBinary
     scored.push({ ...item, dinoScore: sim, score: sim, bin })
   }
 

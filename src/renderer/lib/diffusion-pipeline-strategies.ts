@@ -10,7 +10,7 @@ export type DiffusionCandidateResult = {
   id: string
   bbox: DiffusionSeedBbox
   score: number
-  rle: { counts: number[]; w: number; h: number } | null
+  mask: { maskBinary: Uint8Array; w: number; h: number } | null
   selected: boolean
 }
 import { filterDiffusionRefinedByDinoAndMaskIou } from "@/lib/diffusion-mask-candidate-filter"
@@ -22,7 +22,6 @@ import {
 } from "@/lib/diffusion-similarity"
 import type { Sam2EncodeImageResponse } from "@/lib/sam2-encode-api"
 import {
-  decodeRowMajorRleToBinary,
   foregroundBBoxInclusive,
 } from "@/lib/mask-raster-rle"
 
@@ -71,9 +70,8 @@ export function searchDiffusionSimilarCandidates(
   return searchSimilarFromPatchFeatures(features, options)
 }
 
-function bboxFromMaskRle(rle: { counts: number[]; w: number; h: number }): DiffusionSeedBbox | null {
-  const bin = decodeRowMajorRleToBinary(rle.counts, rle.w * rle.h)
-  const fb = foregroundBBoxInclusive(bin, rle.w, rle.h)
+function bboxFromMask(mask: { maskBinary: Uint8Array; w: number; h: number }): DiffusionSeedBbox | null {
+  const fb = foregroundBBoxInclusive(mask.maskBinary, mask.w, mask.h)
   if (!fb) return null
   return { x1: fb.minX, y1: fb.minY, x2: fb.maxX + 1, y2: fb.maxY + 1 }
 }
@@ -141,22 +139,22 @@ export async function refineDiffusionCandidates(
       const c = params.similarityCandidates[i]!
       const [x1, y1, x2, y2] = c.bbox
       const bbox = { x1, y1, x2, y2 }
-      let rle: { counts: number[]; w: number; h: number } | null = null
+      let mask: { maskBinary: Uint8Array; w: number; h: number } | null = null
       try {
-        rle = useCenterPoint
+        mask = useCenterPoint
           ? await decodeSamCenterPointOnEncodeCache(params.encodeResponse, bbox)
           : await decodeSamBboxOnEncodeCache(params.encodeResponse, bbox)
       } catch {
-        rle = null
+        mask = null
       }
-      if (rle) refinedSuccessCount += 1
+      if (mask) refinedSuccessCount += 1
       else refinedFailedCount += 1
-      const refinedBbox = rle ? (bboxFromMaskRle(rle) ?? bbox) : bbox
+      const refinedBbox = mask ? (bboxFromMask(mask) ?? bbox) : bbox
       rawRefined[i] = {
         id: newCandidateId(),
         bbox: refinedBbox,
         score: c.score,
-        rle,
+        mask,
         selected: true,
       }
       done += 1

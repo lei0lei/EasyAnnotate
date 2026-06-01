@@ -27,6 +27,7 @@ type UseTaskBootstrapParams = {
   setImageObjectUrl: Dispatch<SetStateAction<string>>
   setActiveImagePath: Dispatch<SetStateAction<string>>
   setIsImageLoading: Dispatch<SetStateAction<boolean>>
+  setImageLoadingHint: Dispatch<SetStateAction<string>>
   setImageLoadError: Dispatch<SetStateAction<boolean>>
   setImageScale: Dispatch<SetStateAction<number>>
   setImageOffset: Dispatch<SetStateAction<{ x: number; y: number }>>
@@ -58,6 +59,7 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     setImageObjectUrl,
     setActiveImagePath,
     setIsImageLoading,
+    setImageLoadingHint,
     setImageLoadError,
     setImageScale,
     setImageOffset,
@@ -89,15 +91,18 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
 
   const reloadTaskFiles = useCallback(async () => {
     if (!projectId || !taskId) return
+    setImageLoadingHint("正在读取任务文件列表...")
     const result = await listTaskFiles({ projectId, taskId })
     if (result.errorMessage) {
       setError(result.errorMessage)
       setFiles([])
+      setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
       return
     }
     setError(null)
     setFiles(result.files)
-  }, [projectId, taskId, setError, setFiles])
+    setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
+  }, [projectId, setError, setFiles, setImageLoadingHint, taskId])
 
   useEffect(() => {
     let alive = true
@@ -114,20 +119,23 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
   useEffect(() => {
     let alive = true
     if (!projectId || !taskId) return
+    setImageLoadingHint("正在读取任务文件列表...")
     void listTaskFiles({ projectId, taskId }).then((result) => {
       if (!alive) return
       if (result.errorMessage) {
         setError(result.errorMessage)
         setFiles([])
+        setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
         return
       }
       setError(null)
       setFiles(result.files)
+      setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
     })
     return () => {
       alive = false
     }
-  }, [projectId, taskId, setError, setFiles])
+  }, [projectId, setError, setFiles, setImageLoadingHint, taskId])
 
   useEffect(() => {
     setCurrentIndex((index) => {
@@ -136,35 +144,51 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     })
   }, [files, setCurrentIndex])
 
+  const handleImageDecodeError = useCallback(() => {
+    // 仍由 bootstrap 的顺序候选读取承担主要回退策略；这里保留接口兼容。
+    setImageLoadingHint("浏览器解码失败（<img onError>）")
+  }, [setImageLoadingHint])
+
   useEffect(() => {
     let alive = true
     let objectUrl = ""
 
     const loadImage = async () => {
+      let lastReadError = ""
       if (imagePathCandidates.length === 0) {
+        setIsImageLoading(false)
+        setImageLoadingHint("未找到可读取的图片路径")
         setImageObjectUrl("")
         setActiveImagePath("")
         setImageLoadError(true)
         return
       }
       setIsImageLoading(true)
+      setImageLoadingHint(`准备读取图片候选路径（${imagePathCandidates.length}）...`)
       setImageLoadError(false)
       setImageObjectUrl("")
 
-      for (const candidate of imagePathCandidates) {
+      for (const [index, candidate] of imagePathCandidates.entries()) {
+        setImageLoadingHint(`正在读取候选 ${index + 1}/${imagePathCandidates.length}：${candidate}`)
         const result = await readImageFile(candidate)
         if (!alive) return
-        if (result.errorMessage || !result.content || result.content.length === 0) continue
+        if (result.errorMessage) {
+          lastReadError = result.errorMessage
+          continue
+        }
+        if (!result.content || result.content.length === 0) continue
         const bytes = result.content
+        setImageLoadingHint("已读取字节，正在创建对象 URL...")
         const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
         objectUrl = URL.createObjectURL(new Blob([buffer], { type: guessMimeType(candidate) }))
+        setImageLoadingHint("对象 URL 已创建，等待浏览器解码...")
         setImageObjectUrl(objectUrl)
         setActiveImagePath(candidate)
-        setIsImageLoading(false)
         return
       }
 
       setIsImageLoading(false)
+      setImageLoadingHint(lastReadError ? `所有候选路径读取失败：${lastReadError}` : "所有候选路径读取失败")
       setImageLoadError(true)
       setActiveImagePath("")
     }
@@ -175,7 +199,14 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
       alive = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [imagePathCandidates, setActiveImagePath, setImageLoadError, setImageObjectUrl, setIsImageLoading])
+  }, [
+    imagePathCandidates,
+    setActiveImagePath,
+    setImageLoadError,
+    setImageLoadingHint,
+    setImageObjectUrl,
+    setIsImageLoading,
+  ])
 
   useEffect(() => {
     if (lastResetFilePathRef.current === currentFilePath) return
@@ -230,5 +261,5 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     }
   }, [setStageSize, stageRef, currentFilePath])
 
-  return { reloadTaskFiles }
+  return { reloadTaskFiles, handleImageDecodeError }
 }

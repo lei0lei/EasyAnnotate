@@ -8,7 +8,7 @@ import {
   type Sam2TensorPayload,
 } from "@/lib/sam2-encode-api"
 import { decodeBase64ToUint8Array } from "@/lib/base64-binary"
-import { encodeBinaryToRowMajorRle, maskBinaryHasForeground } from "@/lib/mask-raster-rle"
+import { maskBinaryHasForeground } from "@/lib/mask-raster-rle"
 
 type OrtModule = typeof import("onnxruntime-web")
 
@@ -259,12 +259,12 @@ function buildCvatsPromptTensors(
   }
 }
 
-function masksTensorToRleInEncodeSpace(
+function masksTensorToBinaryMaskInEncodeSpace(
   out: Record<string, import("onnxruntime-web").Tensor>,
   iw: number,
   ih: number,
   options?: Sam2CvatsDecodeOptions,
-): { counts: number[]; w: number; h: number } | null {
+): { maskBinary: Uint8Array; w: number; h: number } | null {
   const masksTensor = out.masks
   const xtlT = out.xtl
   const ytlT = out.ytl
@@ -330,18 +330,14 @@ function masksTensorToRleInEncodeSpace(
   const full = stitchCroppedMask(crop, cropW, cropH, xtl, ytl, iw, ih)
   if (!maskBinaryHasForeground(full)) return null
 
-  return {
-    counts: encodeBinaryToRowMajorRle(full),
-    w: iw,
-    h: ih,
-  }
+  return { maskBinary: full, w: iw, h: ih }
 }
 
 export async function runSam2CvatsDecoder(
   encode: Sam2EncodeImageResponse,
   prompt: Sam2CvatsPrompt,
   options?: Sam2CvatsDecodeOptions,
-): Promise<{ counts: number[]; w: number; h: number } | null> {
+): Promise<{ maskBinary: Uint8Array; w: number; h: number } | null> {
   if (encode.feature_layout !== "sam2.1_cvat_decoder_onnx_v1") {
     throw new Error("当前图像编码不是 CVAT/ONNX 布局，请重新编码或检查后端版本")
   }
@@ -374,7 +370,7 @@ export async function runSam2CvatsDecoder(
     }
 
     const out = await runOrtSession(session, feeds)
-    return masksTensorToRleInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
+    return masksTensorToBinaryMaskInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
   })
 }
 
@@ -382,7 +378,7 @@ export async function runMobileSamCvatsDecoder(
   encode: Sam2EncodeImageResponse,
   prompt: Sam2CvatsPrompt,
   options?: Sam2CvatsDecodeOptions,
-): Promise<{ counts: number[]; w: number; h: number } | null> {
+): Promise<{ maskBinary: Uint8Array; w: number; h: number } | null> {
   if (encode.feature_layout !== "mobile_sam_cvat_decoder_onnx_v1") {
     throw new Error("当前图像编码不是 MobileSAM CVAT/ONNX 布局，请重新编码或检查后端版本")
   }
@@ -406,7 +402,7 @@ export async function runMobileSamCvatsDecoder(
     }
 
     const out = await runOrtSession(session, feeds)
-    return masksTensorToRleInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
+    return masksTensorToBinaryMaskInEncodeSpace(out as Record<string, import("onnxruntime-web").Tensor>, iw, ih, options)
   })
 }
 
@@ -415,7 +411,7 @@ export async function runSamCvatsDecoder(
   encode: Sam2EncodeImageResponse,
   prompt: Sam2CvatsPrompt,
   options?: Sam2CvatsDecodeOptions,
-): Promise<{ counts: number[]; w: number; h: number } | null> {
+): Promise<{ maskBinary: Uint8Array; w: number; h: number } | null> {
   const layout = encode.feature_layout
   if (layout === "efficient_sam_cvat_decoder_onnx_v1") {
     throw new Error(

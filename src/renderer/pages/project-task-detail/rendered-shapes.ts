@@ -6,7 +6,6 @@
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import type { ProjectTag } from "@/lib/projects-api"
 import {
-  decodeRowMajorRleToBinary,
   foregroundBBoxInclusive,
   maskBinaryHasForeground,
 } from "@/lib/mask-raster-rle"
@@ -34,11 +33,11 @@ export type DragLivePointsOverride = { shapeIndex: number; points: number[][] }
 /** 单顶点拖拽预览（polygon / skeleton / cuboid 顶点），避免触发其它类型 rendered* 整表重算 */
 export type DragVertexLiveOverride = { shapeIndex: number; vertexIndex: number; imageX: number; imageY: number }
 
-/** SAM2 会话中尚未按 N 提交的整图 RLE 预览（非文档内形状） */
-export type Sam2DraftMaskRle = { counts: number[]; w: number; h: number; label: string; color: string }
+/** SAM2 会话中尚未按 N 提交的整图二值预览（非文档内形状） */
+export type Sam2DraftMaskBinary = { maskBinary: Uint8Array; w: number; h: number; label: string; color: string }
 
 /** 扩散式标注：相似实例 SAM 预览 mask（非文档内形状） */
-export type DiffusionPreviewMaskRle = Sam2DraftMaskRle & { id: string }
+export type DiffusionPreviewMaskBinary = { id: string; maskBinary: Uint8Array; w: number; h: number; label: string; color: string }
 
 export type DiffusionPreviewPolygon = { id: string; label: string; color: string; imageRing: number[][] }
 
@@ -62,9 +61,9 @@ type RenderShapeContext = {
   projectTags?: ProjectTag[]
   dragLivePoints?: DragLivePointsOverride | null
   /** SAM2：当前轮次 ONNX 预览 mask，叠在文档 mask 之上 */
-  sam2DraftMaskRle?: Sam2DraftMaskRle | null
+  sam2DraftMaskBinary?: Sam2DraftMaskBinary | null
   /** 扩散式标注：批量相似实例预览 */
-  diffusionPreviewMasks?: DiffusionPreviewMaskRle[]
+  diffusionPreviewMasks?: DiffusionPreviewMaskBinary[]
   diffusionPreviewPolygons?: DiffusionPreviewPolygon[]
   diffusionPreviewRectangles?: DiffusionPreviewRectangle[]
 }
@@ -396,7 +395,7 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
   const {
     annotationDoc,
     imageToStage,
-    sam2DraftMaskRle,
+    sam2DraftMaskBinary,
     diffusionPreviewMasks,
   } =
     context
@@ -423,9 +422,8 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
 
   let out = list
 
-  if (sam2DraftMaskRle && sam2DraftMaskRle.w === docIw && sam2DraftMaskRle.h === docIh) {
-    const total = docIw * docIh
-    const bin = decodeRowMajorRleToBinary(sam2DraftMaskRle.counts, total)
+  if (sam2DraftMaskBinary && sam2DraftMaskBinary.w === docIw && sam2DraftMaskBinary.h === docIh) {
+    const bin = sam2DraftMaskBinary.maskBinary
     if (maskBinaryHasForeground(bin)) {
       const bbox = foregroundBBoxInclusive(bin, docIw, docIh)
       if (bbox) {
@@ -444,8 +442,8 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
             {
               index: -1,
               shapeId: "__eaSam2Draft",
-              label: sam2DraftMaskRle.label,
-              color: sam2DraftMaskRle.color,
+              label: sam2DraftMaskBinary.label,
+              color: sam2DraftMaskBinary.color,
               stagePoints: [],
               stageSegments: [],
               brushSize: 1,
@@ -453,7 +451,7 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
               top: Math.min(...ys),
               width: Math.max(1, Math.max(...xs) - Math.min(...xs)),
               height: Math.max(1, Math.max(...ys) - Math.min(...ys)),
-              raster: { counts: sam2DraftMaskRle.counts, imageWidth: docIw, imageHeight: docIh },
+              raster: { maskBinary: bin, imageWidth: docIw, imageHeight: docIh },
               stageImageRect,
             },
           ]
@@ -464,8 +462,7 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
 
   for (const dm of diffusionPreviewMasks ?? []) {
     if (dm.w !== docIw || dm.h !== docIh) continue
-    const dTotal = docIw * docIh
-    const dBin = decodeRowMajorRleToBinary(dm.counts, dTotal)
+    const dBin = dm.maskBinary
     if (!maskBinaryHasForeground(dBin)) continue
     const dBbox = foregroundBBoxInclusive(dBin, docIw, docIh)
     if (!dBbox) continue
@@ -497,7 +494,7 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
         top: dtop,
         width: Math.max(1, dright - dleft),
         height: Math.max(1, dbottom - dtop),
-        raster: { counts: dm.counts, imageWidth: docIw, imageHeight: docIh },
+        raster: { maskBinary: dBin, imageWidth: docIw, imageHeight: docIh },
         stageImageRect: { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) },
       },
     ]

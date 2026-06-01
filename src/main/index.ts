@@ -256,6 +256,7 @@ const YOLO_MODEL_CHUNK_TIMEOUT_MS = 15 * 60 * 1000
 // 自动标注任务（尤其分割/点位密集）JSON 体积会显著增大，4MB 过于保守会导致“文件有标注但界面不显示”。
 const MAX_ANNOTATION_JSON_BYTES = 32 * 1024 * 1024
 const MAX_IMAGE_IPC_BYTES = 24 * 1024 * 1024
+const MAX_IMAGE_DECODE_PIXELS = 60 * 1024 * 1024
 
 type YoloModelDownloadJob = {
   status: "pending" | "success" | "failed"
@@ -1101,6 +1102,28 @@ function detectImageFormat(buffer: Buffer): string {
     if (little || big) return "TIFF"
   }
   return "UNKNOWN"
+}
+
+function validateImageDecodeSafetyFromHeader(filePath: string): { ok: true } | { ok: false; errorMessage: string } {
+  try {
+    const header = readFileHeader(filePath)
+    const format = detectImageFormat(header)
+    const size = parseImageDimensionsFromHeader(header, format)
+    const width = Math.max(0, Math.floor(Number(size.width) || 0))
+    const height = Math.max(0, Math.floor(Number(size.height) || 0))
+    const totalPixels = width * height
+    if (width > 0 && height > 0 && totalPixels > MAX_IMAGE_DECODE_PIXELS) {
+      const limitMp = Math.floor(MAX_IMAGE_DECODE_PIXELS / 1024 / 1024)
+      const actualMp = (totalPixels / 1024 / 1024).toFixed(1)
+      return {
+        ok: false,
+        errorMessage: `图片分辨率过大（${width}x${height}, ${actualMp} MP），超过安全解码上限 ${limitMp} MP。`,
+      }
+    }
+  } catch {
+    // 若头部解析失败，维持原有行为，交由后续路径或前端 onError 处理。
+  }
+  return { ok: true }
 }
 
 function parsePngChannels(buffer: Buffer): number | null {
@@ -1992,6 +2015,13 @@ ipc.registerService(AppService({
             `图片文件过大（${Math.floor(stat.size / 1024 / 1024)} MB），` +
             `超过 IPC 读取上限 ${Math.floor(MAX_IMAGE_IPC_BYTES / 1024 / 1024)} MB。` +
             "请先压缩图片或改用更小分辨率后再标注。",
+        }
+      }
+      const decodeSafety = validateImageDecodeSafetyFromHeader(filePath)
+      if (!decodeSafety.ok) {
+        return {
+          content: Buffer.alloc(0),
+          errorMessage: decodeSafety.errorMessage,
         }
       }
       const content = fs.readFileSync(filePath)

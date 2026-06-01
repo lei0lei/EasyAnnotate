@@ -10,15 +10,14 @@ import {
 import type { XAnyLabelFile } from "@/lib/xanylabeling-format"
 import { getPrimaryShortcutLabel } from "@/lib/app-shortcut-registry"
 import { fetchModelRuntimeCatalog } from "@/lib/model-runtime-api"
-import { decodeRowMajorRleToBinary, foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
-import { contourForYoloExport } from "@/lib/mask-contour"
+import { foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
 import {
   formatOrtWebInferError,
   isSamCvatsFeatureLayout,
   loadSamDecoderSession,
   runSamCvatsDecoder,
 } from "@/lib/sam2-cvat-onnx"
-import { mapFullImageSam2PromptToEncode, upscaleSam2DecoderRleToFullImageIfNeeded } from "@/lib/sam2-infer-scale"
+import { mapFullImageSam2PromptToEncode, upscaleSam2DecoderMaskToFullImageIfNeeded } from "@/lib/sam2-infer-scale"
 import type { Sam2EmbedCache } from "@/lib/sam2-encode-api"
 import {
   formatActiveSamAnnotationLabel,
@@ -64,10 +63,10 @@ import type { DragStageNudge } from "@/pages/project-task-detail/page-sections"
 import type {
   DragLivePointsOverride,
   DragVertexLiveOverride,
-  DiffusionPreviewMaskRle,
+  DiffusionPreviewMaskBinary,
   DiffusionPreviewPolygon,
   DiffusionPreviewRectangle,
-  Sam2DraftMaskRle,
+  Sam2DraftMaskBinary,
 } from "@/pages/project-task-detail/rendered-shapes"
 import { useTaskRenderModel } from "@/pages/project-task-detail/use-task-render-model"
 import { useBox3dTool } from "@/pages/project-task-detail/annotateTools/use-box3d-tool"
@@ -121,6 +120,10 @@ function sam2PolygonContourOptions(vertexBias0to100: number): { rdpEpsilon: numb
   }
 }
 
+type Sam2ContourWorkerResponse =
+  | { ok: true; ring: number[][] }
+  | { ok: false; error: string }
+
 export type ProjectTaskDetailContentProps = {
   projectId: string | undefined
   taskId: string | undefined
@@ -165,10 +168,17 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const sam2SelectedLabelRef = useRef(sam2SelectedLabel)
   sam2SelectedLabelRef.current = sam2SelectedLabel
   const [sam2SessionNonce, setSam2SessionNonce] = useState(0)
-  const [sam2DraftRle, setSam2DraftRle] = useState<{ counts: number[]; w: number; h: number } | null>(null)
+  const [sam2DraftMask, setSam2DraftMask] = useState<{ maskBinary: Uint8Array; w: number; h: number } | null>(null)
   const sam2EncodeModelIdRef = useRef("sam2/sam2.1_hiera_tiny")
   const sam2EmbedCacheRef = useRef<Sam2EmbedCache | null>(null)
   const sam2DecodeGenRef = useRef(0)
+  const sam2DecodeRoundRef = useRef(0)
+  const sam2DecodePendingRef = useRef<Sam2DecodeRequest | null>(null)
+  const sam2DecodeInFlightRef = useRef(false)
+  const sam2ContourInFlightRef = useRef<{
+    worker: Worker
+    reject: (reason?: unknown) => void
+  } | null>(null)
   const [activeSamRuntime, setActiveSamRuntime] = useState<{ label: string; running: boolean } | null>(null)
   /** 上次用 N 成功提交 SAM2 并已切到选择工具后，再按 N 可回到 SAM2 标注（沿用面板中的标签/输出类型等） */
   const sam2ResumeAfterNCommitRef = useRef(false)
@@ -268,6 +278,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setActiveImagePath,
     isImageLoading,
     setIsImageLoading,
+    imageLoadingHint,
+    setImageLoadingHint,
     imageLoadError,
     setImageLoadError,
     imageScale,
@@ -446,7 +458,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     handleRectPickerCancel()
   }, [handleRectPickerCancel])
 
-  const { reloadTaskFiles } = useTaskBootstrap({
+  const { reloadTaskFiles, handleImageDecodeError } = useTaskBootstrap({
     projectId,
     taskId,
     files,
@@ -463,6 +475,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setImageObjectUrl,
     setActiveImagePath,
     setIsImageLoading,
+    setImageLoadingHint,
     setImageLoadError,
     setImageScale,
     setImageOffset,
@@ -768,13 +781,31 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
 
   useEffect(() => {
     sam2EmbedCacheRef.current = null
-    setSam2DraftRle(null)
+    sam2DecodeRoundRef.current += 1
+    sam2DecodeGenRef.current += 1
+    sam2DecodePendingRef.current = null
+    const contour = sam2ContourInFlightRef.current
+    if (contour) {
+      contour.worker.terminate()
+      contour.reject(new Error("切图时取消在途轮廓任务"))
+      sam2ContourInFlightRef.current = null
+    }
+    setSam2DraftMask(null)
     // 保留 sam2ResumeAfterNCommitRef：上一张用 N 落盘后，翻页再按 N 仍应回到 SAM2
   }, [activeImagePath])
 
   useEffect(() => {
     sam2EmbedCacheRef.current = null
-    setSam2DraftRle(null)
+    sam2DecodeRoundRef.current += 1
+    sam2DecodeGenRef.current += 1
+    sam2DecodePendingRef.current = null
+    const contour = sam2ContourInFlightRef.current
+    if (contour) {
+      contour.worker.terminate()
+      contour.reject(new Error("切换推理尺度时取消在途轮廓任务"))
+      sam2ContourInFlightRef.current = null
+    }
+    setSam2DraftMask(null)
     setSam2SessionNonce((n) => n + 1)
   }, [sam2InferScale])
 
@@ -784,7 +815,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setDiffusionAnnotatingActive(false)
     setDiffusionPhase("seed")
     sam2ResumeAfterNCommitRef.current = false
-    setSam2DraftRle(null)
+    setSam2DraftMask(null)
     setSam2SessionNonce((n) => n + 1)
     void fetchModelRuntimeCatalog()
       .then((cat) => {
@@ -1131,10 +1162,18 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
 
   useEffect(() => {
     if (!sam2AiToolbarEnabled) {
+      sam2DecodeRoundRef.current += 1
+      sam2DecodePendingRef.current = null
+      const contour = sam2ContourInFlightRef.current
+      if (contour) {
+        contour.worker.terminate()
+        contour.reject(new Error("SAM2 工具关闭，取消在途任务"))
+        sam2ContourInFlightRef.current = null
+      }
       setSam2DialogOpen(false)
       setSam2AnnotatingActive(false)
       setSam2Toast(null)
-      setSam2DraftRle(null)
+      setSam2DraftMask(null)
       sam2ResumeAfterNCommitRef.current = false
     }
   }, [sam2AiToolbarEnabled])
@@ -1160,7 +1199,54 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     setSam2Toast({ kind: ok ? "ok" : "err", text: message })
   }, [])
 
-  const handleSam2DecodeRequest = useCallback(
+  const cancelSam2ContourJob = useCallback((reason = "SAM2 轮廓任务已取消") => {
+    const current = sam2ContourInFlightRef.current
+    if (!current) return
+    current.worker.terminate()
+    current.reject(new Error(reason))
+    sam2ContourInFlightRef.current = null
+  }, [])
+
+  const runSam2ContourInWorker = useCallback(
+    async (
+      maskBinary: Uint8Array,
+      w: number,
+      h: number,
+      options: { rdpEpsilon: number; maxPoints: number },
+    ): Promise<number[][]> => {
+      cancelSam2ContourJob("SAM2 轮廓任务被新请求替换")
+      return await new Promise<number[][]>((resolve, reject) => {
+        const worker = new Worker(new URL("../../workers/sam2-contour.worker.ts", import.meta.url), { type: "module" })
+        sam2ContourInFlightRef.current = { worker, reject }
+        worker.onmessage = (event: MessageEvent<Sam2ContourWorkerResponse>) => {
+          worker.terminate()
+          sam2ContourInFlightRef.current = null
+          if (event.data.ok) {
+            resolve(event.data.ring)
+            return
+          }
+          reject(new Error(event.data.error || "SAM2 轮廓提取失败"))
+        }
+        worker.onerror = () => {
+          worker.terminate()
+          sam2ContourInFlightRef.current = null
+          reject(new Error("SAM2 轮廓 Worker 运行失败"))
+        }
+        worker.postMessage({ maskBinary, w, h, options })
+      })
+    },
+    [cancelSam2ContourJob],
+  )
+
+  useEffect(() => {
+    return () => {
+      sam2DecodeRoundRef.current += 1
+      sam2DecodePendingRef.current = null
+      cancelSam2ContourJob("页面卸载时取消在途轮廓任务")
+    }
+  }, [cancelSam2ContourJob])
+
+  const runSam2DecodeNow = useCallback(
     async (ctx: Sam2DecodeRequest) => {
       if (!sam2AnnotatingActiveRef.current) return
       const cache = sam2EmbedCacheRef.current
@@ -1170,13 +1256,6 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
 
       const label = sam2SelectedLabelRef.current.trim()
       if (!label) return
-
-      // 删除点导致 point prompt 为空时，立即清空当前预览并作废在途解码。
-      if (ctx.promptMode === "point" && ctx.points.length === 0) {
-        sam2DecodeGenRef.current += 1
-        setSam2DraftRle(null)
-        return
-      }
 
       const encForPrompt =
         !enc.full_image_width && !enc.full_image_height && imageNaturalSize.width > 0 && imageNaturalSize.height > 0
@@ -1194,135 +1273,189 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       })
       if (!prompt) return
 
+      const roundAtStart = sam2DecodeRoundRef.current
       const gen = ++sam2DecodeGenRef.current
       try {
         const decodeOpts =
           ctx.minPredIou !== undefined && ctx.minPredIou > 0 ? { minPredIou: ctx.minPredIou } : undefined
-        const rle = await runSamCvatsDecoder(enc, prompt, decodeOpts)
-        if (gen !== sam2DecodeGenRef.current) return
-        if (!rle) {
-          setSam2DraftRle(null)
+        const mask = await runSamCvatsDecoder(enc, prompt, decodeOpts)
+        if (roundAtStart !== sam2DecodeRoundRef.current || gen !== sam2DecodeGenRef.current) return
+        if (!mask) {
+          setSam2DraftMask(null)
           setSam2Toast({ kind: "ok", text: "SAM 未分割出前景（可调整点/框后重试）" })
           return
         }
-        const fullRle = upscaleSam2DecoderRleToFullImageIfNeeded(rle, enc)
-        if (!fullRle) {
-          setSam2DraftRle(null)
+        const fullMask = upscaleSam2DecoderMaskToFullImageIfNeeded(mask, enc)
+        if (!fullMask) {
+          setSam2DraftMask(null)
           setSam2Toast({ kind: "ok", text: "SAM 未分割出前景（可调整点/框后重试）" })
           return
         }
-        setSam2DraftRle({ counts: fullRle.counts, w: fullRle.w, h: fullRle.h })
+        setSam2DraftMask({ maskBinary: fullMask.maskBinary, w: fullMask.w, h: fullMask.h })
       } catch (e) {
-        if (gen !== sam2DecodeGenRef.current) return
+        if (roundAtStart !== sam2DecodeRoundRef.current || gen !== sam2DecodeGenRef.current) return
         const msg = formatOrtWebInferError(e)
         setSam2Toast({ kind: "err", text: `SAM ONNX 解码失败：${msg}` })
       }
     },
-    [],
+    [imageNaturalSize.height, imageNaturalSize.width],
+  )
+
+  const drainSam2DecodeQueue = useCallback(() => {
+    if (sam2DecodeInFlightRef.current) return
+    sam2DecodeInFlightRef.current = true
+    void (async () => {
+      try {
+        while (true) {
+          const next = sam2DecodePendingRef.current
+          if (!next) break
+          sam2DecodePendingRef.current = null
+          await runSam2DecodeNow(next)
+        }
+      } finally {
+        sam2DecodeInFlightRef.current = false
+        if (sam2DecodePendingRef.current) {
+          drainSam2DecodeQueue()
+        }
+      }
+    })()
+  }, [runSam2DecodeNow])
+
+  const handleSam2DecodeRequest = useCallback(
+    (ctx: Sam2DecodeRequest) => {
+      if (!sam2AnnotatingActiveRef.current) return
+      // 删除点导致 point prompt 为空时，立即清空当前预览并作废在途解码。
+      if (ctx.promptMode === "point" && ctx.points.length === 0) {
+        sam2DecodeRoundRef.current += 1
+        sam2DecodeGenRef.current += 1
+        sam2DecodePendingRef.current = null
+        setSam2DraftMask(null)
+        return
+      }
+      // Single-flight: 同图同轮只保留最后一次请求。
+      sam2DecodePendingRef.current = ctx
+      drainSam2DecodeQueue()
+    },
+    [drainSam2DecodeQueue],
   )
 
   const commitSam2DraftAndNew = useCallback(() => {
-    const d = sam2DraftRle
-    if (!d) {
-      setSam2Toast({ kind: "err", text: "请先在画布上添加点或框以生成分割预览，再按 N 确认" })
-      return
-    }
-    const label = sam2SelectedLabel.trim()
-    if (!label) {
-      setSam2Toast({ kind: "err", text: "请选择标签" })
-      return
-    }
-    sam2DecodeGenRef.current += 1
-
-    const iw = imageNaturalSize.width
-    const ih = imageNaturalSize.height
-    const total = d.w * d.h
-    if (d.w <= 0 || d.h <= 0 || total <= 0 || d.w !== iw || d.h !== ih) {
-      setSam2Toast({ kind: "err", text: "SAM2 预览尺寸与当前图像不一致，请重新标点" })
-      return
-    }
-
-    const bin = decodeRowMajorRleToBinary(d.counts, total)
-
-    if (sam2OutputFormat === "polygon") {
-      let ring = contourForYoloExport(bin, d.w, d.h, sam2PolygonContourOptions(sam2PolygonVertexBias)).map(
-        ([x, y]) => [Math.round(x), Math.round(y)] as number[],
-      )
-      if (ring.length >= 2) {
-        const a = ring[0]
-        const b = ring[ring.length - 1]
-        if (a && b && a[0] === b[0] && a[1] === b[1]) ring = ring.slice(0, -1)
-      }
-      if (ring.length < 3) {
-        setSam2Toast({ kind: "err", text: "无法从分割结果生成多边形（轮廓点过少），可改用 Bbox" })
+    void (async () => {
+      const d = sam2DraftMask
+      if (!d) {
+        setSam2Toast({ kind: "err", text: "请先在画布上添加点或框以生成分割预览，再按 N 确认" })
         return
       }
-      const created = createShape({
-        imagePath: activeImagePath,
-        imageWidth: iw,
-        imageHeight: ih,
-        shape: {
-          label,
-          score: null,
-          points: ring,
-          group_id: null,
-          description: null,
-          difficult: false,
-          shape_type: "polygon",
-          flags: null,
-          attributes: {},
-          kie_linking: [],
-        },
-      })
-      handleEngineShapeCreated({ shapeId: created.shapeId })
-      setSam2DraftRle(null)
-      setSam2SessionNonce((n) => n + 1)
-      finishSam2CommitAndSwitchToSelect()
-      return
-    }
-
-    if (sam2OutputFormat === "box") {
-      const bb = foregroundBBoxInclusive(bin, d.w, d.h)
-      if (!bb) {
-        setSam2Toast({ kind: "err", text: "分割结果为空，无法生成 Bbox" })
+      const label = sam2SelectedLabel.trim()
+      if (!label) {
+        setSam2Toast({ kind: "err", text: "请选择标签" })
         return
       }
-      let minX = bb.minX
-      let minY = bb.minY
-      let maxX = bb.maxX
-      let maxY = bb.maxY
-      if (maxX <= minX) maxX = minX + 1
-      if (maxY <= minY) maxY = minY + 1
-      const created = createShape({
-        imagePath: activeImagePath,
-        imageWidth: iw,
-        imageHeight: ih,
-        shape: {
-          label,
-          score: null,
-          points: [
-            [minX, minY],
-            [maxX, minY],
-            [maxX, maxY],
-            [minX, maxY],
-          ],
-          group_id: null,
-          description: null,
-          difficult: false,
-          shape_type: "rectangle",
-          flags: null,
-          attributes: {},
-          kie_linking: [],
-        },
-      })
-      handleEngineShapeCreated({ shapeId: created.shapeId })
-      setSam2DraftRle(null)
-      setSam2SessionNonce((n) => n + 1)
-      finishSam2CommitAndSwitchToSelect()
-      return
-    }
+      sam2DecodeGenRef.current += 1
+      sam2DecodePendingRef.current = null
 
-    setSam2Toast({ kind: "err", text: "未知的 SAM2 输出类型" })
+      const iw = imageNaturalSize.width
+      const ih = imageNaturalSize.height
+      const total = d.w * d.h
+      if (d.w <= 0 || d.h <= 0 || total <= 0 || d.w !== iw || d.h !== ih) {
+        setSam2Toast({ kind: "err", text: "SAM2 预览尺寸与当前图像不一致，请重新标点" })
+        return
+      }
+
+      const bin = d.maskBinary
+      if (bin.length !== total) {
+        setSam2Toast({ kind: "err", text: "SAM2 预览掩码尺寸异常，请重新标点" })
+        return
+      }
+
+      if (sam2OutputFormat === "polygon") {
+        const roundAtStart = sam2DecodeRoundRef.current
+        try {
+          let ring = await runSam2ContourInWorker(bin, d.w, d.h, sam2PolygonContourOptions(sam2PolygonVertexBias))
+          if (roundAtStart !== sam2DecodeRoundRef.current) return
+          if (ring.length >= 2) {
+            const a = ring[0]
+            const b = ring[ring.length - 1]
+            if (a && b && a[0] === b[0] && a[1] === b[1]) ring = ring.slice(0, -1)
+          }
+          if (ring.length < 3) {
+            setSam2Toast({ kind: "err", text: "无法从分割结果生成多边形（轮廓点过少），可改用 Bbox" })
+            return
+          }
+          const created = createShape({
+            imagePath: activeImagePath,
+            imageWidth: iw,
+            imageHeight: ih,
+            shape: {
+              label,
+              score: null,
+              points: ring,
+              group_id: null,
+              description: null,
+              difficult: false,
+              shape_type: "polygon",
+              flags: null,
+              attributes: {},
+              kie_linking: [],
+            },
+          })
+          handleEngineShapeCreated({ shapeId: created.shapeId })
+          setSam2DraftMask(null)
+          setSam2SessionNonce((n) => n + 1)
+          finishSam2CommitAndSwitchToSelect()
+        } catch (error) {
+          if (roundAtStart !== sam2DecodeRoundRef.current) return
+          const msg = error instanceof Error ? error.message : String(error)
+          if (!msg.includes("取消")) {
+            setSam2Toast({ kind: "err", text: `轮廓提取失败：${msg}` })
+          }
+        }
+        return
+      }
+
+      if (sam2OutputFormat === "box") {
+        const bb = foregroundBBoxInclusive(bin, d.w, d.h)
+        if (!bb) {
+          setSam2Toast({ kind: "err", text: "分割结果为空，无法生成 Bbox" })
+          return
+        }
+        let minX = bb.minX
+        let minY = bb.minY
+        let maxX = bb.maxX
+        let maxY = bb.maxY
+        if (maxX <= minX) maxX = minX + 1
+        if (maxY <= minY) maxY = minY + 1
+        const created = createShape({
+          imagePath: activeImagePath,
+          imageWidth: iw,
+          imageHeight: ih,
+          shape: {
+            label,
+            score: null,
+            points: [
+              [minX, minY],
+              [maxX, minY],
+              [maxX, maxY],
+              [minX, maxY],
+            ],
+            group_id: null,
+            description: null,
+            difficult: false,
+            shape_type: "rectangle",
+            flags: null,
+            attributes: {},
+            kie_linking: [],
+          },
+        })
+        handleEngineShapeCreated({ shapeId: created.shapeId })
+        setSam2DraftMask(null)
+        setSam2SessionNonce((n) => n + 1)
+        finishSam2CommitAndSwitchToSelect()
+        return
+      }
+
+      setSam2Toast({ kind: "err", text: "未知的 SAM2 输出类型" })
+    })()
   }, [
     activeImagePath,
     createShape,
@@ -1330,18 +1463,22 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     handleEngineShapeCreated,
     imageNaturalSize.height,
     imageNaturalSize.width,
-    sam2DraftRle,
+    runSam2ContourInWorker,
+    sam2DraftMask,
     sam2OutputFormat,
     sam2PolygonVertexBias,
     sam2SelectedLabel,
   ])
 
   const cancelSam2Round = useCallback(() => {
+    sam2DecodeRoundRef.current += 1
     sam2DecodeGenRef.current += 1
-    setSam2DraftRle(null)
+    sam2DecodePendingRef.current = null
+    cancelSam2ContourJob("已撤销本轮 SAM2 标注")
+    setSam2DraftMask(null)
     setSam2SessionNonce((n) => n + 1)
     setSam2Toast({ kind: "ok", text: "已撤销本轮 SAM2 标注" })
-  }, [])
+  }, [cancelSam2ContourJob])
 
   const dismissAiToolUiFromShortcut = useCallback(() => {
     if (diffusionAnnotatingActiveRef.current) {
@@ -1353,16 +1490,19 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     }
     setSam2DialogOpen(false)
     setSam2AnnotatingActive(false)
+    sam2DecodeRoundRef.current += 1
+    sam2DecodePendingRef.current = null
+    cancelSam2ContourJob("关闭 SAM2 标注时取消在途任务")
     setSam2Toast(null)
-    setSam2DraftRle(null)
-  }, [exitDiffusionAnnotating])
+    setSam2DraftMask(null)
+  }, [cancelSam2ContourJob, exitDiffusionAnnotating])
 
   const tryResumeSam2AfterCommit = useCallback((): boolean => {
     if (!sam2AiToolbarEnabled) return false
     if (sam2AnnotatingActive) return false
     if (!sam2ResumeAfterNCommitRef.current) return false
     sam2ResumeAfterNCommitRef.current = false
-    setSam2DraftRle(null)
+    setSam2DraftMask(null)
     setSam2SessionNonce((n) => n + 1)
     setSam2AnnotatingActive(true)
     return true
@@ -1438,7 +1578,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
 
   /** SAM2 二次精化后的候选预览（非 DINO 粗框）；与提交逻辑共用 isDiffusionCandidateAnnotatable */
   const diffusionPreviewShapes = useMemo(() => {
-    const masks: DiffusionPreviewMaskRle[] = []
+    const masks: DiffusionPreviewMaskBinary[] = []
     const polygons: DiffusionPreviewPolygon[] = []
     const rectangles: DiffusionPreviewRectangle[] = []
     if (diffusionPhase !== "preview") {
@@ -1454,6 +1594,9 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     const contourOpts = sam2PolygonContourOptions(diffusionPolygonVertexBias)
     for (const c of diffusionCandidates) {
       if (!isDiffusionCandidateAnnotatable(c, diffusionOutputFormat, iw, ih, contourOpts)) continue
+      if (c.mask && c.mask.w === iw && c.mask.h === ih) {
+        masks.push({ id: c.id, label, color, ...c.mask })
+      }
 
       if (diffusionOutputFormat === "box") {
         const { x1, y1, x2, y2 } = c.bbox
@@ -1477,19 +1620,19 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     imageNaturalSize.width,
   ])
 
-  const sam2DraftMaskForRender = useMemo((): Sam2DraftMaskRle | null => {
-    if (!sam2DraftRle || !sam2SelectedLabel.trim()) return null
+  const sam2DraftMaskForRender = useMemo((): Sam2DraftMaskBinary | null => {
+    if (!sam2DraftMask || !sam2SelectedLabel.trim()) return null
     return {
-      ...sam2DraftRle,
+      ...sam2DraftMask,
       label: sam2SelectedLabel.trim(),
       color: labelColorMap.get(sam2SelectedLabel.trim()) ?? "#f59e0b",
     }
-  }, [labelColorMap, sam2DraftRle, sam2SelectedLabel])
+  }, [labelColorMap, sam2DraftMask, sam2SelectedLabel])
 
   const sam2HasCancelableRound = useMemo(
     () =>
-      sam2AnnotatingActive && (sam2DraftRle !== null || sam2Tool.sam2ManualPromptNonEmpty),
-    [sam2AnnotatingActive, sam2DraftRle, sam2Tool.sam2ManualPromptNonEmpty],
+      sam2AnnotatingActive && (sam2DraftMask !== null || sam2Tool.sam2ManualPromptNonEmpty),
+    [sam2AnnotatingActive, sam2DraftMask, sam2Tool.sam2ManualPromptNonEmpty],
   )
 
   const resolveShapeIndexById = useCallback(
@@ -1522,7 +1665,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       dragLivePoints,
       dragCuboidLivePoints,
       dragVertexLive,
-      sam2DraftMaskRle: sam2DraftMaskForRender,
+      sam2DraftMaskBinary: sam2DraftMaskForRender,
       diffusionPreviewMasks: diffusionPreviewShapes.masks,
       diffusionPreviewPolygons: diffusionPreviewShapes.polygons,
       diffusionPreviewRectangles: diffusionPreviewShapes.rectangles,
@@ -1611,6 +1754,9 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
 
   const handleImageElementLoad = useCallback((event: SyntheticEvent<HTMLImageElement>) => {
     const img = event.currentTarget
+    setIsImageLoading(false)
+    setImageLoadError(false)
+    setImageLoadingHint("图片解码完成")
     setImageNaturalSize({
       width: img.naturalWidth || 0,
       height: img.naturalHeight || 0,
@@ -1619,7 +1765,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       const rect = stageRef.current.getBoundingClientRect()
       setStageSize({ width: rect.width, height: rect.height })
     }
-  }, [])
+  }, [setImageLoadError, setImageLoadingHint, setIsImageLoading])
 
   useTaskShortcuts({
     rightToolMode,
@@ -1718,7 +1864,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     endImagePan,
     handleImageDoubleClick,
     handleStageClick,
-    setImageLoadError,
+    setImageLoadingHint,
+    handleImageDecodeError,
     handleImageElementLoad,
     setRawHighlightCorner,
     setSelectedShape: (shapeId) => setSelectedShapeId(shapeId),
@@ -1751,6 +1898,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     error,
     filesLength: files.length,
     isImageLoading,
+    imageLoadingHint,
     imageObjectUrl,
     imageLoadError,
     currentFileName,

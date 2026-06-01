@@ -3,30 +3,30 @@
  */
 import type { Sam2EncodeImageResponse } from "@/lib/sam2-encode-api"
 import { runSamCvatsDecoder } from "@/lib/sam2-cvat-onnx"
-import { mapFullImageSam2PromptToEncode, upscaleSam2DecoderRleToFullImageIfNeeded } from "@/lib/sam2-infer-scale"
+import { mapFullImageSam2PromptToEncode, upscaleSam2DecoderMaskToFullImageIfNeeded } from "@/lib/sam2-infer-scale"
 
 export type DiffusionSamBbox = { x1: number; y1: number; x2: number; y2: number }
 
 export async function decodeSamBboxOnEncodeCache(
   enc: Sam2EncodeImageResponse,
   bbox: DiffusionSamBbox,
-): Promise<{ counts: number[]; w: number; h: number } | null> {
+): Promise<{ maskBinary: Uint8Array; w: number; h: number } | null> {
   const prompt = mapFullImageSam2PromptToEncode(enc, {
     promptMode: "bbox",
     points: [],
     bbox,
   })
   if (!prompt) return null
-  const rle = await runSamCvatsDecoder(enc, prompt)
-  if (!rle) return null
-  return upscaleSam2DecoderRleToFullImageIfNeeded(rle, enc)
+  const mask = await runSamCvatsDecoder(enc, prompt)
+  if (!mask) return null
+  return upscaleSam2DecoderMaskToFullImageIfNeeded(mask, enc)
 }
 
 /** 候选框中心前景点 prompt（更接近手动画点 SAM）。 */
 export async function decodeSamCenterPointOnEncodeCache(
   enc: Sam2EncodeImageResponse,
   bbox: DiffusionSamBbox,
-): Promise<{ counts: number[]; w: number; h: number } | null> {
+): Promise<{ maskBinary: Uint8Array; w: number; h: number } | null> {
   const cx = (bbox.x1 + bbox.x2) * 0.5
   const cy = (bbox.y1 + bbox.y2) * 0.5
   const prompt = mapFullImageSam2PromptToEncode(enc, {
@@ -35,7 +35,7 @@ export async function decodeSamCenterPointOnEncodeCache(
     bbox: null,
   })
   if (!prompt) return null
-  const rle = await runSamCvatsDecoder(enc, prompt)
-  if (!rle) return null
-  return upscaleSam2DecoderRleToFullImageIfNeeded(rle, enc)
+  const mask = await runSamCvatsDecoder(enc, prompt)
+  if (!mask) return null
+  return upscaleSam2DecoderMaskToFullImageIfNeeded(mask, enc)
 }

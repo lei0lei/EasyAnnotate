@@ -11,7 +11,8 @@ type UseCanvasSectionPropsParams = {
   endImagePan: () => void
   handleImageDoubleClick: CanvasSectionBaseProps["onStageDoubleClick"]
   handleStageClick: CanvasSectionBaseProps["onStageClick"]
-  setImageLoadError: (value: boolean) => void
+  setImageLoadingHint: (value: string) => void
+  handleImageDecodeError: () => void
   handleImageElementLoad: CanvasSectionBaseProps["onImageLoad"]
   setRawHighlightCorner: CanvasSectionBaseProps["onSetRawHighlightCorner"]
   setSelectedShape: CanvasSectionBaseProps["onSetSelectedShapeId"]
@@ -44,6 +45,7 @@ type UseCanvasSectionPropsParams = {
   error: CanvasSectionBaseProps["error"]
   filesLength: CanvasSectionBaseProps["filesLength"]
   isImageLoading: CanvasSectionBaseProps["isImageLoading"]
+  imageLoadingHint: CanvasSectionBaseProps["imageLoadingHint"]
   imageObjectUrl: CanvasSectionBaseProps["imageObjectUrl"]
   imageLoadError: CanvasSectionBaseProps["imageLoadError"]
   currentFileName: CanvasSectionBaseProps["currentFileName"]
@@ -107,7 +109,8 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     endImagePan,
     handleImageDoubleClick,
     handleStageClick,
-    setImageLoadError,
+    setImageLoadingHint,
+    handleImageDecodeError,
     handleImageElementLoad,
     setRawHighlightCorner,
     setSelectedShape,
@@ -140,6 +143,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     error,
     filesLength,
     isImageLoading,
+    imageLoadingHint,
     imageObjectUrl,
     imageLoadError,
     currentFileName,
@@ -204,7 +208,10 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       onStageMouseLeave: endImagePan,
       onStageDoubleClick: handleImageDoubleClick,
       onStageClick: handleStageClick,
-      onImageError: () => setImageLoadError(true),
+      onImageError: () => {
+        setImageLoadingHint("当前候选解码失败，正在尝试下一候选...")
+        handleImageDecodeError()
+      },
       onImageLoad: handleImageElementLoad,
       onSetRawHighlightCorner: setRawHighlightCorner,
       onSetSelectedShapeId: setSelectedShape,
@@ -252,6 +259,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       handleBox3dDrawMove,
       handleCuboidFaceMouseDown,
       handleImageDoubleClick,
+      handleImageDecodeError,
       handleImageElementLoad,
       handleImageMouseDown,
       handleImageMouseMove,
@@ -278,7 +286,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       hoveredDraftVertexIndex,
       polygonDraftStagePoints,
       previewRect,
-      setImageLoadError,
+      setImageLoadingHint,
       setRawHighlightCorner,
       setSelectedShape,
       stageRef,
@@ -299,6 +307,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       error,
       filesLength,
       isImageLoading,
+      imageLoadingHint,
       imageObjectUrl,
       imageLoadError,
       currentFileName,
@@ -359,6 +368,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       drawingLayerActive,
       error,
       filesLength,
+      imageLoadingHint,
       hoveredDraftVertexIndex,
       hoveredShapeIndex,
       imageFitScale,

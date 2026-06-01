@@ -106,9 +106,9 @@ export type RenderedRasterPreview = {
   top: number
   width: number
   height: number
-  /** CVAT 风格 RLE：与整图同尺寸；有则走光栅叠图而非折线笔划 */
+  /** 整图二值 mask：有则走光栅叠图而非折线笔划 */
   raster?: {
-    counts: number[]
+    maskBinary: Uint8Array
     imageWidth: number
     imageHeight: number
   }

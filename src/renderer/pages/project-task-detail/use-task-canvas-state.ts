@@ -9,6 +9,7 @@ export function useTaskCanvasState() {
   const [imageObjectUrl, setImageObjectUrl] = useState("")
   const [activeImagePath, setActiveImagePath] = useState("")
   const [isImageLoading, setIsImageLoading] = useState(false)
+  const [imageLoadingHint, setImageLoadingHint] = useState("")
   const [imageLoadError, setImageLoadError] = useState(false)
   const [imageScale, setImageScale] = useState(1)
   const [imageOffset, setImageOffset] = useState({ x: 0, y: 0 })
@@ -34,6 +35,8 @@ export function useTaskCanvasState() {
     setActiveImagePath,
     isImageLoading,
     setIsImageLoading,
+    imageLoadingHint,
+    setImageLoadingHint,
     imageLoadError,
     setImageLoadError,
     imageScale,

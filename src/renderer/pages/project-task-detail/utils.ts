@@ -59,6 +59,20 @@ export function guessMimeType(filePath: string): string {
   return "application/octet-stream"
 }
 
+export function filePathToFileUrl(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/")
+  if (/^[a-zA-Z]:\//.test(normalized)) {
+    return `file:///${encodeURI(normalized)}`
+  }
+  if (normalized.startsWith("//")) {
+    return `file:${encodeURI(normalized)}`
+  }
+  if (normalized.startsWith("/")) {
+    return `file://${encodeURI(normalized)}`
+  }
+  return encodeURI(normalized)
+}
+
 export function normalizeTagColor(input: string | undefined): string {
   if (!input) return "#f59e0b"
   const value = input.trim()
