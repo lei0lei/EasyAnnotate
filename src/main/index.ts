@@ -695,6 +695,58 @@ function collectTaskFiles(taskRootDir: string): Array<{ subset: string; filePath
   return records
 }
 
+function collectTaskFilesPage(
+  taskRootDir: string,
+  offset: number,
+  limit: number,
+): { records: Array<{ subset: string; filePath: string; createdAt: string }>; hasMore: boolean } {
+  if (!fs.existsSync(taskRootDir)) return { records: [], hasMore: false }
+  const safeOffset = Math.max(0, Math.floor(offset))
+  const safeLimit = Math.max(1, Math.floor(limit))
+  const imageExts = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
+  const buffered: Array<{ subset: string; filePath: string; createdAt: string }> = []
+  const maxBuffered = safeLimit + 1
+  let skipped = 0
+  let hasMore = false
+
+  const walk = (dir: string): boolean => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const absPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (walk(absPath)) return true
+        continue
+      }
+      const ext = path.extname(entry.name).toLowerCase()
+      if (!imageExts.has(ext)) continue
+      const stat = fs.statSync(absPath)
+      if (skipped < safeOffset) {
+        skipped += 1
+        continue
+      }
+      const relative = path.relative(taskRootDir, absPath)
+      const segments = relative.split(path.sep).filter(Boolean)
+      const subset = segments.length > 1 ? segments[0] : "default"
+      buffered.push({
+        subset,
+        filePath: absPath,
+        createdAt: stat.birthtime.toISOString(),
+      })
+      if (buffered.length >= maxBuffered) {
+        hasMore = true
+        return true
+      }
+    }
+    return false
+  }
+
+  walk(taskRootDir)
+  return {
+    records: hasMore ? buffered.slice(0, safeLimit) : buffered,
+    hasMore,
+  }
+}
+
 function resolveAnnotationJsonPath(imagePath: string): string {
   const parsed = path.parse(imagePath)
   return path.join(parsed.dir, `${parsed.name}.json`)
@@ -1908,26 +1960,30 @@ ipc.registerService(AppService({
     try {
       const project = getProject(request.globalConfigDir, request.projectId)
       if (!project) {
-        return { files: [], errorMessage: "项目不存在。" }
+        return { files: [], errorMessage: "项目不存在。", hasMore: false }
       }
       const baseRoot =
         project.storageType === "local" && project.localPath
           ? project.localPath
           : path.dirname(project.configFilePath)
       const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(request.taskId))
-      const files = collectTaskFiles(taskRootDir).map((item, index) => ({
-        id: `${request.taskId}-${index + 1}`,
+      const offset = Math.max(0, Math.floor(Number(request.offset) || 0))
+      const limit = Math.max(1, Math.floor(Number(request.limit) || 10))
+      const page = collectTaskFilesPage(taskRootDir, offset, limit)
+      const files = page.records.map((item, index) => ({
+        id: `${request.taskId}-${offset + index + 1}`,
         projectId: request.projectId,
         taskId: request.taskId,
         subset: item.subset,
         filePath: item.filePath,
         createdAt: item.createdAt,
       }))
-      return { files, errorMessage: "" }
+      return { files, errorMessage: "", hasMore: page.hasMore }
     } catch (error) {
       return {
         files: [],
         errorMessage: error instanceof Error ? error.message : String(error),
+        hasMore: false,
       }
     }
   },

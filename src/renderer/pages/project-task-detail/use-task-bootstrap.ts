@@ -10,6 +10,76 @@ import { guessMimeType } from "@/pages/project-task-detail/utils"
 
 type ToolResetAction = { type: "clearRectPoints" } | { type: "resetForNewFile" }
 const TASK_FILES_BATCH_SIZE = 10
+let globalImageLoadChain: Promise<void> = Promise.resolve()
+let globalImageLoadRequestId = 0
+let globalImageLoadInFlight = false
+
+type LoadImageFromCandidatesParams = {
+  imagePathCandidates: string[]
+  isCanceled: () => boolean
+  setIsImageLoading: Dispatch<SetStateAction<boolean>>
+  setImageLoadingHint: Dispatch<SetStateAction<string>>
+  setImageLoadError: Dispatch<SetStateAction<boolean>>
+  setImageObjectUrl: Dispatch<SetStateAction<string>>
+  setActiveImagePath: Dispatch<SetStateAction<string>>
+}
+
+async function loadImageFromCandidates(params: LoadImageFromCandidatesParams): Promise<{
+  objectUrl: string
+  loaded: boolean
+}> {
+  const {
+    imagePathCandidates,
+    isCanceled,
+    setIsImageLoading,
+    setImageLoadingHint,
+    setImageLoadError,
+    setImageObjectUrl,
+    setActiveImagePath,
+  } = params
+  let objectUrl = ""
+  let lastReadError = ""
+  if (isCanceled()) return { objectUrl, loaded: false }
+  if (imagePathCandidates.length === 0) {
+    setIsImageLoading(false)
+    setImageLoadingHint("未找到可读取的图片路径")
+    setImageObjectUrl("")
+    setActiveImagePath("")
+    setImageLoadError(true)
+    return { objectUrl, loaded: false }
+  }
+  setIsImageLoading(true)
+  setImageLoadingHint(`准备读取图片候选路径（${imagePathCandidates.length}）...`)
+  setImageLoadError(false)
+  setImageObjectUrl("")
+
+  for (const [index, candidate] of imagePathCandidates.entries()) {
+    if (isCanceled()) return { objectUrl, loaded: false }
+    setImageLoadingHint(`正在读取候选 ${index + 1}/${imagePathCandidates.length}：${candidate}`)
+    const result = await readImageFile(candidate)
+    if (isCanceled()) return { objectUrl, loaded: false }
+    if (result.errorMessage) {
+      lastReadError = result.errorMessage
+      continue
+    }
+    if (!result.content || result.content.length === 0) continue
+    const bytes = result.content
+    setImageLoadingHint("已读取字节，正在创建对象 URL...")
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+    objectUrl = URL.createObjectURL(new Blob([buffer], { type: guessMimeType(candidate) }))
+    setImageLoadingHint("对象 URL 已创建，等待浏览器解码...")
+    setImageObjectUrl(objectUrl)
+    setActiveImagePath(candidate)
+    return { objectUrl, loaded: true }
+  }
+
+  if (isCanceled()) return { objectUrl, loaded: false }
+  setIsImageLoading(false)
+  setImageLoadingHint(lastReadError ? `所有候选路径读取失败：${lastReadError}` : "所有候选路径读取失败")
+  setImageLoadError(true)
+  setActiveImagePath("")
+  return { objectUrl, loaded: false }
+}
 
 type UseTaskBootstrapParams = {
   projectId?: string
@@ -79,8 +149,10 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
   const resetDocForNewFileRef = useRef(resetDocForNewFile)
   const clearToolTransientInteractionsRef = useRef(clearToolTransientInteractions)
   const lastResetFilePathRef = useRef<string | null>(null)
-  const allTaskFilesRef = useRef<TaskFileItem[]>([])
-  const loadedTaskFilesCountRef = useRef(0)
+  const nextPageOffsetRef = useRef(0)
+  const hasMoreTaskFilesRef = useRef(false)
+  const taskFilesPageLoadingRef = useRef(false)
+  const taskFilesPageTokenRef = useRef(0)
 
   useEffect(() => {
     dispatchToolRef.current = dispatchTool
@@ -94,60 +166,93 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     clearToolTransientInteractionsRef.current = clearToolTransientInteractions
   }, [clearToolTransientInteractions])
 
-  const applyInitialFilesBatch = useCallback(
-    (nextFiles: TaskFileItem[]) => {
-      allTaskFilesRef.current = nextFiles
-      const initialCount = Math.min(nextFiles.length, TASK_FILES_BATCH_SIZE)
-      loadedTaskFilesCountRef.current = initialCount
-      if (initialCount <= 0) {
-        setFiles([])
-        return
-      }
-      if (initialCount >= nextFiles.length) {
-        setFiles(nextFiles)
-        return
-      }
-      setFiles(nextFiles.slice(0, initialCount))
-    },
-    [setFiles],
-  )
-
   const clearFilesPaginationState = useCallback(() => {
-    allTaskFilesRef.current = []
-    loadedTaskFilesCountRef.current = 0
+    taskFilesPageTokenRef.current += 1
+    nextPageOffsetRef.current = 0
+    hasMoreTaskFilesRef.current = false
+    taskFilesPageLoadingRef.current = false
   }, [])
 
+  const loadTaskFilesPage = useCallback(
+    async (reset: boolean) => {
+      if (!projectId || !taskId) return
+      if (taskFilesPageLoadingRef.current) return
+      taskFilesPageLoadingRef.current = true
+      try {
+        const token = taskFilesPageTokenRef.current
+        const offset = reset ? 0 : nextPageOffsetRef.current
+        const result = await listTaskFiles({
+          projectId,
+          taskId,
+          offset,
+          limit: TASK_FILES_BATCH_SIZE,
+        })
+        if (token !== taskFilesPageTokenRef.current) {
+          return
+        }
+        if (result.errorMessage) {
+          if (reset) setFiles([])
+          hasMoreTaskFilesRef.current = false
+          setError(result.errorMessage)
+          setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
+          return
+        }
+        setError(null)
+        const incoming = result.files
+        hasMoreTaskFilesRef.current = result.hasMore
+        if (reset) {
+          nextPageOffsetRef.current = incoming.length
+          setFiles(incoming)
+          if (incoming.length === 0) {
+            setImageLoadingHint("任务内暂无图片")
+          } else if (result.hasMore) {
+            setImageLoadingHint(`任务文件已分页加载 ${incoming.length} 项，翻到末尾继续加载`)
+          } else {
+            setImageLoadingHint(`任务文件已加载 ${incoming.length} 项，准备读取图片`)
+          }
+        } else {
+          setFiles((prev) => {
+            const merged = [...prev]
+            const seen = new Set(prev.map((item) => item.filePath))
+            for (const item of incoming) {
+              if (seen.has(item.filePath)) continue
+              seen.add(item.filePath)
+              merged.push(item)
+            }
+            nextPageOffsetRef.current = merged.length
+            const hint = result.hasMore
+              ? `任务文件分页加载：已加载 ${merged.length} 项，翻到末尾继续加载`
+              : `任务文件分页加载完成：共 ${merged.length} 项`
+            setImageLoadingHint(hint)
+            return merged
+          })
+        }
+      } finally {
+        taskFilesPageLoadingRef.current = false
+      }
+    },
+    [projectId, setError, setFiles, setImageLoadingHint, taskId],
+  )
+
   const maybeLoadNextFilesBatch = useCallback(() => {
-    const allFiles = allTaskFilesRef.current
-    const loadedCount = loadedTaskFilesCountRef.current
-    if (allFiles.length === 0) return
-    if (loadedCount >= allFiles.length) return
-    if (currentIndex < loadedCount - 1) return
-    const nextCount = Math.min(allFiles.length, loadedCount + TASK_FILES_BATCH_SIZE)
-    loadedTaskFilesCountRef.current = nextCount
-    setFiles(allFiles.slice(0, nextCount))
-    setImageLoadingHint(`任务文件按分页加载：${nextCount}/${allFiles.length}`)
-  }, [currentIndex, setFiles, setImageLoadingHint])
+    if (taskFilesPageLoadingRef.current) return
+    if (!hasMoreTaskFilesRef.current) return
+    if (files.length === 0) return
+    if (currentIndex < files.length - 1) return
+    void loadTaskFilesPage(false)
+  }, [currentIndex, files.length, loadTaskFilesPage])
+
+  const resetAndLoadFirstTaskFilesPage = useCallback(async () => {
+    clearFilesPaginationState()
+    setFiles([])
+    setImageLoadingHint("正在读取任务文件列表...")
+    await loadTaskFilesPage(true)
+  }, [clearFilesPaginationState, loadTaskFilesPage, setFiles, setImageLoadingHint])
 
   const reloadTaskFiles = useCallback(async () => {
     if (!projectId || !taskId) return
-    setImageLoadingHint("正在读取任务文件列表...")
-    const result = await listTaskFiles({ projectId, taskId })
-    if (result.errorMessage) {
-      clearFilesPaginationState()
-      setError(result.errorMessage)
-      setFiles([])
-      setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
-      return
-    }
-    setError(null)
-    applyInitialFilesBatch(result.files)
-    if (result.files.length > TASK_FILES_BATCH_SIZE) {
-      setImageLoadingHint(`任务文件已分页加载 ${TASK_FILES_BATCH_SIZE}/${result.files.length} 项，翻到末尾继续加载`)
-    } else {
-      setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
-    }
-  }, [applyInitialFilesBatch, clearFilesPaginationState, projectId, setError, setFiles, setImageLoadingHint, taskId])
+    await resetAndLoadFirstTaskFilesPage()
+  }, [projectId, resetAndLoadFirstTaskFilesPage, taskId])
 
   useEffect(() => {
     let alive = true
@@ -162,30 +267,12 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
   }, [projectId, setProject])
 
   useEffect(() => {
-    let alive = true
     if (!projectId || !taskId) return
-    setImageLoadingHint("正在读取任务文件列表...")
-    void listTaskFiles({ projectId, taskId }).then((result) => {
-      if (!alive) return
-      if (result.errorMessage) {
-        clearFilesPaginationState()
-        setError(result.errorMessage)
-        setFiles([])
-        setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
-        return
-      }
-      setError(null)
-      applyInitialFilesBatch(result.files)
-      if (result.files.length > TASK_FILES_BATCH_SIZE) {
-        setImageLoadingHint(`任务文件已分页加载 ${TASK_FILES_BATCH_SIZE}/${result.files.length} 项，翻到末尾继续加载`)
-      } else {
-        setImageLoadingHint(`任务文件已加载 ${result.files.length} 项，准备读取图片`)
-      }
-    })
+    void resetAndLoadFirstTaskFilesPage()
     return () => {
-      alive = false
+      clearFilesPaginationState()
     }
-  }, [applyInitialFilesBatch, clearFilesPaginationState, projectId, setError, setFiles, setImageLoadingHint, taskId])
+  }, [clearFilesPaginationState, projectId, resetAndLoadFirstTaskFilesPage, taskId])
 
   useEffect(() => {
     setCurrentIndex((index) => {
@@ -206,48 +293,39 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
   useEffect(() => {
     let alive = true
     let objectUrl = ""
+    const requestId = ++globalImageLoadRequestId
 
     const loadImage = async () => {
-      let lastReadError = ""
-      if (imagePathCandidates.length === 0) {
-        setIsImageLoading(false)
-        setImageLoadingHint("未找到可读取的图片路径")
-        setImageObjectUrl("")
-        setActiveImagePath("")
-        setImageLoadError(true)
-        return
+      if (globalImageLoadInFlight) {
+        setImageLoadingHint("前序图片仍在加载，当前请求排队中...")
       }
-      setIsImageLoading(true)
-      setImageLoadingHint(`准备读取图片候选路径（${imagePathCandidates.length}）...`)
-      setImageLoadError(false)
-      setImageObjectUrl("")
-
-      for (const [index, candidate] of imagePathCandidates.entries()) {
-        setImageLoadingHint(`正在读取候选 ${index + 1}/${imagePathCandidates.length}：${candidate}`)
-        const result = await readImageFile(candidate)
-        if (!alive) return
-        if (result.errorMessage) {
-          lastReadError = result.errorMessage
-          continue
-        }
-        if (!result.content || result.content.length === 0) continue
-        const bytes = result.content
-        setImageLoadingHint("已读取字节，正在创建对象 URL...")
-        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-        objectUrl = URL.createObjectURL(new Blob([buffer], { type: guessMimeType(candidate) }))
-        setImageLoadingHint("对象 URL 已创建，等待浏览器解码...")
-        setImageObjectUrl(objectUrl)
-        setActiveImagePath(candidate)
-        return
+      const isCanceled = () => !alive || requestId !== globalImageLoadRequestId
+      const result = await loadImageFromCandidates({
+        imagePathCandidates,
+        isCanceled,
+        setIsImageLoading,
+        setImageLoadingHint,
+        setImageLoadError,
+        setImageObjectUrl,
+        setActiveImagePath,
+      })
+      if (result.loaded) {
+        objectUrl = result.objectUrl
       }
-
-      setIsImageLoading(false)
-      setImageLoadingHint(lastReadError ? `所有候选路径读取失败：${lastReadError}` : "所有候选路径读取失败")
-      setImageLoadError(true)
-      setActiveImagePath("")
     }
 
-    void loadImage()
+    globalImageLoadChain = globalImageLoadChain
+      .catch(() => {})
+      .then(async () => {
+        if (!alive || requestId !== globalImageLoadRequestId) return
+        globalImageLoadInFlight = true
+        try {
+          await loadImage()
+        } finally {
+          globalImageLoadInFlight = false
+        }
+      })
+    void globalImageLoadChain
 
     return () => {
       alive = false

@@ -298,12 +298,16 @@ export async function importTaskImageZip(payload: {
 export async function listTaskFiles(payload: {
   projectId: string
   taskId: string
-}): Promise<{ files: TaskFileItem[]; errorMessage: string }> {
+  offset?: number
+  limit?: number
+}): Promise<{ files: TaskFileItem[]; hasMore: boolean; errorMessage: string }> {
   const response = await ipc.app.ListTaskFiles({
     globalConfigDir: globalConfigDir(),
     projectId: payload.projectId,
     taskId: payload.taskId,
     databaseDir: "",
+    offset: Math.max(0, Math.floor(payload.offset ?? 0)),
+    limit: Math.max(0, Math.floor(payload.limit ?? 0)),
   })
   const files = (response.files ?? []).map((item) => ({
     id: item.id ?? "",
@@ -315,6 +319,7 @@ export async function listTaskFiles(payload: {
   }))
   return {
     files,
+    hasMore: response.hasMore === true,
     errorMessage: response.errorMessage || "",
   }
 }

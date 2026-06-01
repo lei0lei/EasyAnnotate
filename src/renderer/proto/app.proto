@@ -290,6 +290,8 @@ message ListTaskFilesRequest {
   string project_id = 2;
   string task_id = 3;
   string database_dir = 4;
+  int32 offset = 5;
+  int32 limit = 6;
 }
 
 message TaskFileItem {
@@ -304,6 +306,7 @@ message TaskFileItem {
 message ListTaskFilesResponse {
   repeated TaskFileItem files = 1;
   string error_message = 2;
+  bool has_more = 3;
 }
 
 /** 项目任务列表项（与 renderer TaskItem 对齐，持久化于 global_config_dir/project-tasks/） */
