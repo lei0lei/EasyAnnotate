@@ -1,4 +1,4 @@
-import { listTaskFiles, readImageAnnotation, writeImageAnnotation } from "@/lib/projects-api"
+import { listAllTaskFiles, readImageAnnotation, writeImageAnnotation } from "@/lib/projects-api"
 import type { TaskItem } from "@/lib/project-tasks-storage"
 import { normalizeXAnyLabelDoc, type XAnyLabelFile } from "@/lib/xanylabeling-format"
 import { normalizeDocPointsToInt } from "@/pages/project-task-detail/utils"
@@ -41,7 +41,7 @@ export async function removeShapesWithDeletedLabelsFromProject(options: {
   let updatedFileCount = 0
 
   for (const task of options.tasks) {
-    const { files, errorMessage } = await listTaskFiles({
+    const { files, errorMessage } = await listAllTaskFiles({
       projectId: options.projectId,
       taskId: task.id,
     })

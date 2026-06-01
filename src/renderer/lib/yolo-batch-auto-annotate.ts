@@ -1,7 +1,7 @@
 import {
   appendImageAnnotationShapes,
   getImageFileInfo,
-  listTaskFiles,
+  listAllTaskFiles,
   type ProjectTag,
 } from "@/lib/projects-api"
 import {
@@ -96,7 +96,7 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
   }
 
   onProgress({ phase: "running", done: 0, total: 0, statusMessage: "读取任务图片列表…" })
-  const fileResult = await listTaskFiles({ projectId, taskId })
+  const fileResult = await listAllTaskFiles({ projectId, taskId })
   if (fileResult.errorMessage) {
     onProgress({
       phase: "error",

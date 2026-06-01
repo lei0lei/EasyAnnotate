@@ -11,9 +11,8 @@ import {
 import {
   getProject,
   listExportJobs,
-  listProjectTasks,
   listTaskFiles,
-  readImageAnnotation,
+  listProjectTasks,
   startDatasetExport,
   type ProjectTaskItem,
 } from "@/lib/projects-api"
@@ -37,7 +36,7 @@ import {
   Tags,
   type LucideIcon,
 } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useLocation, useParams } from "react-router-dom"
 
 type SourceStats = {
@@ -73,6 +72,8 @@ const PREPROCESS_OPTIONS = [
   "随机采样",
   "去除无标签图像",
 ] as const
+
+const SOURCE_IMAGE_COUNT_PAGE_SIZE = 100
 
 const PREPROCESS_ICONS: Record<(typeof PREPROCESS_OPTIONS)[number], LucideIcon> = {
   切块: Layers,
@@ -122,6 +123,26 @@ const AUGMENT_OPTIONS = {
 } as const
 
 type AugmentCategory = keyof typeof AUGMENT_OPTIONS
+
+async function countImageFilesByPaging(projectId: string, taskIds: string[]): Promise<number> {
+  let total = 0
+  for (const taskId of taskIds) {
+    let offset = 0
+    while (true) {
+      const page = await listTaskFiles({
+        projectId,
+        taskId,
+        offset,
+        limit: SOURCE_IMAGE_COUNT_PAGE_SIZE,
+      })
+      if (page.errorMessage || page.files.length === 0) break
+      total += page.files.length
+      if (!page.hasMore) break
+      offset += page.files.length
+    }
+  }
+  return total
+}
 
 function formatTypeLabel(taskId?: string): string {
   return taskId ? "任务导出" : "项目导出"
@@ -181,6 +202,8 @@ export default function ProjectExportPage() {
   const [exportLogLines, setExportLogLines] = useState<string[]>([])
   const [hydrated, setHydrated] = useState(false)
   const [projectTasks, setProjectTasks] = useState<ProjectTaskItem[]>([])
+  const [sourceImageCounting, setSourceImageCounting] = useState(false)
+  const sourceImageCountTokenRef = useRef(0)
 
   const backHref = projectId ? `/projects/${projectId}` : "/projects/mine"
   const pageTitle = formatTypeLabel(taskId)
@@ -269,28 +292,23 @@ export default function ProjectExportPage() {
       if (taskId) {
         const currentTask = tasks.find((item) => item.id === taskId)
         setTaskName(currentTask?.name ?? "")
+        const imageCount = Math.max(0, Math.floor(Number(currentTask?.fileCount) || 0))
+        setSourceStats({
+          imageCount,
+          classCount,
+          // Avoid heavy full-dataset scan on page entry.
+          annotationFileCount: 0,
+        })
       } else {
         setTaskName("")
-      }
-      void Promise.all(targetTaskIds.map((id) => listTaskFiles({ projectId, taskId: id }))).then((results) => {
-        if (!alive) return
-        const files = results.flatMap((result) => (result.errorMessage ? [] : result.files))
-        const imageCount = files.length
-        void Promise.all(
-          files.map(async (file) => {
-            const check = await readImageAnnotation(file.filePath)
-            return check.exists
-          }),
-        ).then((existsFlags) => {
-          if (!alive) return
-          const annotationFileCount = existsFlags.filter(Boolean).length
-          setSourceStats({
-            imageCount,
-            classCount,
-            annotationFileCount,
-          })
+        const imageCount = tasks.reduce((sum, item) => sum + Math.max(0, Math.floor(Number(item.fileCount) || 0)), 0)
+        setSourceStats({
+          imageCount,
+          classCount,
+          // Avoid heavy full-dataset scan on page entry.
+          annotationFileCount: 0,
         })
-      })
+      }
     })
     return () => {
       alive = false
@@ -313,6 +331,29 @@ export default function ProjectExportPage() {
           : item,
       ),
     )
+  }
+
+  function handleRefreshSourceImageCount() {
+    if (!projectId || sourceImageCounting) return
+    const token = sourceImageCountTokenRef.current + 1
+    sourceImageCountTokenRef.current = token
+    setSourceImageCounting(true)
+    setExportMessage("正在重新统计图片数量…")
+    const targetTaskIds = taskId ? [taskId] : projectTasks.map((item) => item.id)
+    void countImageFilesByPaging(projectId, targetTaskIds)
+      .then((nextImageCount) => {
+        if (sourceImageCountTokenRef.current !== token) return
+        setSourceStats((prev) => ({ ...prev, imageCount: nextImageCount }))
+        setExportMessage("图片数量统计已更新")
+      })
+      .catch((error) => {
+        if (sourceImageCountTokenRef.current !== token) return
+        setExportMessage(error instanceof Error ? `统计失败：${error.message}` : "统计失败")
+      })
+      .finally(() => {
+        if (sourceImageCountTokenRef.current !== token) return
+        setSourceImageCounting(false)
+      })
   }
 
   function handleExport() {
@@ -460,10 +501,21 @@ export default function ProjectExportPage() {
               </div>
             </CardHeader>
             <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <div className="rounded-md border-2 border-border/70 bg-muted/20 px-3 py-2">
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md border-2 border-border/70 bg-muted/20 px-3 py-2 text-left transition",
+                  "hover:border-primary/60 hover:bg-muted/30",
+                  sourceImageCounting ? "cursor-wait opacity-90" : "cursor-pointer",
+                )}
+                onClick={handleRefreshSourceImageCount}
+                disabled={sourceImageCounting}
+                aria-label="重新统计图片数量"
+              >
                 <p className="text-xs text-muted-foreground">图片数量</p>
                 <p className="mt-1 text-lg font-semibold text-foreground">{sourceStats.imageCount}</p>
-              </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">{sourceImageCounting ? "统计中..." : "点击重算"}</p>
+              </button>
               <div className="rounded-md border-2 border-border/70 bg-muted/20 px-3 py-2">
                 <p className="text-xs text-muted-foreground">类别数量</p>
                 <p className="mt-1 text-lg font-semibold text-foreground">{sourceStats.classCount}</p>

@@ -324,6 +324,40 @@ export async function listTaskFiles(payload: {
   }
 }
 
+export async function listAllTaskFiles(payload: {
+  projectId: string
+  taskId: string
+  pageSize?: number
+}): Promise<{ files: TaskFileItem[]; errorMessage: string }> {
+  const pageSize = Math.max(1, Math.floor(payload.pageSize ?? 200))
+  let offset = 0
+  const files: TaskFileItem[] = []
+  const seen = new Set<string>()
+  while (true) {
+    const page = await listTaskFiles({
+      projectId: payload.projectId,
+      taskId: payload.taskId,
+      offset,
+      limit: pageSize,
+    })
+    if (page.errorMessage) {
+      return { files, errorMessage: page.errorMessage }
+    }
+    let appended = 0
+    for (const item of page.files) {
+      const key = item.filePath || `${item.taskId}:${item.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      files.push(item)
+      appended += 1
+    }
+    if (!page.hasMore) break
+    if (page.files.length <= 0 || appended <= 0) break
+    offset = files.length
+  }
+  return { files, errorMessage: "" }
+}
+
 export async function deleteTaskData(payload: {
   projectId: string
   taskId: string
