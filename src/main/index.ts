@@ -1690,13 +1690,14 @@ ipc.registerService(AppService({
       const taskDir = path.join(taskRootDir, subset)
       await fs.promises.mkdir(taskDir, { recursive: true })
 
-      const savedPaths: string[] = []
+      let importedImageCount = 0
       for (const srcImagePath of images) {
         const targetImagePath = buildUniqueFilePath(taskDir, path.basename(srcImagePath))
         await fs.promises.copyFile(srcImagePath, targetImagePath)
-        savedPaths.push(targetImagePath)
+        importedImageCount += 1
       }
-      return { errorMessage: "", savedPaths, importedImageCount: savedPaths.length }
+      // 仅返回数量，避免大量 saved_paths 撑爆 IPC protobuf。
+      return { errorMessage: "", savedPaths: [], importedImageCount }
     } catch (error) {
       return {
         errorMessage: error instanceof Error ? error.message : String(error),

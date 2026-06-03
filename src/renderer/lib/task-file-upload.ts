@@ -129,34 +129,55 @@ export function candidatesFromBrowserFiles(input: FileList | File[]): {
   return { accepted, skippedWithoutPath }
 }
 
+/** 每批 IPC 上传的图片数；过大 protobuf 会导致 MōBrowser 进程闪退。 */
+export const TASK_UPLOAD_BATCH_SIZE = 10
+
+/** 创建/补充页文件列表最多渲染条数，避免数百张图拖垮 DOM。 */
+export const TASK_UPLOAD_PREVIEW_LIMIT = 10
+
+export type TaskUploadProgress = { done: number; total: number }
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (size <= 0 || items.length === 0) return []
+  const batches: T[][] = []
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size))
+  }
+  return batches
+}
+
 /**
- * 保存任务图片：有 sourcePath 的批量走主进程复制；无路径的逐张读入并单独 IPC，避免 Promise.all + 超大 protobuf 导致进程闪退。
+ * 保存任务图片：有 sourcePath 的分批走主进程复制；无路径的逐张读入并单独 IPC，避免超大 protobuf 导致进程闪退。
  */
 export async function saveTaskUploadCandidates(payload: {
   projectId: string
   taskId: string
   subset: string
   files: TaskUploadCandidate[]
-}): Promise<{ errorMessage: string; savedPaths: string[] }> {
+  onProgress?: (progress: TaskUploadProgress) => void
+}): Promise<{ errorMessage: string; savedCount: number }> {
   const withPath = payload.files.filter((f) => f.sourcePath.trim())
   const withoutPath = payload.files.filter((f) => !f.sourcePath.trim() && f.file)
+  const total = withPath.length + withoutPath.length
+  let savedCount = 0
 
-  const savedPaths: string[] = []
+  const report = () => payload.onProgress?.({ done: savedCount, total })
 
-  if (withPath.length > 0) {
+  for (const batch of chunkArray(withPath, TASK_UPLOAD_BATCH_SIZE)) {
     const result = await saveTaskFiles({
       projectId: payload.projectId,
       taskId: payload.taskId,
       subset: payload.subset,
-      files: withPath.map((item) => ({
+      files: batch.map((item) => ({
         sourcePath: item.sourcePath.trim(),
         fileName: item.name || fileNameFromPath(item.sourcePath),
       })),
     })
     if (result.errorMessage) {
-      return { errorMessage: result.errorMessage, savedPaths }
+      return { errorMessage: result.errorMessage, savedCount }
     }
-    savedPaths.push(...(result.savedPaths ?? []))
+    savedCount += (result.savedPaths ?? []).length
+    report()
   }
 
   for (const item of withoutPath) {
@@ -167,7 +188,7 @@ export async function saveTaskUploadCandidates(payload: {
     } catch (e) {
       return {
         errorMessage: `读取「${item.name}」失败：${e instanceof Error ? e.message : String(e)}`,
-        savedPaths,
+        savedCount,
       }
     }
     const result = await saveTaskFiles({
@@ -177,14 +198,15 @@ export async function saveTaskUploadCandidates(payload: {
       files: [{ sourcePath: "", fileName: item.name, content }],
     })
     if (result.errorMessage) {
-      return { errorMessage: result.errorMessage, savedPaths }
+      return { errorMessage: result.errorMessage, savedCount }
     }
-    savedPaths.push(...(result.savedPaths ?? []))
+    savedCount += (result.savedPaths ?? []).length
+    report()
   }
 
-  if (payload.files.length > 0 && savedPaths.length === 0) {
-    return { errorMessage: "没有可保存的有效文件。", savedPaths: [] }
+  if (payload.files.length > 0 && savedCount === 0) {
+    return { errorMessage: "没有可保存的有效文件。", savedCount: 0 }
   }
 
-  return { errorMessage: "", savedPaths }
+  return { errorMessage: "", savedCount }
 }

@@ -6,6 +6,7 @@ import {
   candidatesFromBrowserFiles,
   pickTaskUploadFilesViaDialog,
   saveTaskUploadCandidates,
+  TASK_UPLOAD_PREVIEW_LIMIT,
   type TaskUploadCandidate,
 } from "@/lib/task-file-upload"
 import { ArrowLeft, Upload } from "lucide-react"
@@ -29,6 +30,7 @@ export default function ProjectTaskAppendImagesPage() {
   const [pathHint, setPathHint] = useState<string | null>(null)
   const [dragActive, setDragActive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const [task, setTask] = useState<TaskItem | undefined>(undefined)
@@ -106,12 +108,14 @@ export default function ProjectTaskAppendImagesPage() {
     if (!projectId || !taskId || !task || !canSubmit || submitting) return
     setSubmitting(true)
     setErrorMessage(null)
+    setUploadProgress({ done: 0, total: files.length })
     try {
       const result = await saveTaskUploadCandidates({
         projectId,
         taskId,
         subset: task.subset,
         files,
+        onProgress: setUploadProgress,
       })
       if (result.errorMessage) {
         setErrorMessage(`上传文件失败：${result.errorMessage}`)
@@ -124,6 +128,7 @@ export default function ProjectTaskAppendImagesPage() {
       setErrorMessage(`提交失败：${message}`)
     } finally {
       setSubmitting(false)
+      setUploadProgress(null)
     }
   }
 
@@ -199,7 +204,7 @@ export default function ProjectTaskAppendImagesPage() {
             {pathHint ? <p className="text-xs text-amber-600 dark:text-amber-400">{pathHint}</p> : null}
             {files.length > 0 ? (
               <ul className="max-h-40 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
-                {files.map((item) => (
+                {files.slice(0, TASK_UPLOAD_PREVIEW_LIMIT).map((item) => (
                   <li key={item.id} className="flex items-center justify-between gap-2">
                     <span className="truncate text-muted-foreground">{item.name}</span>
                     <Button
@@ -213,6 +218,11 @@ export default function ProjectTaskAppendImagesPage() {
                     </Button>
                   </li>
                 ))}
+                {files.length > TASK_UPLOAD_PREVIEW_LIMIT ? (
+                  <li className="pt-1 text-muted-foreground">
+                    … 另有 {files.length - TASK_UPLOAD_PREVIEW_LIMIT} 张未列出（共 {files.length} 张）
+                  </li>
+                ) : null}
               </ul>
             ) : null}
           </div>
@@ -221,7 +231,11 @@ export default function ProjectTaskAppendImagesPage() {
 
           <div className="flex flex-wrap gap-2">
             <Button type="button" onClick={() => void handleSubmit()} disabled={!canSubmit || submitting || !task}>
-              {submitting ? "提交中..." : "提交"}
+              {submitting && uploadProgress
+                ? `上传中 ${uploadProgress.done}/${uploadProgress.total}…`
+                : submitting
+                  ? "提交中..."
+                  : "提交"}
             </Button>
             <Button type="button" variant="outline" asChild>
               <Link to={`/projects/${projectId}`}>取消</Link>

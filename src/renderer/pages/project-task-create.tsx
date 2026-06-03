@@ -9,6 +9,7 @@ import {
   pickTaskUploadFilesViaDialog,
   saveTaskUploadCandidates,
   splitTaskUploadPaths,
+  TASK_UPLOAD_PREVIEW_LIMIT,
   type TaskUploadCandidate,
 } from "@/lib/task-file-upload"
 import { ArrowLeft, Upload } from "lucide-react"
@@ -45,6 +46,7 @@ export default function ProjectTaskCreatePage() {
   )
   const [importSummary, setImportSummary] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [copyErrorLabel, setCopyErrorLabel] = useState("复制错误详情")
 
@@ -160,6 +162,7 @@ export default function ProjectTaskCreatePage() {
     setSubmitting(true)
     setErrorMessage(null)
     setImportSummary("")
+    setUploadProgress(null)
     let pendingTaskId = ""
     let importedAnyImage = false
     try {
@@ -173,19 +176,21 @@ export default function ProjectTaskCreatePage() {
       const summaryParts: string[] = []
 
       if (imageFiles.length > 0) {
+        setUploadProgress({ done: 0, total: imageFiles.length })
         const saveResult = await saveTaskUploadCandidates({
           projectId,
           taskId,
           subset: subset.trim(),
           files: imageFiles,
+          onProgress: setUploadProgress,
         })
         if (saveResult.errorMessage) {
           setErrorMessage(`上传图片失败：${saveResult.errorMessage}`)
           return
         }
-        totalImageCount += saveResult.savedPaths.length
-        importedAnyImage = importedAnyImage || saveResult.savedPaths.length > 0
-        summaryParts.push(`上传图片 ${saveResult.savedPaths.length} 张`)
+        totalImageCount += saveResult.savedCount
+        importedAnyImage = importedAnyImage || saveResult.savedCount > 0
+        summaryParts.push(`上传图片 ${saveResult.savedCount} 张`)
       }
 
       for (const zipPath of imageZipPaths) {
@@ -227,13 +232,13 @@ export default function ProjectTaskCreatePage() {
         setImportSummary(summaryParts.join("；"))
       }
 
-      const task = await createTask(projectId, {
+      await createTask(projectId, {
         id: taskId,
         name: name.trim(),
         subset: subset.trim(),
         fileCount: totalImageCount,
       })
-      navigate(`/projects/${projectId}/tasks/${task.id}`, { replace: true })
+      navigate(`/projects/${projectId}`, { replace: true })
     } catch (error) {
       if (projectId && pendingTaskId && importedAnyImage) {
         const rollback = await deleteTaskData({ projectId, taskId: pendingTaskId })
@@ -246,6 +251,7 @@ export default function ProjectTaskCreatePage() {
       setErrorMessage(`提交失败：${message}`)
     } finally {
       setSubmitting(false)
+      setUploadProgress(null)
     }
   }
 
@@ -366,7 +372,7 @@ export default function ProjectTaskCreatePage() {
               <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
               <p className="mt-2 text-sm text-foreground">支持直接上传图片文件，或导入仅包含图片的 ZIP</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                若系统对话框选择中文文件名出现乱码，请用“浏览器选图（兼容中文名）”。
+                大批量（如 500 张）请优先用「选择图片文件」或打包为 ZIP；中文文件名乱码时再用「浏览器选图」。
               </p>
             </div>
             <input
@@ -391,7 +397,7 @@ export default function ProjectTaskCreatePage() {
             />
             {imageFiles.length > 0 ? (
               <ul className="max-h-28 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
-                {imageFiles.map((item) => (
+                {imageFiles.slice(0, TASK_UPLOAD_PREVIEW_LIMIT).map((item) => (
                   <li key={item.id} className="flex items-center justify-between gap-2">
                     <span className="truncate text-muted-foreground" title={item.sourcePath || item.name}>
                       {item.name}
@@ -407,6 +413,11 @@ export default function ProjectTaskCreatePage() {
                     </Button>
                   </li>
                 ))}
+                {imageFiles.length > TASK_UPLOAD_PREVIEW_LIMIT ? (
+                  <li className="pt-1 text-muted-foreground">
+                    … 另有 {imageFiles.length - TASK_UPLOAD_PREVIEW_LIMIT} 张未列出（共 {imageFiles.length} 张）
+                  </li>
+                ) : null}
               </ul>
             ) : null}
             {imageZipPaths.length > 0 ? (
@@ -506,9 +517,13 @@ export default function ProjectTaskCreatePage() {
             </div>
           ) : null}
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button type="button" onClick={() => void handleCreate()} disabled={!canCreate || submitting}>
-              {submitting ? "提交中..." : "提交"}
+              {submitting && uploadProgress
+                ? `上传中 ${uploadProgress.done}/${uploadProgress.total}…`
+                : submitting
+                  ? "提交中..."
+                  : "提交"}
             </Button>
             <Button type="button" variant="outline" asChild>
               <Link to={`/projects/${projectId}`}>取消</Link>
