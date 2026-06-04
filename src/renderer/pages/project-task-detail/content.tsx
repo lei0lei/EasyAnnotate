@@ -378,7 +378,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     taskName,
     currentFile,
     currentFileName,
-    progressText,
+    totalFileCount,
+    currentImageOneBased,
     imagePathCandidates,
     annotationLabelOptionsPlain,
     annotationLabelOptionsSkeleton,
@@ -458,7 +459,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     handleRectPickerCancel()
   }, [handleRectPickerCancel])
 
-  const { reloadTaskFiles, handleImageDecodeError } = useTaskBootstrap({
+  const { reloadTaskFiles, handleImageDecodeError, ensureFilesLoadedThroughIndex } = useTaskBootstrap({
     projectId,
     taskId,
     currentIndex,
@@ -1746,9 +1747,11 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   })
   const taskSessionController = useTaskSessionController({
     filesLength: files.length,
+    totalFileCount,
     currentIndex,
     currentFileId: taskSessionState.currentFileId,
     setCurrentIndex,
+    ensureFilesLoadedThroughIndex,
     deleteCurrentFile: handleDeleteCurrentImage,
     deleteCurrentAnnotation: handleDeleteCurrentAnnotation,
   })
@@ -1785,7 +1788,9 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     canGoPrevImage: taskSessionController.canGoPrev,
     canGoNextImage: taskSessionController.canGoNext,
     goPrevImage: taskSessionController.prevFile,
-    goNextImage: taskSessionController.nextFile,
+    goNextImage: () => {
+      void taskSessionController.nextFile()
+    },
     canRepeatNewAnnotation: annotationHabitPrimed,
     repeatNewAnnotation,
     dismissAiToolUi: dismissAiToolUiFromShortcut,
@@ -2052,11 +2057,15 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
         projectId={projectId}
         taskName={taskName}
         currentFileName={currentFileName}
-        progressText={progressText}
+        currentImageOneBased={currentImageOneBased}
+        totalFileCount={totalFileCount}
         canGoPrev={taskSessionController.canGoPrev}
         canGoNext={taskSessionController.canGoNext}
         onPrevFile={taskSessionController.prevFile}
-        onNextFile={taskSessionController.nextFile}
+        onNextFile={() => {
+          void taskSessionController.nextFile()
+        }}
+        onJumpToImage={taskSessionController.jumpToImageOneBased}
         onDownloadCurrentImage={handleDownloadCurrentImage}
         onDeleteCurrentAnnotation={taskSessionController.deleteCurrentAnnotation}
         onDeleteCurrentImage={taskSessionController.deleteCurrentFile}

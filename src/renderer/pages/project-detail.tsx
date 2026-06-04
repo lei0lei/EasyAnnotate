@@ -6,18 +6,6 @@ import {
 } from "@/components/task-yolo-auto-annotate-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { listAnnotationsByProject } from "@/lib/annotation-db-storage"
-import {
-  removeShapesWithDeletedLabelsFromProject,
-  removedTagNamesSince,
-} from "@/lib/project-tag-annotation-cleanup"
-import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
-import { removeLegacyExportVersionsStorageKey } from "@/lib/project-export-storage"
-import { deleteTask, formatTaskTime, loadTasks, persistTasks, removeLegacyTasksStorageKey, type TaskItem } from "@/lib/project-tasks-storage"
-import {
-  runYoloBatchAutoAnnotate,
-  type YoloAutoAnnotateProgress,
-} from "@/lib/yolo-batch-auto-annotate"
 import {
   deleteProject,
   deleteTaskAnnotations,
@@ -28,6 +16,17 @@ import {
   type ProjectTag,
   updateProject,
 } from "@/lib/projects-api"
+import {
+  removeShapesWithDeletedLabelsFromProject,
+  removedTagNamesSince,
+} from "@/lib/project-tag-annotation-cleanup"
+import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
+import { removeLegacyExportVersionsStorageKey } from "@/lib/project-export-storage"
+import { deleteTask, formatTaskTime, loadTasks, persistTasks, removeLegacyTasksStorageKey, updateTaskAnnotatedFileCount, type TaskItem } from "@/lib/project-tasks-storage"
+import {
+  runYoloBatchAutoAnnotate,
+  type YoloAutoAnnotateProgress,
+} from "@/lib/yolo-batch-auto-annotate"
 import { cn } from "@/lib/utils"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
@@ -38,6 +37,7 @@ import {
   Clock3,
   Download,
   FolderOpen,
+  Loader2,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -48,7 +48,11 @@ import {
   X,
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom"
+import {
+  resolveProjectBootstrapDelayMs,
+  type ProjectDetailNavState,
+} from "@/lib/project-page-bootstrap"
 
 function normalizeColor(raw: string): string {
   const value = raw.trim().toLowerCase()
@@ -142,19 +146,38 @@ function loadSavedTaskThumbnailPaths(): Record<string, string> {
   }
 }
 
-function extractTaskIdFromImagePath(imagePath: string): string | undefined {
-  const normalized = imagePath.replace(/\\/g, "/")
-  const marker = "/data/tasks/"
-  const markerIndex = normalized.indexOf(marker)
-  if (markerIndex < 0) return undefined
-  const rest = normalized.slice(markerIndex + marker.length)
-  const [taskId] = rest.split("/")
-  const cleaned = taskId?.trim()
-  return cleaned ? cleaned : undefined
+function resolveTaskAnnotatedImageCount(task: TaskItem): number {
+  return typeof task.annotatedFileCount === "number" ? Math.max(0, task.annotatedFileCount) : 0
+}
+
+function TaskBoardSkeleton() {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-label="任务列表加载中">
+      <p className="flex items-center justify-center gap-2 py-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+        加载任务列表…
+      </p>
+      {[0, 1, 2].map((key) => (
+        <div
+          key={key}
+          className="flex animate-pulse flex-col gap-3 rounded-xl border-2 border-border bg-card p-3 sm:flex-row sm:items-center"
+        >
+          <div className="h-20 w-full shrink-0 rounded-md bg-muted/60 sm:w-32" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="h-4 w-40 rounded bg-muted/60" />
+            <div className="h-3 w-28 rounded bg-muted/50" />
+            <div className="h-3 w-32 rounded bg-muted/50" />
+          </div>
+          <div className="h-8 w-20 shrink-0 rounded bg-muted/50" />
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export default function ProjectDetailPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { projectId } = useParams<{ projectId: string }>()
   const [project, setProject] = useState<ProjectItem | undefined>(undefined)
   const [loadingProject, setLoadingProject] = useState(false)
@@ -170,10 +193,12 @@ export default function ProjectDetailPage() {
   const [taskPage, setTaskPage] = useState(0)
   const [taskSortMode, setTaskSortMode] = useState<TaskSortMode>("time")
   const [taskDeleteTarget, setTaskDeleteTarget] = useState<TaskItem | null>(null)
+  const [deletingTask, setDeletingTask] = useState(false)
+  const [taskDeleteProgress, setTaskDeleteProgress] = useState(0)
+  const [taskDeleteMessage, setTaskDeleteMessage] = useState("")
   const [taskClearAnnotationsTarget, setTaskClearAnnotationsTarget] = useState<TaskItem | null>(null)
   const [clearingTaskAnnotations, setClearingTaskAnnotations] = useState(false)
-  const [annotationStatsTick, setAnnotationStatsTick] = useState(0)
-  const [annotatedCountByTaskId, setAnnotatedCountByTaskId] = useState<Record<string, number>>({})
+  const [pageBootstrapReady, setPageBootstrapReady] = useState(false)
   const [editingTaskNameId, setEditingTaskNameId] = useState<string | null>(null)
   const [editingTaskNameValue, setEditingTaskNameValue] = useState("")
   const [editingTaskSubsetId, setEditingTaskSubsetId] = useState<string | null>(null)
@@ -205,77 +230,49 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     let alive = true
-    if (!projectId) return
-    setLoadingProject(true)
-    void getProject(projectId)
-      .then((item) => {
-        if (!alive) return
-        setProject(item)
-        setName(item?.name ?? "")
-        setProjectInfo(item?.projectInfo ?? "")
-        setTags(normalizeTags(item?.tags ?? []))
-      })
-      .finally(() => {
-        if (!alive) return
-        setLoadingProject(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [projectId])
-
-  useEffect(() => {
     if (!projectId) {
+      setPageBootstrapReady(false)
+      setProject(undefined)
       setTasks([])
+      setLoadingProject(false)
       return
     }
-    let alive = true
-    void loadTasks(projectId)
-      .then((localTasks) => {
-        if (!alive) return
-        setTasks(localTasks)
-      })
-      .catch(() => {
-        if (!alive) return
-        setTasks([])
-      })
 
-    return () => {
-      alive = false
-    }
-  }, [projectId])
+    setPageBootstrapReady(false)
+    setLoadingProject(true)
 
-  useEffect(() => {
-    let alive = true
-    if (!projectId) {
-      setAnnotatedCountByTaskId({})
-      return
-    }
-    void listAnnotationsByProject(projectId)
-      .then((records) => {
-        if (!alive) return
-        const grouped = new Map<string, Set<string>>()
-        for (const record of records) {
-          const taskId = extractTaskIdFromImagePath(record.imagePath)
-          if (!taskId) continue
-          const existing = grouped.get(taskId) ?? new Set<string>()
-          existing.add(record.imagePath)
-          grouped.set(taskId, existing)
+    const bootstrapDelayMs = resolveProjectBootstrapDelayMs(
+      projectId,
+      location.state as ProjectDetailNavState | null,
+    )
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const [item, localTasks] = await Promise.all([getProject(projectId), loadTasks(projectId)])
+          if (!alive) return
+          setProject(item)
+          setName(item?.name ?? "")
+          setProjectInfo(item?.projectInfo ?? "")
+          setTags(normalizeTags(item?.tags ?? []))
+          setTasks(localTasks)
+          setPageBootstrapReady(true)
+        } catch {
+          if (!alive) return
+          setTasks([])
+          setPageBootstrapReady(true)
+        } finally {
+          if (!alive) return
+          setLoadingProject(false)
         }
-        const next: Record<string, number> = {}
-        grouped.forEach((paths, taskId) => {
-          next[taskId] = paths.size
-        })
-        setAnnotatedCountByTaskId(next)
-      })
-      .catch(() => {
-        if (!alive) return
-        setAnnotatedCountByTaskId({})
-      })
+      })()
+    }, bootstrapDelayMs)
+
     return () => {
       alive = false
+      window.clearTimeout(timer)
     }
-  }, [projectId, annotationStatsTick])
+  }, [location.key, location.state, projectId])
 
   useEffect(() => {
     return () => {
@@ -345,7 +342,7 @@ export default function ProjectDetailPage() {
         setAutoAnnotateProgressByTaskId((prev) => ({ ...prev, [task.id]: progress }))
         if (progress.phase === "done" || progress.phase === "error" || progress.phase === "cancelled") {
           delete autoAnnotateAbortRef.current[task.id]
-          setAnnotationStatsTick((t) => t + 1)
+          void loadTasks(projectId).then((next) => setTasks(next)).catch(() => undefined)
         }
       },
     }).catch((e) => {
@@ -525,15 +522,35 @@ export default function ProjectDetailPage() {
   }
 
   async function handleDeleteTask() {
-    if (!taskDeleteTarget || !projectId) return
-    const backendResult = await deleteTaskData({ projectId, taskId: taskDeleteTarget.id })
-    if (backendResult.errorMessage) {
+    if (!taskDeleteTarget || !projectId || deletingTask) return
+    setDeletingTask(true)
+    setTaskDeleteProgress(0)
+    setTaskDeleteMessage("正在启动删除…")
+    try {
+      const backendResult = await deleteTaskData(
+        { projectId, taskId: taskDeleteTarget.id },
+        {
+          onProgress: (progress, message) => {
+            setTaskDeleteProgress(Math.max(0, Math.min(100, progress)))
+            setTaskDeleteMessage(message || `删除进度 ${progress}%`)
+          },
+        },
+      )
+      if (backendResult.errorMessage) {
+        flashSaveStatus("error")
+        return
+      }
+      await deleteTask(projectId, taskDeleteTarget.id)
+      setTasks(await loadTasks(projectId))
+      setTaskDeleteTarget(null)
+      flashSaveStatus("success")
+    } catch {
       flashSaveStatus("error")
-      return
+    } finally {
+      setDeletingTask(false)
+      setTaskDeleteProgress(0)
+      setTaskDeleteMessage("")
     }
-    await deleteTask(projectId, taskDeleteTarget.id)
-    setTasks(await loadTasks(projectId))
-    setTaskDeleteTarget(null)
   }
 
   async function handleClearTaskAnnotations() {
@@ -546,7 +563,8 @@ export default function ProjectDetailPage() {
         return
       }
       setTaskClearAnnotationsTarget(null)
-      setAnnotationStatsTick((tick) => tick + 1)
+      await updateTaskAnnotatedFileCount(projectId, taskClearAnnotationsTarget.id, 0)
+      setTasks(await loadTasks(projectId))
       flashSaveStatus("success")
     } catch {
       flashSaveStatus("error")
@@ -845,7 +863,9 @@ export default function ProjectDetailPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          {tasks.length === 0 ? (
+          {!pageBootstrapReady || loadingProject ? (
+            <TaskBoardSkeleton />
+          ) : tasks.length === 0 ? (
             <p className="rounded-lg border-2 border-dashed border-border/70 bg-muted/20 px-4 py-8 text-center text-sm text-muted-foreground">
               还没有任务，点击右上角“创建任务”开始。
             </p>
@@ -911,7 +931,7 @@ export default function ProjectDetailPage() {
                         </div>
                         {(() => {
                           const totalImages = Math.max(0, task.fileCount)
-                          const annotatedImages = Math.max(0, annotatedCountByTaskId[task.id] ?? 0)
+                          const annotatedImages = resolveTaskAnnotatedImageCount(task)
                           const safeAnnotated = Math.min(annotatedImages, totalImages || annotatedImages)
                           return <span className="shrink-0 text-xs text-muted-foreground">{safeAnnotated}/{totalImages}</span>
                         })()}
@@ -1044,7 +1064,7 @@ export default function ProjectDetailPage() {
               ))}
             </ul>
           )}
-          {tasks.length > 0 ? (
+          {pageBootstrapReady && tasks.length > 0 ? (
             <div className="flex flex-col items-stretch justify-between gap-3 rounded-lg border-2 border-border/60 bg-muted/20 px-3 py-2 sm:flex-row sm:items-center">
               <p className="text-center text-xs text-muted-foreground sm:text-left">
                 共 {tasks.length} 个任务 · 每页 {TASK_PAGE_SIZE} 个
@@ -1114,12 +1134,37 @@ export default function ProjectDetailPage() {
                 确认删除任务 “{taskDeleteTarget.name}”？该操作不可撤销。
               </CardDescription>
             </CardHeader>
-            <CardContent className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setTaskDeleteTarget(null)}>
+            {deletingTask ? (
+              <CardContent className="space-y-3">
+                <p className="text-sm text-muted-foreground">{taskDeleteMessage || "正在删除…"}</p>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-destructive transition-[width] duration-300"
+                    style={{ width: `${taskDeleteProgress}%` }}
+                    role="progressbar"
+                    aria-valuenow={Math.round(taskDeleteProgress)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  />
+                </div>
+              </CardContent>
+            ) : null}
+            <CardContent className={deletingTask ? "flex justify-end gap-2 pt-0" : "flex justify-end gap-2"}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setTaskDeleteTarget(null)}
+                disabled={deletingTask}
+              >
                 取消
               </Button>
-              <Button type="button" variant="destructive" onClick={() => void handleDeleteTask()}>
-                确认删除
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => void handleDeleteTask()}
+                disabled={deletingTask}
+              >
+                {deletingTask ? "删除中…" : "确认删除"}
               </Button>
             </CardContent>
           </Card>

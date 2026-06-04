@@ -1,15 +1,18 @@
-import { spawn } from "node:child_process"
+import { execFileSync, spawn, type ChildProcess } from "node:child_process"
+import { randomUUID } from "node:crypto"
+import { createReadStream, createWriteStream } from "node:fs"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { randomUUID } from "node:crypto"
+import { pipeline } from "node:stream/promises"
+import { fileURLToPath } from "node:url"
 import { normalizeXAnyLabelDoc } from "../renderer/lib/xanylabeling-format"
 import type { ProjectRecord } from "./project-storage"
 
 type ExportFormat = "coco" | "voc" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "yolo-pose" | "xanylabeling"
 type ExportStatus = "queued" | "running" | "success" | "failed"
 
-type ExportJobRecord = {
+export type ExportJobRecord = {
   id: string
   projectId: string
   taskId: string
@@ -26,7 +29,7 @@ type ExportJobRecord = {
   updatedAt: string
 }
 
-type ExportRequest = {
+export type ExportRequest = {
   project: ProjectRecord
   projectId: string
   taskId?: string
@@ -40,6 +43,8 @@ type ExportRequest = {
   /** 导出目标：文件夹路径，或（compressToZip 时）ZIP 文件路径 */
   outputPath: string
   taskNameById: Record<string, string>
+  /** 来自任务 registry 的 fileCount 之和，用于进度条；不再预扫磁盘 */
+  estimatedImageCount: number
 }
 
 type XAnyShape = {
@@ -79,10 +84,104 @@ type ExportWorkerTraceEvent = {
 
 const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
 const exportJobs = new Map<string, ExportJobRecord>()
+const activeExportChildren = new Map<string, { child: ChildProcess; pollTimer: ReturnType<typeof setInterval> }>()
+const exportProgressThrottle = new Map<string, number>()
 const MAX_IMAGE_DIMENSION = 65535
 const MAX_YOLO_SEGMENT_POINTS = 120
 const EXPORT_LOG_SEPARATOR = "\n---EXPORT_LOG---\n"
-const MAX_EXPORT_LOG_LINES = 600
+const MAX_EXPORT_LOG_LINES = 80
+const EXPORT_PROGRESS_MIN_INTERVAL_MS = 800
+const MAX_ANNOTATION_JSON_BYTES = 8 * 1024 * 1024
+const MAX_SHAPES_PER_IMAGE = 800
+
+type ExportSink = {
+  writeImageFile(relPath: string, srcPath: string): Promise<void>
+  writeTextFile(relPath: string, content: string): Promise<void>
+  finalize(): Promise<void>
+}
+
+function writeExportStage(jobId: string, stage: string): void {
+  try {
+    fs.appendFileSync(path.join(os.tmpdir(), `easyannotate-export-${jobId}.stage.log`), `${new Date().toISOString()} ${stage}\n`, "utf8")
+  } catch {
+    /* ignore */
+  }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+function exportRequestPath(jobId: string): string {
+  return path.join(os.tmpdir(), `ea-export-req-${jobId}.json`)
+}
+
+function exportStatePath(jobId: string): string {
+  return path.join(os.tmpdir(), `ea-export-state-${jobId}.json`)
+}
+
+function isExportChildProcess(): boolean {
+  return process.env.EA_EXPORT_CHILD === "1" && Boolean(process.env.EA_EXPORT_JOB_ID?.trim())
+}
+
+function writeExportStateFile(jobId: string, job: ExportJobRecord): void {
+  try {
+    fs.writeFileSync(exportStatePath(jobId), JSON.stringify(job), "utf8")
+  } catch {
+    /* ignore */
+  }
+}
+
+function readExportStateFile(jobId: string): ExportJobRecord | null {
+  try {
+    const raw = fs.readFileSync(exportStatePath(jobId), "utf8")
+    const parsed = JSON.parse(raw) as ExportJobRecord
+    return parsed && typeof parsed === "object" ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+export function syncExportJobFromStateFile(jobId: string): void {
+  const state = readExportStateFile(jobId)
+  if (!state) return
+  exportJobs.set(jobId, state)
+}
+
+async function copyImageFile(srcPath: string, targetPath: string): Promise<void> {
+  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true })
+  try {
+    await fs.promises.copyFile(srcPath, targetPath)
+    return
+  } catch {
+    await pipeline(createReadStream(srcPath), createWriteStream(targetPath))
+  }
+}
+
+function createFolderExportSink(rootDir: string): ExportSink {
+  return {
+    async writeImageFile(relPath, srcPath) {
+      const target = path.join(rootDir, relPath)
+      await copyImageFile(srcPath, target)
+    },
+    async writeTextFile(relPath, content) {
+      const target = path.join(rootDir, relPath)
+      await fs.promises.mkdir(path.dirname(target), { recursive: true })
+      await fs.promises.writeFile(target, content, "utf8")
+    },
+    async finalize() {
+      /* no-op */
+    },
+  }
+}
+
+function isYoloExportFormat(format: ExportFormat): boolean {
+  return format === "yolo-detect" || format === "yolo-obb" || format === "yolo-segment" || format === "yolo-pose"
+}
+
+function isStreamingExportFormat(format: ExportFormat): boolean {
+  return isYoloExportFormat(format) || format === "xanylabeling"
+}
 
 function appendTraceLine(filePath: string, event: ExportWorkerTraceEvent): void {
   try {
@@ -104,13 +203,9 @@ function sanitizeSegment(value: string): string {
   return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
 }
 
-function buildUniqueTaskFolderById(
-  allItems: ExportImageItem[],
-  taskNameById: Record<string, string>,
-): Map<string, string> {
+function buildUniqueTaskFolderMap(taskIds: string[], taskNameById: Record<string, string>): Map<string, string> {
   const out = new Map<string, string>()
   const used = new Set<string>()
-  const taskIds = [...new Set(allItems.map((item) => item.taskId))]
   for (const taskId of taskIds) {
     const preferred = taskNameById[taskId]?.trim() || taskId
     const base = sanitizeSegment(preferred)
@@ -124,6 +219,13 @@ function buildUniqueTaskFolderById(
     out.set(taskId, candidate)
   }
   return out
+}
+
+function buildUniqueTaskFolderById(
+  allItems: ExportImageItem[],
+  taskNameById: Record<string, string>,
+): Map<string, string> {
+  return buildUniqueTaskFolderMap([...new Set(allItems.map((item) => item.taskId))], taskNameById)
 }
 
 function sanitizeExportZipBaseName(versionName: string): string {
@@ -290,6 +392,20 @@ function composeJobMessage(statusMessage: string, logLines: string[]): string {
 function updateJob(jobId: string, patch: Partial<ExportJobRecord>): void {
   const current = exportJobs.get(jobId)
   if (!current) return
+
+  const terminal = patch.status === "success" || patch.status === "failed"
+  const progressOnly =
+    typeof patch.progress === "number" &&
+    patch.status === undefined &&
+    typeof patch.message !== "string" &&
+    typeof patch.statusMessage !== "string"
+  if (progressOnly && !terminal) {
+    const now = Date.now()
+    const last = exportProgressThrottle.get(jobId) ?? 0
+    if (now - last < EXPORT_PROGRESS_MIN_INTERVAL_MS) return
+    exportProgressThrottle.set(jobId, now)
+  }
+
   const nextStatusMessage =
     typeof patch.statusMessage === "string"
       ? patch.statusMessage
@@ -297,14 +413,19 @@ function updateJob(jobId: string, patch: Partial<ExportJobRecord>): void {
         ? patch.message
         : (current.statusMessage || current.message || "")
   const nextLogLines = Array.isArray(patch.logLines) ? patch.logLines : Array.isArray(current.logLines) ? current.logLines : []
-  exportJobs.set(jobId, {
+  const next: ExportJobRecord = {
     ...current,
     ...patch,
     statusMessage: nextStatusMessage,
     logLines: nextLogLines,
     message: composeJobMessage(nextStatusMessage, nextLogLines),
     updatedAt: nowIso(),
-  })
+  }
+  exportJobs.set(jobId, next)
+
+  if (isExportChildProcess() && process.env.EA_EXPORT_JOB_ID === jobId) {
+    writeExportStateFile(jobId, next)
+  }
 }
 
 function appendJobLog(jobId: string, line: string): void {
@@ -313,13 +434,12 @@ function appendJobLog(jobId: string, line: string): void {
   const text = line.trim()
   if (!text) return
   const baseLines = Array.isArray(current.logLines) ? current.logLines : []
+  if (baseLines.length > 0 && baseLines[baseLines.length - 1] === text) return
   const merged = [...baseLines, text]
   const logLines = merged.length > MAX_EXPORT_LOG_LINES ? merged.slice(merged.length - MAX_EXPORT_LOG_LINES) : merged
-  exportJobs.set(jobId, {
-    ...current,
+  updateJob(jobId, {
     logLines,
-    message: composeJobMessage(current.statusMessage || current.message || "", logLines),
-    updatedAt: nowIso(),
+    statusMessage: current.statusMessage || current.message || "",
   })
 }
 
@@ -399,6 +519,116 @@ function hashString(input: string): number {
     hash |= 0
   }
   return Math.abs(hash)
+}
+
+function resolveExportTaskIds(req: ExportRequest): string[] {
+  if (req.taskId) return [req.taskId]
+  return Object.keys(req.taskNameById).filter((id) => id.trim().length > 0)
+}
+
+function pickSplitByProbabilitySeeded(
+  filePath: string,
+  jobId: string,
+  trainBoundary: number,
+  valBoundary: number,
+): "train" | "val" | "test" {
+  const bucket = hashString(`${jobId}:${filePath}`) % 10_000
+  const r = bucket / 100
+  if (r < trainBoundary) return "train"
+  if (r < valBoundary) return "val"
+  return "test"
+}
+
+function prepareYoloExportItem(
+  item: ExportImageItem,
+  options: {
+    keepProjectStructure: boolean
+    isProjectExport: boolean
+    taskFolderById?: Map<string, string>
+    jobId: string
+    trainBoundary: number
+    valBoundary: number
+  },
+): ExportImageItem {
+  if (options.keepProjectStructure && options.isProjectExport) {
+    return {
+      ...item,
+      subset: options.taskFolderById?.get(item.taskId) ?? sanitizeSegment(item.taskId),
+      relativeWithinSubset: item.relativeWithinTask,
+    }
+  }
+  return {
+    ...item,
+    subset: pickSplitByProbabilitySeeded(item.filePath, options.jobId, options.trainBoundary, options.valBoundary),
+  }
+}
+
+async function* iterateTaskImagesAsync(taskRootDir: string, taskId: string): AsyncGenerator<ExportImageItem> {
+  if (!fs.existsSync(taskRootDir)) return
+  const stack = [taskRootDir]
+  while (stack.length > 0) {
+    const dir = stack.pop()!
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const absPath = path.join(dir, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        stack.push(absPath)
+        continue
+      }
+      const ext = path.extname(entry.name).toLowerCase()
+      if (!IMAGE_EXTS.has(ext)) continue
+      const relative = path.relative(taskRootDir, absPath)
+      const segments = relative.split(path.sep).filter(Boolean)
+      yield {
+        taskId,
+        subset: segments.length > 1 ? segments[0] : "default",
+        filePath: absPath,
+        fileName: path.basename(absPath),
+        relativeWithinTask: relative,
+        relativeWithinSubset: segments.length > 1 ? segments.slice(1).join(path.sep) : segments[0] ?? path.basename(absPath),
+        subsetName: segments.length > 1 ? segments[0] : "default",
+      }
+    }
+    await yieldToEventLoop()
+  }
+}
+
+async function readAnnotationLite(imagePath: string): Promise<XAnyDoc> {
+  const jsonPath = resolveAnnotationJsonPath(imagePath)
+  try {
+    const stat = await fs.promises.stat(jsonPath)
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_ANNOTATION_JSON_BYTES) return {}
+    const raw = await fs.promises.readFile(jsonPath, "utf8")
+    if (!raw.trim()) return {}
+    const parsed = JSON.parse(raw) as XAnyDoc
+    if (!parsed || typeof parsed !== "object") return {}
+    const shapes = Array.isArray(parsed.shapes) ? parsed.shapes.slice(0, MAX_SHAPES_PER_IMAGE) : []
+    return {
+      imageWidth: normalizeImageDimension(parsed.imageWidth, 1),
+      imageHeight: normalizeImageDimension(parsed.imageHeight, 1),
+      shapes,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function classNamesFromProjectTags(project: ProjectRecord): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const tag of project.tags) {
+    const name = (tag.name || "").trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    out.push(name)
+  }
+  return out
 }
 
 function splitByRatio(items: ExportImageItem[], trainBoundary: number, valBoundary: number): Map<string, ExportImageItem[]> {
@@ -601,7 +831,6 @@ async function toYoloSegmentLine(
   classId: number,
   width: number,
   height: number,
-  trace?: (stage: string, detail?: string) => void,
 ): Promise<string | undefined> {
   if (!shouldExportAsYoloSegment(shape)) return undefined
   const points = shapePoints(shape)
@@ -609,7 +838,6 @@ async function toYoloSegmentLine(
   const poly = safePoints.length >= 3 ? safePoints : undefined
   const bbox = bboxFromShape(shape, width, height)
   if (!poly && !bbox) return undefined
-  trace?.(poly ? "fallback_points_polygon" : "fallback_bbox_polygon")
   const output = poly ?? [
     [bbox!.x, bbox!.y],
     [bbox!.x + bbox!.w, bbox!.y],
@@ -637,31 +865,19 @@ type YoloPoseLayout = {
   kptNamesByClassIndex: string[][]
 }
 
-function scanMaxSkeletonKpts(allItems: ExportImageItem[]): number {
-  let max = 0
-  for (const item of allItems) {
-    const doc = safeReadAnnotationDoc(item.filePath)
-    for (const shape of doc.shapes ?? []) {
-      if (!shouldExportAsYoloPose(shape)) continue
-      const n = shapePoints(shape).length
-      if (n > max) max = n
-    }
-  }
-  return max
-}
-
-function buildYoloPoseLayout(project: ProjectRecord, classNames: string[], allItems: ExportImageItem[]): YoloPoseLayout {
+function buildYoloPoseLayoutFromProject(project: ProjectRecord, classNames: string[]): YoloPoseLayout {
   const kptCountByLabel = new Map<string, number>()
+  let tagMax = 0
   for (const tag of project.tags) {
     const name = tag.name.trim()
     if (!name) continue
     if (tag.kind === "skeleton" && tag.skeletonTemplate?.points?.length) {
-      kptCountByLabel.set(name, tag.skeletonTemplate.points.length)
+      const count = tag.skeletonTemplate.points.length
+      kptCountByLabel.set(name, count)
+      tagMax = Math.max(tagMax, count)
     }
   }
-  const tagMax = Math.max(0, ...kptCountByLabel.values())
-  const scanMax = scanMaxSkeletonKpts(allItems)
-  const maxKpts = Math.max(1, tagMax, scanMax)
+  const maxKpts = Math.max(1, tagMax)
 
   const kptNamesByClassIndex = classNames.map((className) => {
     const tag = project.tags.find((t) => t.name.trim() === className && t.kind === "skeleton")
@@ -795,31 +1011,6 @@ function copyImage(imagePath: string, targetPath: string): string {
   return targetPath
 }
 
-function exportAsXAnyLabeling(
-  images: ExportImageItem[],
-  outputDir: string,
-  updateProgress: (done: number, total: number, message: string) => void,
-  logImageDone?: (item: ExportImageItem, elapsedMs: number) => void,
-): void {
-  const total = images.length
-  for (let i = 0; i < images.length; i += 1) {
-    const item = images[i]
-    const startedAt = Date.now()
-    const relPath = path.join(item.subset, item.relativeWithinSubset)
-    const imageTarget = path.join(outputDir, relPath)
-    copyImage(item.filePath, imageTarget)
-
-    const srcJson = resolveAnnotationJsonPath(item.filePath)
-    const targetJson = resolveAnnotationJsonPath(imageTarget)
-    if (fs.existsSync(srcJson)) {
-      ensureDir(path.dirname(targetJson))
-      fs.copyFileSync(srcJson, targetJson)
-    }
-    updateProgress(i + 1, total, `导出 ${item.fileName}`)
-    logImageDone?.(item, Date.now() - startedAt)
-  }
-}
-
 function createJobRecord(req: ExportRequest): ExportJobRecord {
   const now = nowIso()
   return {
@@ -840,8 +1031,8 @@ function createJobRecord(req: ExportRequest): ExportJobRecord {
   }
 }
 
-function writeYoloDataYaml(rootDir: string, classNames: string[], splitNames: string[], options?: { obb?: boolean }): void {
-  const existingSplits = splitNames.filter((name) => fs.existsSync(path.join(rootDir, "images", name)))
+function renderYoloDataYaml(classNames: string[], splitNames: string[], options?: { obb?: boolean }): string {
+  const existingSplits = splitNames.length > 0 ? splitNames : ["train"]
   const yamlLines: string[] = []
   if (options?.obb) {
     yamlLines.push(
@@ -855,17 +1046,16 @@ function writeYoloDataYaml(rootDir: string, classNames: string[], splitNames: st
   for (const split of existingSplits) {
     yamlLines.push(`${split}: images/${split}`)
   }
-  if (existingSplits.length === 0) yamlLines.push("train: images")
   yamlLines.push("names:")
   classNames.forEach((name, index) => {
     yamlLines.push(`  ${index}: "${name.replaceAll('"', '\\"')}"`)
   })
-  fs.writeFileSync(path.join(rootDir, "data.yaml"), `${yamlLines.join("\n")}\n`, "utf8")
+  return `${yamlLines.join("\n")}\n`
 }
 
 /** Ultralytics YOLO Pose 数据集 YAML：https://docs.ultralytics.com/datasets/pose/ */
-function writeYoloDataYamlPose(rootDir: string, classNames: string[], splitNames: string[], layout: YoloPoseLayout): void {
-  const existingSplits = splitNames.filter((name) => fs.existsSync(path.join(rootDir, "images", name)))
+function renderYoloDataYamlPose(classNames: string[], splitNames: string[], layout: YoloPoseLayout): string {
+  const existingSplits = splitNames.length > 0 ? splitNames : ["train"]
   const lines: string[] = [
     "# Ultralytics YOLO Pose — see https://docs.ultralytics.com/datasets/pose/",
     `# kpt_shape [${layout.maxKpts}, 3] = ${layout.maxKpts} keypoints × (x, y, visibility)`,
@@ -877,7 +1067,6 @@ function writeYoloDataYamlPose(rootDir: string, classNames: string[], splitNames
   for (const split of existingSplits) {
     lines.push(`${split}: images/${split}`)
   }
-  if (existingSplits.length === 0) lines.push("train: images")
   lines.push("")
   lines.push(`kpt_shape: [${layout.maxKpts}, 3]`)
   lines.push(`flip_idx: [${Array.from({ length: layout.maxKpts }, (_, i) => i).join(", ")}]`)
@@ -894,85 +1083,326 @@ function writeYoloDataYamlPose(rootDir: string, classNames: string[], splitNames
       lines.push(`    - "${kn.replaceAll('"', '\\"')}"`)
     }
   })
-  fs.writeFileSync(path.join(rootDir, "data.yaml"), `${lines.join("\n")}\n`, "utf8")
+  return `${lines.join("\n")}\n`
 }
 
-async function exportAsYolo(
+async function exportOneYoloImage(
   format: ExportFormat,
-  images: ExportImageItem[],
+  item: ExportImageItem,
   classByName: Map<string, number>,
-  classNames: string[],
-  outputDir: string,
   keepProjectStructure: boolean,
-  updateProgress: (done: number, total: number, message: string) => void,
   poseLayout: YoloPoseLayout | null,
-  traceEvent?: (event: Omit<ExportWorkerTraceEvent, "ts" | "jobId" | "format">) => void,
-  logImageDone?: (item: ExportImageItem, elapsedMs: number) => void,
+  sink: ExportSink,
 ): Promise<void> {
-  const total = images.length
-  const splitSet = new Set<string>()
-  for (let i = 0; i < images.length; i += 1) {
-    const item = images[i]
-    const startedAt = Date.now()
-    const doc = safeReadAnnotationDoc(item.filePath)
-    const width = normalizeImageDimension(doc.imageWidth, 1)
-    const height = normalizeImageDimension(doc.imageHeight, 1)
-    const labels: string[] = []
-    for (let shapeIndex = 0; shapeIndex < (doc.shapes ?? []).length; shapeIndex += 1) {
-      const shape = (doc.shapes ?? [])[shapeIndex]!
-      const label = typeof shape.label === "string" ? shape.label.trim() : ""
-      if (!label) continue
-      const classId = classByName.get(label)
-      if (classId === undefined) continue
-      const line =
-        format === "yolo-detect"
-          ? toYoloDetectLine(shape, classId, width, height)
-          : format === "yolo-obb"
-            ? toYoloObbLine(shape, classId, width, height)
-            : format === "yolo-segment"
-              ? await toYoloSegmentLine(shape, classId, width, height, (stage, detail) =>
-                  traceEvent?.({
-                    stage,
-                    detail,
-                    imagePath: item.filePath,
-                    shapeIndex,
-                    label,
-                    classId,
-                  }),
-                )
-              : format === "yolo-pose" && poseLayout
-                ? toYoloPoseLine(shape, classId, width, height, poseLayout)
-                : undefined
-      if (line) labels.push(line)
+  const relPath = keepProjectStructure ? item.relativeWithinSubset : item.fileName
+  const imageRel = keepProjectStructure
+    ? path.join(item.subset, "images", relPath)
+    : path.join("images", item.subset, relPath)
+  const labelRel = keepProjectStructure
+    ? path.join(item.subset, "labels", `${removeExt(relPath)}.txt`)
+    : path.join("labels", item.subset, `${removeExt(relPath)}.txt`)
+
+  await sink.writeImageFile(imageRel, item.filePath)
+
+  const doc = await readAnnotationLite(item.filePath)
+  const width = normalizeImageDimension(doc.imageWidth, 1)
+  const height = normalizeImageDimension(doc.imageHeight, 1)
+  const labels: string[] = []
+  const shapes = doc.shapes ?? []
+  for (let shapeIndex = 0; shapeIndex < shapes.length; shapeIndex += 1) {
+    const shape = shapes[shapeIndex]!
+    const label = typeof shape.label === "string" ? shape.label.trim() : ""
+    if (!label) continue
+    const classId = classByName.get(label)
+    if (classId === undefined) continue
+    const line =
+      format === "yolo-detect"
+        ? toYoloDetectLine(shape, classId, width, height)
+        : format === "yolo-obb"
+          ? toYoloObbLine(shape, classId, width, height)
+          : format === "yolo-segment"
+            ? await toYoloSegmentLine(shape, classId, width, height)
+            : format === "yolo-pose" && poseLayout
+              ? toYoloPoseLine(shape, classId, width, height, poseLayout)
+              : undefined
+    if (line) labels.push(line)
+    if (shapeIndex > 0 && shapeIndex % 32 === 0) {
+      await yieldToEventLoop()
     }
-    const splitDir = item.subset
-    splitSet.add(item.subset)
-    const relPath = keepProjectStructure ? item.relativeWithinSubset : item.fileName
-    const imageTarget = keepProjectStructure
-      ? path.join(outputDir, splitDir, "images", relPath)
-      : path.join(outputDir, "images", splitDir, relPath)
-    const labelTarget = keepProjectStructure
-      ? path.join(outputDir, splitDir, "labels", `${removeExt(relPath)}.txt`)
-      : path.join(outputDir, "labels", splitDir, `${removeExt(relPath)}.txt`)
-    copyImage(item.filePath, imageTarget)
-    ensureDir(path.dirname(labelTarget))
-    fs.writeFileSync(labelTarget, `${labels.join("\n")}${labels.length ? "\n" : ""}`, "utf8")
-    updateProgress(i + 1, total, `导出 ${item.fileName}`)
-    logImageDone?.(item, Date.now() - startedAt)
   }
-  if (format === "yolo-pose" && poseLayout) {
-    if (!keepProjectStructure) {
-      writeYoloDataYamlPose(outputDir, classNames, [...splitSet], poseLayout)
+  await sink.writeTextFile(labelRel, `${labels.join("\n")}${labels.length ? "\n" : ""}`)
+}
+
+async function exportOneXAnyImage(item: ExportImageItem, sink: ExportSink): Promise<void> {
+  const relPath = path.join(item.subset, item.relativeWithinSubset)
+  await sink.writeImageFile(relPath, item.filePath)
+  const srcJson = resolveAnnotationJsonPath(item.filePath)
+  try {
+    const stat = await fs.promises.stat(srcJson)
+    if (!stat.isFile() || stat.size <= 0) return
+  } catch {
+    return
+  }
+  const parsed = path.parse(relPath)
+  const jsonRel = path.join(parsed.dir, `${parsed.name}.json`)
+  await sink.writeImageFile(jsonRel, srcJson)
+}
+
+async function runYoloExport(job: ExportJobRecord, req: ExportRequest): Promise<void> {
+  writeExportStage(job.id, "enter runYoloExport")
+  updateJob(job.id, { status: "running", progress: 2, message: "正在准备导出任务…" })
+
+  const taskIds = resolveExportTaskIds(req)
+  if (taskIds.length === 0) {
+    updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的任务" })
+    return
+  }
+  writeExportStage(job.id, `taskIds=${taskIds.length}`)
+
+  const tasksRoot = resolveProjectDataRoot(req.project)
+  const estimatedTotal = Math.max(1, req.estimatedImageCount)
+
+  const classNames = classNamesFromProjectTags(req.project)
+  if (classNames.length === 0) {
+    updateJob(job.id, { status: "failed", progress: 100, message: "项目未配置类别标签（请在项目设置中添加 tags）" })
+    return
+  }
+  writeExportStage(job.id, `classNames=${classNames.length}`)
+
+  const classByName = new Map<string, number>(classNames.map((name, index) => [name, index]))
+  const keepProjectStructure = !req.taskId && req.keepProjectStructure
+  const isProjectExport = !req.taskId
+  const taskFolderById = keepProjectStructure ? buildUniqueTaskFolderMap(taskIds, req.taskNameById) : undefined
+  const compressToZip = req.compressToZip === true
+
+  updateJob(job.id, { progress: 4, message: "正在创建输出目录…" })
+  writeExportStage(job.id, "mkdir staging")
+
+  const poseLayout = req.exportFormat === "yolo-pose" ? buildYoloPoseLayoutFromProject(req.project, classNames) : null
+  const stagingDir = compressToZip ? path.join(os.tmpdir(), `easyannotate-export-${job.id}`) : req.outputPath
+  const sink = createFolderExportSink(stagingDir)
+  fs.mkdirSync(stagingDir, { recursive: true })
+  writeExportStage(job.id, `stagingDir=${stagingDir}`)
+
+  const splitSet = new Set<string>()
+  let done = 0
+  const exportProgressCap = compressToZip ? 82 : 99
+  const updateProgress = (message: string) => {
+    const total = Math.max(estimatedTotal, done)
+    const progress = Math.max(5, Math.min(exportProgressCap, Math.floor((done / total) * exportProgressCap)))
+    updateJob(job.id, { progress, message })
+  }
+
+  try {
+    writeExportStage(job.id, "export loop start")
+    updateJob(job.id, { progress: 5, message: "开始导出图片…" })
+    for (const taskId of taskIds) {
+      const taskRoot = path.join(tasksRoot, sanitizeSegment(taskId))
+      writeExportStage(job.id, `task start ${taskId}`)
+      for await (const rawItem of iterateTaskImagesAsync(taskRoot, taskId)) {
+        if (done === 0) writeExportStage(job.id, `first image ${rawItem.filePath}`)
+        const item = prepareYoloExportItem(rawItem, {
+          keepProjectStructure,
+          isProjectExport,
+          taskFolderById,
+          jobId: job.id,
+          trainBoundary: req.trainBoundary,
+          valBoundary: req.valBoundary,
+        })
+        splitSet.add(item.subset)
+        const startedAt = Date.now()
+        try {
+          await exportOneYoloImage(
+            req.exportFormat,
+            item,
+            classByName,
+            keepProjectStructure,
+            poseLayout,
+            sink,
+          )
+        } catch (error) {
+          writeExportStage(
+            job.id,
+            `image error ${item.filePath} ${error instanceof Error ? error.message : String(error)}`,
+          )
+          throw error
+        }
+        done += 1
+        updateProgress(`导出 ${item.fileName}`)
+        if (done === 1 || done % 10 === 0) {
+          appendJobLog(job.id, `${nowIso()} | ${item.fileName} | ${Math.max(0, Date.now() - startedAt)}ms`)
+        }
+        await yieldToEventLoop()
+      }
+      writeExportStage(job.id, `task done ${taskId}`)
+      await yieldToEventLoop()
+    }
+
+    if (done === 0) {
+      updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的图片" })
+      return
+    }
+
+    if (req.exportFormat === "yolo-pose" && poseLayout) {
+      if (!keepProjectStructure) {
+        await sink.writeTextFile("data.yaml", renderYoloDataYamlPose(classNames, [...splitSet], poseLayout))
+      } else {
+        for (const taskName of splitSet) {
+          await sink.writeTextFile(path.join(taskName, "data.yaml"), renderYoloDataYamlPose(classNames, [], poseLayout))
+        }
+      }
+    } else if (!keepProjectStructure) {
+      await sink.writeTextFile(
+        "data.yaml",
+        renderYoloDataYaml(classNames, [...splitSet], { obb: req.exportFormat === "yolo-obb" }),
+      )
     } else {
       for (const taskName of splitSet) {
-        writeYoloDataYamlPose(path.join(outputDir, taskName), classNames, [], poseLayout)
+        await sink.writeTextFile(
+          path.join(taskName, "data.yaml"),
+          renderYoloDataYaml(classNames, [], { obb: req.exportFormat === "yolo-obb" }),
+        )
       }
     }
-  } else if (!keepProjectStructure) {
-    writeYoloDataYaml(outputDir, classNames, [...splitSet], { obb: format === "yolo-obb" })
-  } else {
-    for (const taskName of splitSet) {
-      writeYoloDataYaml(path.join(outputDir, taskName), classNames, [], { obb: format === "yolo-obb" })
+
+    await sink.finalize()
+
+    if (compressToZip) {
+      writeExportStage(job.id, "zipDirectoryToFile start")
+      updateJob(job.id, { progress: 83, message: "正在压缩 ZIP…" })
+      await zipDirectoryToFile(stagingDir, req.outputPath, (zipPercent, message) => {
+        const progress = 82 + Math.floor((zipPercent / 100) * 17)
+        updateJob(job.id, { progress, message })
+      })
+      writeExportStage(job.id, "zipDirectoryToFile done")
+    }
+
+    updateJob(job.id, {
+      status: "success",
+      progress: 100,
+      message: `导出完成：${req.outputPath}`,
+    })
+    writeExportStage(job.id, `export_success ${req.outputPath}`)
+  } catch (error) {
+    writeExportStage(job.id, `error ${error instanceof Error ? error.message : String(error)}`)
+    updateJob(job.id, {
+      status: "failed",
+      progress: 100,
+      message: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  } finally {
+    if (compressToZip) {
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+      } catch {
+        /* ignore cleanup errors */
+      }
+    }
+  }
+}
+
+async function runXAnyExport(job: ExportJobRecord, req: ExportRequest): Promise<void> {
+  writeExportStage(job.id, "enter runXAnyExport")
+  updateJob(job.id, { status: "running", progress: 2, message: "正在准备导出任务…" })
+
+  const taskIds = resolveExportTaskIds(req)
+  if (taskIds.length === 0) {
+    updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的任务" })
+    return
+  }
+  writeExportStage(job.id, `taskIds=${taskIds.length}`)
+
+  const tasksRoot = resolveProjectDataRoot(req.project)
+  const estimatedTotal = Math.max(1, req.estimatedImageCount)
+  const keepProjectStructure = !req.taskId && req.keepProjectStructure
+  const isProjectExport = !req.taskId
+  const taskFolderById = keepProjectStructure ? buildUniqueTaskFolderMap(taskIds, req.taskNameById) : undefined
+  const compressToZip = req.compressToZip === true
+
+  updateJob(job.id, { progress: 4, message: "正在创建输出目录…" })
+  writeExportStage(job.id, "mkdir staging")
+
+  const stagingDir = compressToZip ? path.join(os.tmpdir(), `easyannotate-export-${job.id}`) : req.outputPath
+  const sink = createFolderExportSink(stagingDir)
+  fs.mkdirSync(stagingDir, { recursive: true })
+  writeExportStage(job.id, `stagingDir=${stagingDir}`)
+
+  let done = 0
+  const exportProgressCap = compressToZip ? 82 : 99
+  const updateProgress = (message: string) => {
+    const total = Math.max(estimatedTotal, done)
+    const progress = Math.max(5, Math.min(exportProgressCap, Math.floor((done / total) * exportProgressCap)))
+    updateJob(job.id, { progress, message })
+  }
+
+  try {
+    writeExportStage(job.id, "export loop start")
+    updateJob(job.id, { progress: 5, message: "开始导出图片…" })
+    for (const taskId of taskIds) {
+      const taskRoot = path.join(tasksRoot, sanitizeSegment(taskId))
+      writeExportStage(job.id, `task start ${taskId}`)
+      for await (const rawItem of iterateTaskImagesAsync(taskRoot, taskId)) {
+        if (done === 0) writeExportStage(job.id, `first image ${rawItem.filePath}`)
+        const item = prepareYoloExportItem(rawItem, {
+          keepProjectStructure,
+          isProjectExport,
+          taskFolderById,
+          jobId: job.id,
+          trainBoundary: req.trainBoundary,
+          valBoundary: req.valBoundary,
+        })
+        const startedAt = Date.now()
+        await exportOneXAnyImage(item, sink)
+        done += 1
+        updateProgress(`导出 ${item.fileName}`)
+        if (done === 1 || done % 10 === 0) {
+          appendJobLog(job.id, `${nowIso()} | ${item.fileName} | ${Math.max(0, Date.now() - startedAt)}ms`)
+        }
+        await yieldToEventLoop()
+      }
+      writeExportStage(job.id, `task done ${taskId}`)
+      await yieldToEventLoop()
+    }
+
+    if (done === 0) {
+      updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的图片" })
+      return
+    }
+
+    await sink.finalize()
+
+    if (compressToZip) {
+      writeExportStage(job.id, "zipDirectoryToFile start")
+      updateJob(job.id, { progress: 83, message: "正在压缩 ZIP…" })
+      await zipDirectoryToFile(stagingDir, req.outputPath, (zipPercent, message) => {
+        const progress = 82 + Math.floor((zipPercent / 100) * 17)
+        updateJob(job.id, { progress, message })
+      })
+      writeExportStage(job.id, "zipDirectoryToFile done")
+    }
+
+    updateJob(job.id, {
+      status: "success",
+      progress: 100,
+      message: `导出完成：${req.outputPath}`,
+    })
+    writeExportStage(job.id, `export_success ${req.outputPath}`)
+  } catch (error) {
+    writeExportStage(job.id, `error ${error instanceof Error ? error.message : String(error)}`)
+    updateJob(job.id, {
+      status: "failed",
+      progress: 100,
+      message: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  } finally {
+    if (compressToZip) {
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+      } catch {
+        /* ignore cleanup errors */
+      }
     }
   }
 }
@@ -1096,29 +1526,29 @@ async function exportAsCoco(
   }
 }
 
-function collectClassNamesForExport(project: ProjectRecord, images: ExportImageItem[]): string[] {
-  const out: string[] = []
-  const seen = new Set<string>()
-  for (const tag of project.tags) {
-    const name = (tag.name || "").trim()
-    if (!name || seen.has(name)) continue
-    seen.add(name)
-    out.push(name)
-  }
-  for (const item of images) {
-    const doc = safeReadAnnotationDoc(item.filePath)
-    for (const shape of doc.shapes ?? []) {
-      const label = typeof shape.label === "string" ? shape.label.trim() : ""
-      if (!label || seen.has(label)) continue
-      seen.add(label)
-      out.push(label)
-    }
-  }
-  return out
+function collectClassNamesForExport(project: ProjectRecord, _images: ExportImageItem[]): string[] {
+  return classNamesFromProjectTags(project)
 }
 
 async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void> {
   updateJob(job.id, { status: "running", progress: 1, message: "开始导出" })
+  if (isYoloExportFormat(req.exportFormat)) {
+    try {
+      await runYoloExport(job, req)
+    } catch {
+      /* runYoloExport already updated job status */
+    }
+    return
+  }
+  if (req.exportFormat === "xanylabeling") {
+    try {
+      await runXAnyExport(job, req)
+    } catch {
+      /* runXAnyExport already updated job status */
+    }
+    return
+  }
+
   const knownTaskIds = req.taskId ? undefined : new Set(Object.keys(req.taskNameById))
   const allItems = collectExportImages(req.project, req.taskId, knownTaskIds)
   if (allItems.length === 0) {
@@ -1162,10 +1592,9 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
       }
     }
   }
-  const classNames = req.exportFormat === "xanylabeling" ? [] : collectClassNamesForExport(req.project, groupedItems)
-  const classByName = new Map<string, number>(classNames.map((name, index) => [name, index]))
-  if (req.exportFormat !== "xanylabeling" && classNames.length === 0) {
-    updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的类别标签（标注 label 为空）" })
+  const classNames = collectClassNamesForExport(req.project, groupedItems)
+  if (classNames.length === 0) {
+    updateJob(job.id, { status: "failed", progress: 100, message: "项目未配置类别标签（请在项目设置中添加 tags）" })
     return
   }
   const compressToZip = req.compressToZip === true
@@ -1190,7 +1619,6 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
     const progress = Math.max(1, Math.min(exportProgressCap, Math.floor((done / Math.max(1, total)) * exportProgressCap)))
     updateJob(job.id, { progress, message })
   }
-  const poseLayout = req.exportFormat === "yolo-pose" ? buildYoloPoseLayout(req.project, classNames, allItems) : null
   const stagingDir = compressToZip ? path.join(os.tmpdir(), `easyannotate-export-${job.id}`) : req.outputPath
   fs.mkdirSync(stagingDir, { recursive: true })
   try {
@@ -1198,21 +1626,6 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
       await exportAsCoco(groupedItems, stagingDir, classNames, !req.taskId && req.keepProjectStructure, updateProgress, logImageTiming)
     } else if (req.exportFormat === "voc") {
       exportAsVoc(groupedItems, stagingDir, !req.taskId && req.keepProjectStructure, updateProgress, logImageTiming)
-    } else if (req.exportFormat === "xanylabeling") {
-      exportAsXAnyLabeling(groupedItems, stagingDir, updateProgress, logImageTiming)
-    } else {
-      await exportAsYolo(
-        req.exportFormat,
-        groupedItems,
-        classByName,
-        classNames,
-        stagingDir,
-        !req.taskId && req.keepProjectStructure,
-        updateProgress,
-        poseLayout,
-        trace,
-        logImageTiming,
-      )
     }
     if (compressToZip) {
       await zipDirectoryToFile(stagingDir, req.outputPath, (zipPercent, message) => {
@@ -1244,21 +1657,280 @@ async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void
   }
 }
 
+export function listDatasetExportJobs(): ExportJobRecord[] {
+  return [...exportJobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+/** IPC 用：只返回状态文案，避免把大量日志通过 IPC 传给渲染进程 */
+export function listDatasetExportJobsForIpc(): ExportJobRecord[] {
+  return listDatasetExportJobs().map((job) => ({
+    ...job,
+    message: job.statusMessage || job.message.split(EXPORT_LOG_SEPARATOR)[0] || job.message,
+  }))
+}
+
+function findProjectRoot(): string | null {
+  const seeds = new Set<string>([process.cwd()])
+  try {
+    seeds.add(path.dirname(fileURLToPath(import.meta.url)))
+  } catch {
+    /* ignore */
+  }
+  for (const seed of seeds) {
+    let dir = path.resolve(seed)
+    for (let depth = 0; depth < 12; depth += 1) {
+      const pkgPath = path.join(dir, "package.json")
+      if (fs.existsSync(pkgPath)) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as { name?: string }
+          if (pkg.name === "easy-annotate") return dir
+        } catch {
+          /* ignore invalid package.json */
+        }
+      }
+      const parent = path.dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+  }
+  return null
+}
+
+function resolveSystemNodeExecutable(): string | null {
+  const execBase = path.basename(process.execPath).toLowerCase()
+  if (execBase === "node.exe" || execBase === "node") {
+    return process.execPath
+  }
+
+  for (const envCandidate of [process.env.NODE_EXE, process.env.npm_node_execpath]) {
+    const trimmed = (envCandidate || "").trim()
+    if (trimmed && fs.existsSync(trimmed)) return trimmed
+  }
+
+  if (process.platform === "win32") {
+    try {
+      const output = execFileSync("where.exe", ["node"], { encoding: "utf8", windowsHide: true }).trim()
+      const candidate = output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean)
+      if (candidate && fs.existsSync(candidate)) return candidate
+    } catch {
+      /* ignore */
+    }
+    const programFiles = process.env.ProgramFiles || "C:\\Program Files"
+    const winCandidates = [
+      path.join(programFiles, "nodejs", "node.exe"),
+      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "nodejs", "node.exe"),
+    ]
+    for (const candidate of winCandidates) {
+      if (fs.existsSync(candidate)) return candidate
+    }
+  } else {
+    try {
+      const output = execFileSync("which", ["node"], { encoding: "utf8" }).trim()
+      if (output && fs.existsSync(output)) return output
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
+type ExportChildLaunch = {
+  command: string
+  args: string[]
+  cwd: string
+  mode: "bundled"
+}
+
+function resolveExportChildLaunch(
+  jobId: string,
+  reqPath: string,
+): { launch: ExportChildLaunch | null; reason: string } {
+  const root = findProjectRoot()
+  const nodeExe = resolveSystemNodeExecutable()
+  if (!nodeExe) {
+    return { launch: null, reason: "未找到 Node.js（请安装 Node 并加入 PATH，或安装到 Program Files\\nodejs）" }
+  }
+
+  if (!root) {
+    return {
+      launch: null,
+      reason: `未找到项目根目录（当前 cwd=${process.cwd()}）`,
+    }
+  }
+
+  const bundledScript = path.join(root, "out", "main", "dataset-export-child.js")
+  const bundledDir = path.dirname(bundledScript)
+  const bundledAssetsDir = path.join(bundledDir, "assets")
+
+  if (!fs.existsSync(bundledScript)) {
+    return {
+      launch: null,
+      reason: `未找到 ${bundledScript}，请在项目根目录执行：npx vite build --mode main`,
+    }
+  }
+  if (!fs.existsSync(bundledAssetsDir)) {
+    return {
+      launch: null,
+      reason: `缺少 ${bundledAssetsDir}，请重新执行：npx vite build --mode main`,
+    }
+  }
+
+  return {
+    launch: {
+      command: nodeExe,
+      args: [bundledScript, jobId, reqPath],
+      cwd: bundledDir,
+      mode: "bundled",
+    },
+    reason: "",
+  }
+}
+
+function cleanupExportChild(jobId: string): void {
+  const active = activeExportChildren.get(jobId)
+  if (!active) return
+  clearInterval(active.pollTimer)
+  activeExportChildren.delete(jobId)
+}
+
+function spawnExportChild(job: ExportJobRecord, req: ExportRequest): boolean {
+  const reqPath = exportRequestPath(job.id)
+  try {
+    fs.writeFileSync(reqPath, JSON.stringify({ job, req }), "utf8")
+    writeExportStateFile(job.id, job)
+  } catch (error) {
+    updateJob(job.id, {
+      status: "failed",
+      progress: 100,
+      statusMessage: error instanceof Error ? error.message : String(error),
+    })
+    return false
+  }
+
+  const resolved = resolveExportChildLaunch(job.id, reqPath)
+  if (!resolved.launch) {
+    writeExportStage(job.id, `child launch failed: ${resolved.reason}`)
+    updateJob(job.id, {
+      status: "failed",
+      progress: 100,
+      statusMessage: `无法启动导出子进程：${resolved.reason}`,
+      message: `无法启动导出子进程：${resolved.reason}`,
+    })
+    try {
+      fs.unlinkSync(reqPath)
+    } catch {
+      /* ignore */
+    }
+    return false
+  }
+  const launch = resolved.launch
+
+  writeExportStage(job.id, `spawn child mode=${launch.mode} ${launch.command} ${launch.args.join(" ")}`)
+
+  const child = spawn(launch.command, launch.args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    cwd: launch.cwd,
+    env: {
+      ...process.env,
+      EA_EXPORT_CHILD: "1",
+      EA_EXPORT_JOB_ID: job.id,
+    },
+  })
+
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString().trim()
+    if (text) writeExportStage(job.id, `child stderr: ${text.slice(0, 200)}`)
+  })
+
+  const pollTimer = setInterval(() => {
+    syncExportJobFromStateFile(job.id)
+  }, 400)
+
+  activeExportChildren.set(job.id, { child, pollTimer })
+
+  child.on("error", (error) => {
+    cleanupExportChild(job.id)
+    updateJob(job.id, {
+      status: "failed",
+      progress: 100,
+      statusMessage: `导出子进程错误：${error.message}`,
+    })
+    try {
+      fs.unlinkSync(reqPath)
+    } catch {
+      /* ignore */
+    }
+  })
+
+  child.on("close", (code) => {
+    cleanupExportChild(job.id)
+    syncExportJobFromStateFile(job.id)
+    const state = exportJobs.get(job.id)
+    if (code !== 0 && state?.status !== "success" && state?.status !== "failed") {
+      updateJob(job.id, {
+        status: "failed",
+        progress: 100,
+        statusMessage: `导出子进程异常退出（code=${code ?? "null"}）`,
+      })
+    }
+    try {
+      fs.unlinkSync(reqPath)
+    } catch {
+      /* ignore */
+    }
+    try {
+      const finalState = exportJobs.get(job.id)
+      if (finalState?.status === "success" || finalState?.status === "failed") {
+        fs.unlinkSync(exportStatePath(job.id))
+      }
+    } catch {
+      /* ignore */
+    }
+  })
+
+  return true
+}
+
+export async function runExportFromChildArgv(jobId: string, reqPath: string): Promise<void> {
+  process.env.EA_EXPORT_CHILD = "1"
+  process.env.EA_EXPORT_JOB_ID = jobId
+
+  const raw = await fs.promises.readFile(reqPath, "utf8")
+  const payload = JSON.parse(raw) as { job: ExportJobRecord; req: ExportRequest }
+  if (!payload?.job || !payload?.req) {
+    throw new Error("Invalid export request payload")
+  }
+
+  exportJobs.set(jobId, payload.job)
+  writeExportStateFile(jobId, payload.job)
+
+  await runExport(payload.job, payload.req)
+}
+
 export function startDatasetExportJob(req: ExportRequest): { jobId: string } {
   const job = createJobRecord(req)
   exportJobs.set(job.id, job)
-  queueMicrotask(() => {
+
+  if (isStreamingExportFormat(req.exportFormat)) {
+    const spawned = spawnExportChild(job, req)
+    if (spawned) {
+      return { jobId: job.id }
+    }
+    return { jobId: job.id }
+  }
+
+  setImmediate(() => {
     void runExport(job, req).catch((error) => {
       updateJob(job.id, {
         status: "failed",
         progress: 100,
-        message: error instanceof Error ? error.message : String(error),
+        statusMessage: error instanceof Error ? error.message : String(error),
       })
     })
   })
   return { jobId: job.id }
-}
-
-export function listDatasetExportJobs(): ExportJobRecord[] {
-  return [...exportJobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }

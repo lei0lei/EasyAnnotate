@@ -11,6 +11,7 @@ export type ProjectTaskRecord = {
   name: string
   subset: string
   fileCount: number
+  annotatedFileCount?: number
   createdAt: string
   updatedAt: string
   coverColor: string
@@ -48,6 +49,10 @@ function normalizeTaskRecords(raw: unknown): ProjectTaskRecord[] {
       subset: typeof t.subset === "string" ? t.subset.trim() : "",
       fileCount:
         typeof t.fileCount === "number" && Number.isFinite(t.fileCount) ? Math.max(0, Math.floor(t.fileCount)) : 0,
+      annotatedFileCount:
+        typeof t.annotatedFileCount === "number" && Number.isFinite(t.annotatedFileCount)
+          ? Math.max(0, Math.floor(t.annotatedFileCount))
+          : undefined,
       createdAt: typeof t.createdAt === "string" ? t.createdAt : "",
       updatedAt: typeof t.updatedAt === "string" ? t.updatedAt : "",
       coverColor: typeof t.coverColor === "string" && t.coverColor.trim() ? t.coverColor.trim() : "#334155",

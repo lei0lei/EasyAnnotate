@@ -18,16 +18,20 @@ type UseTaskDerivedStateParams = {
 
 export function useTaskDerivedState({ projectId, taskId, project, files, currentIndex }: UseTaskDerivedStateParams) {
   const [taskRecordName, setTaskRecordName] = useState<string | null>(null)
+  const [taskFileCount, setTaskFileCount] = useState(0)
 
   useEffect(() => {
     if (!projectId || !taskId) {
       setTaskRecordName(null)
+      setTaskFileCount(0)
       return
     }
     let alive = true
     void loadTasks(projectId).then((tasks) => {
       if (!alive) return
-      setTaskRecordName(tasks.find((item) => item.id === taskId)?.name ?? null)
+      const task = tasks.find((item) => item.id === taskId)
+      setTaskRecordName(task?.name ?? null)
+      setTaskFileCount(Math.max(0, Math.floor(Number(task?.fileCount) || 0)))
     })
     return () => {
       alive = false
@@ -36,9 +40,16 @@ export function useTaskDerivedState({ projectId, taskId, project, files, current
 
   const taskName = !projectId || !taskId ? (taskId ?? "—") : (taskRecordName ?? taskId)
 
+  const totalFileCount = useMemo(() => {
+    const recorded = Math.max(0, taskFileCount)
+    if (recorded > 0) return recorded
+    return files.length
+  }, [files.length, taskFileCount])
+
+  const currentImageOneBased = totalFileCount > 0 ? Math.min(totalFileCount, currentIndex + 1) : 0
+
   const currentFile = files[currentIndex]
   const currentFileName = fileNameFromPath(currentFile?.filePath ?? "")
-  const progressText = files.length > 0 ? `${currentIndex + 1}/${files.length}` : "0/0"
   const resolvedImagePath = resolveTaskImagePath(project, taskId, currentFile)
   const fallbackImagePath = currentFile?.filePath ?? ""
 
@@ -81,7 +92,8 @@ export function useTaskDerivedState({ projectId, taskId, project, files, current
     taskName,
     currentFile,
     currentFileName,
-    progressText,
+    totalFileCount,
+    currentImageOneBased,
     imagePathCandidates,
     annotationLabelOptions,
     annotationLabelOptionsPlain,

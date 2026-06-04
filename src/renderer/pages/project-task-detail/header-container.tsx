@@ -9,11 +9,13 @@ export type TaskHeaderContainerProps = {
   projectId: string | undefined
   taskName: string
   currentFileName: string
-  progressText: string
+  currentImageOneBased: number
+  totalFileCount: number
   canGoPrev: boolean
   canGoNext: boolean
   onPrevFile: () => void
   onNextFile: () => void
+  onJumpToImage: (oneBased: number) => void | Promise<void>
   onDownloadCurrentImage: () => Promise<void>
   onDeleteCurrentAnnotation: () => Promise<void>
   onDeleteCurrentImage: () => Promise<void>
@@ -23,11 +25,13 @@ export function TaskHeaderContainer({
   projectId,
   taskName,
   currentFileName,
-  progressText,
+  currentImageOneBased,
+  totalFileCount,
   canGoPrev,
   canGoNext,
   onPrevFile,
   onNextFile,
+  onJumpToImage,
   onDownloadCurrentImage,
   onDeleteCurrentAnnotation,
   onDeleteCurrentImage,
@@ -37,11 +41,13 @@ export function TaskHeaderContainer({
       projectId={projectId}
       taskName={taskName}
       currentFileName={currentFileName}
-      progressText={progressText}
+      currentImageOneBased={currentImageOneBased}
+      totalFileCount={totalFileCount}
       canGoPrev={canGoPrev}
       canGoNext={canGoNext}
       onPrev={onPrevFile}
       onNext={onNextFile}
+      onJumpToImage={onJumpToImage}
       onDownloadCurrentImage={() => {
         void onDownloadCurrentImage()
       }}

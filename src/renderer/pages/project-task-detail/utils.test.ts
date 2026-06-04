@@ -51,6 +51,7 @@ describe("project-task-detail utils", () => {
       subset: "train/set",
       filePath: "C:\\tmp\\dog.png",
       createdAt: "",
+      hasAnnotation: false,
     }
     expect(resolveTaskImagePath(project, "taskA", file)).toBe("D:\\dataset\\proj\\data\\tasks\\taskA\\train_set\\dog.png")
   })

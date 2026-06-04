@@ -129,6 +129,9 @@ export function candidatesFromBrowserFiles(input: FileList | File[]): {
   return { accepted, skippedWithoutPath }
 }
 
+/** 新建任务「上传图片」单次最多导入张数。 */
+export const TASK_CREATE_IMAGE_UPLOAD_LIMIT = 500
+
 /** 每批 IPC 上传的图片数；过大 protobuf 会导致 MōBrowser 进程闪退。 */
 export const TASK_UPLOAD_BATCH_SIZE = 10
 

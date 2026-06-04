@@ -219,6 +219,37 @@ export async function deleteAnnotationsForTask(databaseDir: string, projectId: s
   writeStore(filePath, store)
 }
 
+function extractTaskIdFromImagePath(imagePath: string): string | undefined {
+  const normalized = imagePath.replace(/\\/g, "/")
+  const marker = "/data/tasks/"
+  const markerIndex = normalized.indexOf(marker)
+  if (markerIndex < 0) return undefined
+  const rest = normalized.slice(markerIndex + marker.length)
+  const [taskId] = rest.split("/")
+  const cleaned = taskId?.trim()
+  return cleaned ? cleaned : undefined
+}
+
+/** 在 main 进程聚合索引库中的已标注图片数，IPC 仅返回各任务计数（不传全量标注记录） */
+export function countAnnotatedImagesByTaskForProject(databaseDir: string, projectId: string): Record<string, number> {
+  const filePath = resolveStoreFile(databaseDir)
+  const store = readStore(filePath)
+  const grouped = new Map<string, Set<string>>()
+  for (const item of store.annotations) {
+    if (item.project_id !== projectId) continue
+    const taskId = extractTaskIdFromImagePath(item.image_path)
+    if (!taskId) continue
+    const existing = grouped.get(taskId) ?? new Set<string>()
+    existing.add(item.image_path)
+    grouped.set(taskId, existing)
+  }
+  const result: Record<string, number> = {}
+  grouped.forEach((paths, taskId) => {
+    result[taskId] = paths.size
+  })
+  return result
+}
+
 export async function deleteTaskArtifacts(databaseDir: string, projectId: string, taskId: string): Promise<void> {
   const filePath = resolveStoreFile(databaseDir)
   const store = readStore(filePath)

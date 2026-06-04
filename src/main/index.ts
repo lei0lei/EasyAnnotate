@@ -48,8 +48,17 @@ import {
   SaveTaskFilesResponse,
   ImportTaskImageZipRequest,
   ImportTaskImageZipResponse,
+  CountTaskImageZipRequest,
+  CountTaskImageZipResponse,
   ImportAnnotatedTaskZipRequest,
   ImportAnnotatedTaskZipResponse,
+  StartAnnotatedTaskZipImportRequest,
+  StartAnnotatedTaskZipImportResponse,
+  StartTaskDeleteRequest,
+  StartTaskDeleteResponse,
+  GetAnnotatedTaskImportJobRequest,
+  GetAnnotatedTaskImportJobResponse,
+  ListAnnotatedTaskImportJobsResponse,
   WriteImageAnnotationRequest,
   WriteImageAnnotationResponse,
   AppendImageAnnotationShapesRequest,
@@ -58,6 +67,8 @@ import {
   DeleteAnnotationRequest,
   GetProjectRequest,
   GetProjectResponse,
+  GetProjectTaskAnnotatedCountsRequest,
+  GetProjectTaskAnnotatedCountsResponse,
   ListExportJobsResponse,
   ListAnnotationProjectsRequest,
   ListAnnotationsByProjectRequest,
@@ -87,6 +98,7 @@ import {
   deleteTaskArtifacts,
   deleteAnnotation,
   deleteAnnotationProject,
+  countAnnotatedImagesByTaskForProject,
   listAnnotationProjects,
   listAnnotationsByProject,
   upsertAnnotation,
@@ -111,9 +123,20 @@ import { createProject, deleteProject, getProject, listProjects, updateProject }
 import {
   buildUniqueExportFolderPath,
   buildUniqueZipPath,
-  listDatasetExportJobs,
+  listDatasetExportJobsForIpc,
   startDatasetExportJob,
 } from "./dataset-export";
+import { runAnnotatedTaskZipImport } from "./annotated-task-import-core";
+import {
+  listAnnotatedTaskImportJobsAsExportJobsForIpc,
+  startAnnotatedTaskImportJob,
+  getAnnotatedImportJobRecord,
+} from "./task-import";
+import {
+  listTaskDeleteJobsAsExportJobsForIpc,
+  startTaskDeleteJob,
+} from "./task-delete";
+import { runTaskDelete } from "./task-delete-core";
 import {
   probeLocalBackendHealth,
   startEmbeddedPythonBackend,
@@ -124,6 +147,25 @@ function sanitizeSegment(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) return "default"
   return trimmed.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+}
+
+function resolveTaskRootDir(
+  globalConfigDir: string,
+  projectId: string,
+  taskId: string,
+): { taskRootDir: string; errorMessage: string } {
+  const project = getProject(globalConfigDir, projectId)
+  if (!project) {
+    return { taskRootDir: "", errorMessage: "项目不存在。" }
+  }
+  const baseRoot =
+    project.storageType === "local" && project.localPath
+      ? project.localPath
+      : path.dirname(project.configFilePath)
+  return {
+    taskRootDir: path.join(baseRoot, "data", "tasks", sanitizeSegment(taskId)),
+    errorMessage: "",
+  }
 }
 
 function maybeDecodePathValue(value: string): string {
@@ -699,12 +741,12 @@ function collectTaskFilesPage(
   taskRootDir: string,
   offset: number,
   limit: number,
-): { records: Array<{ subset: string; filePath: string; createdAt: string }>; hasMore: boolean } {
+): { records: Array<{ subset: string; filePath: string; createdAt: string; hasAnnotation: boolean }>; hasMore: boolean } {
   if (!fs.existsSync(taskRootDir)) return { records: [], hasMore: false }
   const safeOffset = Math.max(0, Math.floor(offset))
   const safeLimit = Math.max(1, Math.floor(limit))
   const imageExts = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
-  const buffered: Array<{ subset: string; filePath: string; createdAt: string }> = []
+  const buffered: Array<{ subset: string; filePath: string; createdAt: string; hasAnnotation: boolean }> = []
   const maxBuffered = safeLimit + 1
   let skipped = 0
   let hasMore = false
@@ -731,6 +773,7 @@ function collectTaskFilesPage(
         subset,
         filePath: absPath,
         createdAt: stat.birthtime.toISOString(),
+        hasAnnotation: annotationJsonExists(absPath),
       })
       if (buffered.length >= maxBuffered) {
         hasMore = true
@@ -750,6 +793,16 @@ function collectTaskFilesPage(
 function resolveAnnotationJsonPath(imagePath: string): string {
   const parsed = path.parse(imagePath)
   return path.join(parsed.dir, `${parsed.name}.json`)
+}
+
+function annotationJsonExists(imagePath: string): boolean {
+  const jsonPath = resolveAnnotationJsonPath(imagePath)
+  try {
+    const stat = fs.statSync(jsonPath)
+    return stat.isFile() && stat.size > 0
+  } catch {
+    return false
+  }
 }
 
 function resolveSystemTarExecutable(): string {
@@ -776,6 +829,82 @@ function walkFilesRecursive(rootDir: string): string[] {
     }
   }
   return out
+}
+
+/** 与 renderer task-file-upload.ts TASK_CREATE_IMAGE_UPLOAD_LIMIT 保持一致 */
+const TASK_CREATE_IMAGE_UPLOAD_LIMIT = 500
+
+const TASK_IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
+
+function isTaskImageFilePath(filePath: string): boolean {
+  return TASK_IMAGE_EXTS.has(path.extname(filePath).toLowerCase())
+}
+
+function countImagesInTaskDir(taskDir: string): number {
+  if (!fs.existsSync(taskDir)) return 0
+  return walkFilesRecursive(taskDir).filter((filePath) => isTaskImageFilePath(filePath)).length
+}
+
+async function listZipArchiveEntries(zipPath: string): Promise<{ ok: boolean; entries: string[]; errorMessage: string }> {
+  try {
+    const entries = await new Promise<string[]>((resolve, reject) => {
+      const child = spawn(resolveSystemTarExecutable(), ["-tf", zipPath], {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      let stdout = ""
+      let stderr = ""
+      child.stdout?.setEncoding("utf8")
+      child.stderr?.setEncoding("utf8")
+      child.stdout?.on("data", (chunk: string) => {
+        stdout += chunk
+      })
+      child.stderr?.on("data", (chunk: string) => {
+        stderr += chunk
+      })
+      child.on("error", reject)
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve(
+            stdout
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean),
+          )
+          return
+        }
+        const detail = stderr.trim()
+        reject(new Error(detail ? `读取 zip 列表失败：${detail}` : `读取 zip 列表失败（退出码 ${code ?? "unknown"}）`))
+      })
+    })
+    return { ok: true, entries, errorMessage: "" }
+  } catch (error) {
+    return {
+      ok: false,
+      entries: [],
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+function countImagesInZipEntries(entries: string[]): number {
+  let count = 0
+  for (const entry of entries) {
+    const normalized = entry.replace(/\\/g, "/").replace(/\/+$/, "")
+    if (!normalized || normalized.endsWith("/")) continue
+    const fileName = normalized.slice(normalized.lastIndexOf("/") + 1)
+    if (!fileName) continue
+    if (isTaskImageFilePath(fileName)) count += 1
+  }
+  return count
+}
+
+async function countImagesInZipPath(zipPath: string): Promise<{ imageCount: number; errorMessage: string }> {
+  const listed = await listZipArchiveEntries(zipPath)
+  if (!listed.ok) {
+    return { imageCount: 0, errorMessage: listed.errorMessage }
+  }
+  return { imageCount: countImagesInZipEntries(listed.entries), errorMessage: "" }
 }
 
 function toPosixRelative(baseDir: string, absPath: string): string {
@@ -1570,19 +1699,37 @@ ipc.registerService(AppService({
         return { errorMessage: "项目不存在。", savedPaths: [] }
       }
       const rawSubset = (request.subset || "").trim()
-      const baseRoot =
-        project.storageType === "local" && project.localPath
-          ? project.localPath
-          : path.dirname(project.configFilePath)
-      const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(request.taskId))
+      const resolvedTask = resolveTaskRootDir(request.globalConfigDir, request.projectId, request.taskId)
+      if (resolvedTask.errorMessage) {
+        return { errorMessage: resolvedTask.errorMessage, savedPaths: [] }
+      }
+      const taskRootDir = resolvedTask.taskRootDir
       if (rawSubset === "__DELETE_TASK__") {
-        await fs.promises.rm(taskRootDir, { recursive: true, force: true })
-        await deleteTaskArtifacts(request.databaseDir, request.projectId, request.taskId)
-        return { errorMessage: "", savedPaths: [] }
+        const result = await runTaskDelete({
+          globalConfigDir: request.globalConfigDir,
+          databaseDir: request.databaseDir,
+          projectId: request.projectId,
+          taskId: request.taskId,
+          taskRootDir,
+        })
+        return { errorMessage: result.errorMessage, savedPaths: [] }
       }
       const subset = sanitizeSegment(rawSubset || "default")
       const taskDir = path.join(taskRootDir, subset)
       await fs.promises.mkdir(taskDir, { recursive: true })
+
+      const incomingImageCount = request.files.filter((file) => {
+        const rawFileName = (file.fileName || file.sourcePath || "").trim()
+        const fileName = path.basename(rawFileName).trim()
+        return fileName && isTaskImageFilePath(fileName)
+      }).length
+      const existingImageCount = countImagesInTaskDir(taskDir)
+      if (existingImageCount + incomingImageCount > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
+        return {
+          errorMessage: `单次任务最多导入 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张图片（当前已有 ${existingImageCount} 张，本次 ${incomingImageCount} 张）。`,
+          savedPaths: [],
+        }
+      }
 
       const savedPaths: string[] = []
       const failedCopies: Array<{ sourcePath: string; reason: string }> = []
@@ -1674,7 +1821,7 @@ ipc.registerService(AppService({
         return { errorMessage: extract.errorMessage, savedPaths: [], importedImageCount: 0 }
       }
 
-      const imageExts = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
+      const imageExts = TASK_IMAGE_EXTS
       const images = walkFilesRecursive(extract.extractDir).filter((p) => imageExts.has(path.extname(p).toLowerCase()))
       if (images.length <= 0) {
         return { errorMessage: "zip 内未找到可导入图片。", savedPaths: [], importedImageCount: 0 }
@@ -1689,6 +1836,16 @@ ipc.registerService(AppService({
       const subset = sanitizeSegment(rawSubset || "default")
       const taskDir = path.join(taskRootDir, subset)
       await fs.promises.mkdir(taskDir, { recursive: true })
+
+      const existingImageCount = countImagesInTaskDir(taskDir)
+      const totalAfterImport = existingImageCount + images.length
+      if (totalAfterImport > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
+        return {
+          errorMessage: `单次任务最多导入 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张图片（当前已有 ${existingImageCount} 张，ZIP 内 ${images.length} 张）。`,
+          savedPaths: [],
+          importedImageCount: 0,
+        }
+      }
 
       let importedImageCount = 0
       for (const srcImagePath of images) {
@@ -1710,20 +1867,56 @@ ipc.registerService(AppService({
       }
     }
   },
-  async ImportAnnotatedTaskZip(request: ImportAnnotatedTaskZipRequest): Promise<ImportAnnotatedTaskZipResponse> {
-    let tempRoot = ""
+  async CountTaskImageZip(request: CountTaskImageZipRequest): Promise<CountTaskImageZipResponse> {
     try {
-      tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "easyannotate-task-import-"))
+      const zipPath = resolveExistingIpcPath(request.zipPath || "")
+      if (!zipPath) {
+        return { errorMessage: "请选择 zip 文件。", imageCount: 0 }
+      }
+      if (!zipPath.toLowerCase().endsWith(".zip")) {
+        return { errorMessage: "仅支持 .zip 文件。", imageCount: 0 }
+      }
+      if (!fs.existsSync(zipPath)) {
+        return { errorMessage: "zip 文件不存在。", imageCount: 0 }
+      }
+      const counted = await countImagesInZipPath(zipPath)
+      if (counted.errorMessage) {
+        return { errorMessage: counted.errorMessage, imageCount: 0 }
+      }
+      return { errorMessage: "", imageCount: counted.imageCount }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        imageCount: 0,
+      }
+    }
+  },
+  async ImportAnnotatedTaskZip(request: ImportAnnotatedTaskZipRequest): Promise<ImportAnnotatedTaskZipResponse> {
+    const zipPath = resolveExistingIpcPath(request.zipPath || "")
+    const result = await runAnnotatedTaskZipImport({
+      globalConfigDir: request.globalConfigDir,
+      projectId: request.projectId,
+      taskId: request.taskId,
+      subset: request.subset,
+      zipPath,
+      importFormat: request.importFormat,
+    })
+    return {
+      errorMessage: result.errorMessage,
+      savedPaths: [],
+      importedImageCount: result.importedImageCount,
+      importedAnnotationCount: result.importedAnnotationCount,
+      detectedFormat: result.detectedFormat,
+    }
+  },
+  async StartAnnotatedTaskZipImport(
+    request: StartAnnotatedTaskZipImportRequest,
+  ): Promise<StartAnnotatedTaskZipImportResponse> {
+    try {
       const importFormat = (request.importFormat || "xanylabeling").trim().toLowerCase()
       const allowFormats = new Set(["xanylabeling", "yolo-detect", "yolo-obb", "yolo-segment", "yolo-pose"])
       if (!allowFormats.has(importFormat)) {
-        return {
-          errorMessage: `不支持的导入格式：${importFormat}`,
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
+        return { errorMessage: `不支持的导入格式：${importFormat}`, jobId: "" }
       }
       if (
         importFormat !== "xanylabeling" &&
@@ -1733,227 +1926,122 @@ ipc.registerService(AppService({
       ) {
         return {
           errorMessage: `导入格式 ${importFormat} 暂未实现，当前支持 xanylabeling / yolo-detect / yolo-obb / yolo-segment。`,
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
+          jobId: "",
         }
       }
       const project = getProject(request.globalConfigDir, request.projectId)
       if (!project) {
-        return {
-          errorMessage: "项目不存在。",
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
+        return { errorMessage: "项目不存在。", jobId: "" }
       }
       const zipPath = resolveExistingIpcPath(request.zipPath || "")
       if (!zipPath) {
-        return {
-          errorMessage: "请选择 zip 文件。",
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
+        return { errorMessage: "请选择 zip 文件。", jobId: "" }
       }
       if (!zipPath.toLowerCase().endsWith(".zip")) {
-        return {
-          errorMessage: "仅支持 .zip 文件。",
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
+        return { errorMessage: "仅支持 .zip 文件。", jobId: "" }
       }
       if (!fs.existsSync(zipPath)) {
-        return {
-          errorMessage: "zip 文件不存在。",
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
+        return { errorMessage: "zip 文件不存在。", jobId: "" }
       }
-
-      const extract = await extractZipToTempDir(zipPath, tempRoot)
-      if (!extract.ok) {
-        return {
-          errorMessage: extract.errorMessage,
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
-      }
-      const extractDir = extract.extractDir
-
-      const allFiles = walkFilesRecursive(extractDir)
-      const imageExts = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
-      const images = allFiles.filter((p) => imageExts.has(path.extname(p).toLowerCase()))
-      if (images.length <= 0) {
-        return {
-          errorMessage: "zip 内未找到可导入图片。",
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
-      }
-
-      const txtSet = new Set<string>()
-      const txtPathByRelLower = new Map<string, string>()
-      const txtByBaseName = new Map<string, string[]>()
-      const xanyJsonByImageRelLower = new Map<string, string>()
-      for (const filePath of allFiles) {
-        const relLower = toPosixRelative(extractDir, filePath).toLowerCase()
-        const ext = path.extname(filePath).toLowerCase()
-        if ((importFormat === "yolo-detect" || importFormat === "yolo-obb" || importFormat === "yolo-segment") && ext === ".txt") {
-          txtSet.add(relLower)
-          txtPathByRelLower.set(relLower, filePath)
-          const base = path.basename(filePath).toLowerCase()
-          const arr = txtByBaseName.get(base) ?? []
-          arr.push(relLower)
-          txtByBaseName.set(base, arr)
-          continue
-        }
-        if (ext === ".json") {
-          try {
-            const raw = await fs.promises.readFile(filePath, "utf8")
-            const parsed = JSON.parse(raw) as { shapes?: unknown }
-            if (Array.isArray(parsed.shapes)) {
-              const relNoExt = relLower.replace(/\.json$/i, "")
-              for (const imageExt of imageExts) {
-                xanyJsonByImageRelLower.set(`${relNoExt}${imageExt}`, filePath)
-              }
-            }
-          } catch {
-            // ignore invalid json
-          }
-        }
-      }
-
-      const detectedFormat: "xanylabeling" | "yolo-detect" | "yolo-obb" | "yolo-segment" | "" =
-        importFormat === "xanylabeling"
-          ? images.some((img) => xanyJsonByImageRelLower.has(toPosixRelative(extractDir, img).toLowerCase()))
-            ? "xanylabeling"
-            : ""
-          : importFormat === "yolo-detect"
-            ? images.some((img) => Boolean(resolveYoloTxtForImage(toPosixRelative(extractDir, img), txtSet, txtByBaseName)))
-              ? "yolo-detect"
-              : ""
-            : importFormat === "yolo-obb"
-              ? images.some((img) => Boolean(resolveYoloTxtForImage(toPosixRelative(extractDir, img), txtSet, txtByBaseName)))
-                ? "yolo-obb"
-                : ""
-              : images.some((img) => Boolean(resolveYoloTxtForImage(toPosixRelative(extractDir, img), txtSet, txtByBaseName)))
-                ? "yolo-segment"
-                : ""
-      if (!detectedFormat) {
-        return {
-          errorMessage:
-            importFormat === "xanylabeling"
-              ? "未识别到标注格式：请提供 XAnyLabeling(json) 标注压缩包。"
-              : importFormat === "yolo-detect"
-                ? "未识别到标注格式：请提供 YOLO Detect(txt) 标注压缩包。"
-                : importFormat === "yolo-obb"
-                  ? "未识别到标注格式：请提供 YOLO OBB(txt) 标注压缩包。"
-                  : "未识别到标注格式：请提供 YOLO Segment(txt) 标注压缩包。",
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat: "",
-        }
-      }
-
-      const rawSubset = (request.subset || "").trim()
-      const baseRoot =
-        project.storageType === "local" && project.localPath
-          ? project.localPath
-          : path.dirname(project.configFilePath)
-      const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(request.taskId))
-      const subset = sanitizeSegment(rawSubset || "default")
-      const taskDir = path.join(taskRootDir, subset)
-      await fs.promises.mkdir(taskDir, { recursive: true })
-
-      const savedPaths: string[] = []
-      let importedImageCount = 0
-      let importedAnnotationCount = 0
-      const projectTagNames = (project.tags ?? []).map((tag) => tag.name.trim()).filter(Boolean)
-      const yoloNames = importFormat === "xanylabeling" ? [] : await readYoloClassNamesFromExtractedZip(extractDir)
-      const yoloClassNames = yoloNames.length > 0 ? yoloNames : projectTagNames
-
-      for (const srcImagePath of images) {
-        const imageName = path.basename(srcImagePath)
-        const targetImagePath = buildUniqueFilePath(taskDir, imageName)
-        await fs.promises.copyFile(srcImagePath, targetImagePath)
-        savedPaths.push(targetImagePath)
-        importedImageCount += 1
-
-        const targetJsonPath = resolveAnnotationJsonPath(targetImagePath)
-        if (importFormat === "xanylabeling") {
-          const relImageLower = toPosixRelative(extractDir, srcImagePath).toLowerCase()
-          const srcJsonPath = xanyJsonByImageRelLower.get(relImageLower)
-          if (!srcJsonPath || !fs.existsSync(srcJsonPath)) continue
-          await fs.promises.copyFile(srcJsonPath, targetJsonPath)
-          savedPaths.push(targetJsonPath)
-          importedAnnotationCount += 1
-          continue
-        }
-        const relImagePath = toPosixRelative(extractDir, srcImagePath)
-        const txtRel = resolveYoloTxtForImage(relImagePath, txtSet, txtByBaseName)
-        if (!txtRel) continue
-        const txtAbsPath = txtPathByRelLower.get(txtRel)
-        if (!txtAbsPath) continue
-        const txtRaw = await fs.promises.readFile(txtAbsPath, "utf8")
-        const { width, height } = parseImageSizeFromFile(srcImagePath)
-        const shapes =
-          importFormat === "yolo-obb"
-            ? parseYoloObbTxtToShapes(txtRaw, yoloClassNames, width, height)
-            : importFormat === "yolo-segment"
-              ? parseYoloSegmentTxtToShapes(txtRaw, yoloClassNames, width, height)
-              : parseYoloDetectTxtToShapes(txtRaw, yoloClassNames, width, height)
-        const jsonText = createXAnyDocJson({
-          imageFileName: path.basename(targetImagePath),
-          imageWidth: width,
-          imageHeight: height,
-          shapes,
-        })
-        await fs.promises.writeFile(targetJsonPath, jsonText, "utf8")
-        savedPaths.push(targetJsonPath)
-        importedAnnotationCount += 1
-      }
-
-      if (importedImageCount <= 0) {
-        return {
-          errorMessage: "zip 内没有可导入图片。",
-          savedPaths: [],
-          importedImageCount: 0,
-          importedAnnotationCount: 0,
-          detectedFormat,
-        }
-      }
-
-      return {
-        errorMessage: "",
-        savedPaths,
-        importedImageCount,
-        importedAnnotationCount,
-        detectedFormat,
-      }
+      const started = startAnnotatedTaskImportJob({
+        globalConfigDir: request.globalConfigDir,
+        projectId: request.projectId,
+        taskId: request.taskId,
+        subset: request.subset,
+        zipPath,
+        importFormat,
+      })
+      return { errorMessage: started.errorMessage, jobId: started.jobId }
     } catch (error) {
       return {
         errorMessage: error instanceof Error ? error.message : String(error),
-        savedPaths: [],
-        importedImageCount: 0,
-        importedAnnotationCount: 0,
-        detectedFormat: "",
+        jobId: "",
       }
-    } finally {
-      if (tempRoot) {
-        await fs.promises.rm(tempRoot, { recursive: true, force: true })
+    }
+  },
+  async StartTaskDelete(request: StartTaskDeleteRequest): Promise<StartTaskDeleteResponse> {
+    try {
+      const resolvedTask = resolveTaskRootDir(request.globalConfigDir, request.projectId, request.taskId)
+      if (resolvedTask.errorMessage) {
+        return { errorMessage: resolvedTask.errorMessage, jobId: "" }
+      }
+      const started = startTaskDeleteJob({
+        globalConfigDir: request.globalConfigDir,
+        databaseDir: request.databaseDir || "",
+        projectId: request.projectId,
+        taskId: request.taskId,
+        taskRootDir: resolvedTask.taskRootDir,
+      })
+      return { errorMessage: started.errorMessage, jobId: started.jobId }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        jobId: "",
+      }
+    }
+  },
+  async ListAnnotatedTaskImportJobs(_request): Promise<ListAnnotatedTaskImportJobsResponse> {
+    try {
+      const jobs = listAnnotatedTaskImportJobsAsExportJobsForIpc().map((job) => {
+        const [statusMessage, meta = ""] = (job.message || "").split("\n---IMPORT_META---\n")
+        const [importedImageCountRaw, importedAnnotationCountRaw, detectedFormat = ""] = meta.split("|")
+        return {
+          id: job.id,
+          projectId: job.projectId,
+          taskId: job.taskId,
+          subset: job.versionName,
+          importFormat: job.outputDir,
+          status: job.status,
+          progress: job.progress,
+          message: statusMessage,
+          importedImageCount: Math.max(0, Math.floor(Number(importedImageCountRaw) || 0)),
+          importedAnnotationCount: Math.max(0, Math.floor(Number(importedAnnotationCountRaw) || 0)),
+          detectedFormat,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+        }
+      })
+      return { jobs }
+    } catch {
+      return { jobs: [] }
+    }
+  },
+  async GetAnnotatedTaskImportJob(
+    request: GetAnnotatedTaskImportJobRequest,
+  ): Promise<GetAnnotatedTaskImportJobResponse> {
+    try {
+      const jobId = (request.jobId || "").trim()
+      if (!jobId) {
+        return { found: false, job: undefined, errorMessage: "job_id 为空。" }
+      }
+      const job = getAnnotatedImportJobRecord(jobId)
+      if (!job) {
+        return { found: false, job: undefined, errorMessage: "" }
+      }
+      return {
+        found: true,
+        job: {
+          id: job.id,
+          projectId: job.projectId,
+          taskId: job.taskId,
+          subset: job.subset,
+          importFormat: job.importFormat,
+          status: job.status,
+          progress: job.progress,
+          message: job.statusMessage || job.message || "",
+          importedImageCount: job.importedImageCount,
+          importedAnnotationCount: job.importedAnnotationCount,
+          detectedFormat: job.detectedFormat,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+        },
+        errorMessage: "",
+      }
+    } catch (error) {
+      return {
+        found: false,
+        job: undefined,
+        errorMessage: error instanceof Error ? error.message : String(error),
       }
     }
   },
@@ -1978,6 +2066,7 @@ ipc.registerService(AppService({
         subset: item.subset,
         filePath: item.filePath,
         createdAt: item.createdAt,
+        hasAnnotation: item.hasAnnotation,
       }))
       return { files, errorMessage: "", hasMore: page.hasMore }
     } catch (error) {
@@ -1995,6 +2084,7 @@ ipc.registerService(AppService({
         name: t.name,
         subset: t.subset,
         fileCount: t.fileCount,
+        annotatedFileCount: t.annotatedFileCount ?? 0,
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
         coverColor: t.coverColor,
@@ -2018,6 +2108,10 @@ ipc.registerService(AppService({
         name: (t.name ?? "").trim(),
         subset: (t.subset ?? "").trim(),
         fileCount: Math.max(0, Math.floor(Number(t.fileCount) || 0)),
+        annotatedFileCount:
+          typeof t.annotatedFileCount === "number" && Number.isFinite(t.annotatedFileCount)
+            ? Math.max(0, Math.floor(t.annotatedFileCount))
+            : undefined,
         createdAt: (t.createdAt ?? "").trim(),
         updatedAt: (t.updatedAt ?? "").trim(),
         coverColor: (t.coverColor ?? "").trim() || "#334155",
@@ -2026,6 +2120,29 @@ ipc.registerService(AppService({
       return { errorMessage: "" }
     } catch (error) {
       return { errorMessage: error instanceof Error ? error.message : String(error) }
+    }
+  },
+  async GetProjectTaskAnnotatedCounts(
+    request: GetProjectTaskAnnotatedCountsRequest,
+  ): Promise<GetProjectTaskAnnotatedCountsResponse> {
+    try {
+      const projectId = (request.projectId || "").trim()
+      if (!projectId) {
+        return { items: [], errorMessage: "项目 ID 为空。" }
+      }
+      const counts = countAnnotatedImagesByTaskForProject(request.databaseDir || "", projectId)
+      return {
+        items: Object.entries(counts).map(([taskId, annotatedImageCount]) => ({
+          taskId,
+          annotatedImageCount,
+        })),
+        errorMessage: "",
+      }
+    } catch (error) {
+      return {
+        items: [],
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
     }
   },
   async GetProjectExportVersions(request: GetProjectExportVersionsRequest): Promise<GetProjectExportVersionsResponse> {
@@ -2383,6 +2500,10 @@ ipc.registerService(AppService({
         : buildUniqueExportFolderPath(parentDir, versionName)
       const trainBoundary = Math.max(0, Math.min(100, Math.floor(request.trainBoundary)))
       const valBoundary = Math.max(trainBoundary, Math.min(100, Math.floor(request.valBoundary)))
+      const projectTasks = readProjectTasks(request.globalConfigDir, projectId)
+      const fileCountById = new Map(projectTasks.map((t) => [t.id, Math.max(0, Math.floor(Number(t.fileCount) || 0))]))
+      const exportTaskIds = taskId ? [taskId] : (request.taskNames ?? []).map((item) => (item.taskId || "").trim()).filter(Boolean)
+      const estimatedImageCount = exportTaskIds.reduce((sum, id) => sum + (fileCountById.get(id) ?? 0), 0)
       const started = startDatasetExportJob({
         project,
         projectId,
@@ -2395,6 +2516,7 @@ ipc.registerService(AppService({
         compressToZip,
         outputPath,
         taskNameById: Object.fromEntries((request.taskNames ?? []).map((item) => [item.taskId, item.taskName])),
+        estimatedImageCount,
       })
       return { canceled: false, jobId: started.jobId, errorMessage: "" }
     } catch (error) {
@@ -2406,7 +2528,7 @@ ipc.registerService(AppService({
     }
   },
   async ListExportJobs(_request): Promise<ListExportJobsResponse> {
-    const jobs = listDatasetExportJobs().map((job) => ({
+    const exportJobs = listDatasetExportJobsForIpc().map((job) => ({
       id: job.id,
       projectId: job.projectId,
       taskId: job.taskId,
@@ -2420,6 +2542,11 @@ ipc.registerService(AppService({
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
     }))
+    const importJobs = listAnnotatedTaskImportJobsAsExportJobsForIpc()
+    const deleteJobs = listTaskDeleteJobsAsExportJobsForIpc()
+    const jobs = [...exportJobs, ...importJobs, ...deleteJobs]
+      .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
+      .slice(0, 24)
     return { jobs }
   },
   async GetDefaultDatabaseDir(_request): Promise<DefaultDatabaseDirResponse> {

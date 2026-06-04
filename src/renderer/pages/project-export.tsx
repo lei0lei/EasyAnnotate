@@ -144,6 +144,26 @@ async function countImageFilesByPaging(projectId: string, taskIds: string[]): Pr
   return total
 }
 
+async function countAnnotationFilesByPaging(projectId: string, taskIds: string[]): Promise<number> {
+  let total = 0
+  for (const taskId of taskIds) {
+    let offset = 0
+    while (true) {
+      const page = await listTaskFiles({
+        projectId,
+        taskId,
+        offset,
+        limit: SOURCE_IMAGE_COUNT_PAGE_SIZE,
+      })
+      if (page.errorMessage || page.files.length === 0) break
+      total += page.files.filter((file) => file.hasAnnotation).length
+      if (!page.hasMore) break
+      offset += page.files.length
+    }
+  }
+  return total
+}
+
 function formatTypeLabel(taskId?: string): string {
   return taskId ? "任务导出" : "项目导出"
 }
@@ -203,7 +223,9 @@ export default function ProjectExportPage() {
   const [hydrated, setHydrated] = useState(false)
   const [projectTasks, setProjectTasks] = useState<ProjectTaskItem[]>([])
   const [sourceImageCounting, setSourceImageCounting] = useState(false)
+  const [sourceAnnotationCounting, setSourceAnnotationCounting] = useState(false)
   const sourceImageCountTokenRef = useRef(0)
+  const sourceAnnotationCountTokenRef = useRef(0)
 
   const backHref = projectId ? `/projects/${projectId}` : "/projects/mine"
   const pageTitle = formatTypeLabel(taskId)
@@ -353,6 +375,29 @@ export default function ProjectExportPage() {
       .finally(() => {
         if (sourceImageCountTokenRef.current !== token) return
         setSourceImageCounting(false)
+      })
+  }
+
+  function handleRefreshSourceAnnotationCount() {
+    if (!projectId || sourceAnnotationCounting) return
+    const token = sourceAnnotationCountTokenRef.current + 1
+    sourceAnnotationCountTokenRef.current = token
+    setSourceAnnotationCounting(true)
+    setExportMessage("正在重新统计标注文件数量…")
+    const targetTaskIds = taskId ? [taskId] : projectTasks.map((item) => item.id)
+    void countAnnotationFilesByPaging(projectId, targetTaskIds)
+      .then((nextAnnotationFileCount) => {
+        if (sourceAnnotationCountTokenRef.current !== token) return
+        setSourceStats((prev) => ({ ...prev, annotationFileCount: nextAnnotationFileCount }))
+        setExportMessage("标注文件数量统计已更新")
+      })
+      .catch((error) => {
+        if (sourceAnnotationCountTokenRef.current !== token) return
+        setExportMessage(error instanceof Error ? `统计失败：${error.message}` : "统计失败")
+      })
+      .finally(() => {
+        if (sourceAnnotationCountTokenRef.current !== token) return
+        setSourceAnnotationCounting(false)
       })
   }
 
@@ -520,10 +565,21 @@ export default function ProjectExportPage() {
                 <p className="text-xs text-muted-foreground">类别数量</p>
                 <p className="mt-1 text-lg font-semibold text-foreground">{sourceStats.classCount}</p>
               </div>
-              <div className="rounded-md border-2 border-border/70 bg-muted/20 px-3 py-2">
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md border-2 border-border/70 bg-muted/20 px-3 py-2 text-left transition",
+                  "hover:border-primary/60 hover:bg-muted/30",
+                  sourceAnnotationCounting ? "cursor-wait opacity-90" : "cursor-pointer",
+                )}
+                onClick={handleRefreshSourceAnnotationCount}
+                disabled={sourceAnnotationCounting}
+                aria-label="重新统计标注文件数量"
+              >
                 <p className="text-xs text-muted-foreground">标注文件数量</p>
                 <p className="mt-1 text-lg font-semibold text-foreground">{sourceStats.annotationFileCount}</p>
-              </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">{sourceAnnotationCounting ? "统计中..." : "点击重算"}</p>
+              </button>
             </CardContent>
           </Card>
 

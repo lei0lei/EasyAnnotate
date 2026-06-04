@@ -25,6 +25,7 @@ import {
 } from "@/pages/project-task-detail/annotateTools/cuboid2d-geometry"
 import { RasterPreviewOverlay } from "@/pages/project-task-detail/raster-preview-overlay"
 import type { TaskDrawHintProps, TaskLeftPanelContentProps } from "@/pages/project-task-detail/components"
+import { blurTaskImageIndexInput } from "@/pages/project-task-detail/utils"
 import type {
   MouseEvent as ReactMouseEvent,
   MouseEventHandler,
@@ -303,6 +304,9 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
         <div
           ref={props.stageRef}
           className="relative h-full overflow-hidden border border-border/70 bg-background"
+          onPointerDownCapture={() => {
+            blurTaskImageIndexInput()
+          }}
           onWheel={props.onStageWheel}
           onMouseDown={props.onStageMouseDown}
           onMouseMove={props.onStageMouseMove}

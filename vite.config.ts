@@ -23,14 +23,20 @@ function defineMainConfig(): UserConfig {
       outDir: path.resolve(__dirname, "./out/main"),
       emptyOutDir: true,
       sourcemap: true,
-      ssr: path.resolve(__dirname, "./src/main/index.ts"),
+      ssr: true,
       rollupOptions: {
+        input: {
+          index: path.resolve(__dirname, "./src/main/index.ts"),
+          "dataset-export-child": path.resolve(__dirname, "./src/main/dataset-export-child.ts"),
+          "task-import-child": path.resolve(__dirname, "./src/main/task-import-child.ts"),
+          "task-delete-child": path.resolve(__dirname, "./src/main/task-delete-child.ts"),
+        },
         external: [
           "mobrowser",
         ],
         output: {
           format: "es",
-          entryFileNames: "index.js",
+          entryFileNames: "[name].js",
         },
       },
     },

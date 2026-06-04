@@ -120,3 +120,11 @@ export function rotatePoint(point: Point, center: Point, radians: number): Point
     y: center.y + tx * sin + ty * cos,
   }
 }
+
+/** 画布交互时收起顶部图片序号输入框，避免焦点留在 INPUT 上影响标注快捷键。 */
+export function blurTaskImageIndexInput(): void {
+  const active = document.activeElement
+  if (active instanceof HTMLElement && active.matches("[data-ea-task-image-index-input]")) {
+    active.blur()
+  }
+}

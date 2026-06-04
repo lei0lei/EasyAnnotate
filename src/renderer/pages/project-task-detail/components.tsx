@@ -10,6 +10,7 @@ import type { XAnyLabelShape } from "@/lib/xanylabeling-format"
 import { normalizeTagColor } from "@/pages/project-task-detail/utils"
 import { getShapeStableId } from "@/pages/project-task-detail/shape-identity"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
   ArrowLeft,
@@ -521,15 +522,96 @@ export function TaskLeftPanelContent({
   )
 }
 
-type TaskDetailHeaderProps = {
-  projectId: string | undefined
-  taskName: string
-  currentFileName: string
-  progressText: string
+type TaskImageIndexControlProps = {
+  currentOneBased: number
+  totalFiles: number
   canGoPrev: boolean
   canGoNext: boolean
   onPrev: () => void
   onNext: () => void
+  onJump: (oneBased: number) => void | Promise<void>
+}
+
+export function TaskImageIndexControl({
+  currentOneBased,
+  totalFiles,
+  canGoPrev,
+  canGoNext,
+  onPrev,
+  onNext,
+  onJump,
+}: TaskImageIndexControlProps) {
+  const [draft, setDraft] = useState(() => String(currentOneBased))
+
+  useEffect(() => {
+    setDraft(String(currentOneBased))
+  }, [currentOneBased])
+
+  const commitDraft = () => {
+    const parsed = Number.parseInt(draft.trim(), 10)
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(currentOneBased))
+      return
+    }
+    void onJump(parsed)
+  }
+
+  return (
+    <div className="flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-sm">
+      <button
+        type="button"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+        onClick={onPrev}
+        disabled={!canGoPrev}
+        aria-label="上一张"
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </button>
+      <div className="flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
+        <Input
+          className="h-6 w-12 border-border/80 px-1 text-center text-xs tabular-nums"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault()
+              commitDraft()
+              event.currentTarget.blur()
+            }
+          }}
+          onBlur={commitDraft}
+          disabled={totalFiles <= 0}
+          inputMode="numeric"
+          data-ea-task-image-index-input=""
+          aria-label="当前图片序号"
+        />
+        <span>/</span>
+        <span className="min-w-[2ch] text-center">{totalFiles > 0 ? totalFiles : 0}</span>
+      </div>
+      <button
+        type="button"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+        onClick={onNext}
+        disabled={!canGoNext}
+        aria-label="下一张"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
+type TaskDetailHeaderProps = {
+  projectId: string | undefined
+  taskName: string
+  currentFileName: string
+  currentImageOneBased: number
+  totalFileCount: number
+  canGoPrev: boolean
+  canGoNext: boolean
+  onPrev: () => void
+  onNext: () => void
+  onJumpToImage: (oneBased: number) => void | Promise<void>
   onDownloadCurrentImage: () => void
   onDeleteCurrentAnnotation: () => void
   onDeleteCurrentImage: () => void
@@ -539,11 +621,13 @@ export function TaskDetailHeader({
   projectId,
   taskName,
   currentFileName,
-  progressText,
+  currentImageOneBased,
+  totalFileCount,
   canGoPrev,
   canGoNext,
   onPrev,
   onNext,
+  onJumpToImage,
   onDownloadCurrentImage,
   onDeleteCurrentAnnotation,
   onDeleteCurrentImage,
@@ -559,27 +643,15 @@ export function TaskDetailHeader({
         <p className="truncate text-sm font-medium text-foreground">任务：{taskName}</p>
         <p className="truncate text-xs text-muted-foreground">文件：{currentFileName}</p>
       </div>
-      <div className="flex items-center gap-1 rounded-md border border-border/70 px-2 py-1 text-sm">
-        <button
-          type="button"
-          className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-          onClick={onPrev}
-          disabled={!canGoPrev}
-          aria-label="上一张"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-        <span className="min-w-[4rem] text-center text-xs tabular-nums text-muted-foreground">{progressText}</span>
-        <button
-          type="button"
-          className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-          onClick={onNext}
-          disabled={!canGoNext}
-          aria-label="下一张"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-      </div>
+      <TaskImageIndexControl
+        currentOneBased={currentImageOneBased}
+        totalFiles={totalFileCount}
+        canGoPrev={canGoPrev}
+        canGoNext={canGoNext}
+        onPrev={onPrev}
+        onNext={onNext}
+        onJump={onJumpToImage}
+      />
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
           <button

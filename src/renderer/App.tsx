@@ -36,7 +36,11 @@ import { Navigate, Route, Routes } from "react-router-dom"
 export default function App() {
   const [configReady, setConfigReady] = useState(false)
   useEffect(() => {
-    void hydrateAppConfigFromDisk().finally(() => setConfigReady(true))
+    void hydrateAppConfigFromDisk()
+      .catch((error) => {
+        console.error("加载应用配置失败：", error)
+      })
+      .finally(() => setConfigReady(true))
   }, [])
 
   return (

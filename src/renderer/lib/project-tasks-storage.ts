@@ -18,12 +18,47 @@ export function removeLegacyTasksStorageKey(projectId: string): void {
 }
 
 /** 从磁盘（及一次性 localStorage 迁移）加载项目任务列表 */
+function dedupeTasksById(tasks: TaskItem[]): TaskItem[] {
+  const byId = new Map<string, TaskItem>()
+  for (const task of tasks) {
+    const prev = byId.get(task.id)
+    if (!prev) {
+      byId.set(task.id, task)
+      continue
+    }
+    const preferCurrent =
+      task.fileCount > prev.fileCount ||
+      (task.fileCount === prev.fileCount && task.updatedAt.localeCompare(prev.updatedAt) > 0)
+    if (preferCurrent) {
+      byId.set(task.id, {
+        ...task,
+        annotatedFileCount: Math.max(task.annotatedFileCount ?? 0, prev.annotatedFileCount ?? 0) || undefined,
+      })
+    } else {
+      byId.set(task.id, {
+        ...prev,
+        annotatedFileCount: Math.max(task.annotatedFileCount ?? 0, prev.annotatedFileCount ?? 0) || undefined,
+      })
+    }
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
 export async function loadTasks(projectId: string): Promise<TaskItem[]> {
-  return listProjectTasks(projectId)
+  const raw = await listProjectTasks(projectId)
+  const deduped = dedupeTasksById(raw)
+  if (deduped.length < raw.length) {
+    try {
+      await saveProjectTasks(projectId, deduped)
+    } catch {
+      /* ignore heal failure */
+    }
+  }
+  return deduped
 }
 
 export async function persistTasks(projectId: string, tasks: TaskItem[]): Promise<void> {
-  const { errorMessage } = await saveProjectTasks(projectId, tasks)
+  const { errorMessage } = await saveProjectTasks(projectId, dedupeTasksById(tasks))
   if (errorMessage) {
     throw new Error(errorMessage)
   }
@@ -52,6 +87,21 @@ export async function createTask(
   const id =
     input.id ??
     (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)
+  const existingIndex = existing.findIndex((task) => task.id === id)
+  if (existingIndex >= 0) {
+    const prev = existing[existingIndex]!
+    const updated: TaskItem = {
+      ...prev,
+      name: input.name.trim(),
+      subset: input.subset.trim(),
+      fileCount: Math.max(0, Math.floor(input.fileCount)),
+      updatedAt: now,
+    }
+    const next = [...existing]
+    next[existingIndex] = updated
+    await persistTasks(projectId, dedupeTasksById(next))
+    return updated
+  }
   const task: TaskItem = {
     id,
     name: input.name.trim(),
@@ -61,7 +111,7 @@ export async function createTask(
     updatedAt: now,
     coverColor: TASK_COLORS[existing.length % TASK_COLORS.length],
   }
-  await persistTasks(projectId, [task, ...existing])
+  await persistTasks(projectId, dedupeTasksById([task, ...existing]))
   return task
 }
 
@@ -85,6 +135,30 @@ export async function appendTaskFileCount(projectId: string, taskId: string, add
     return {
       ...task,
       fileCount: Math.max(0, task.fileCount + delta),
+      updatedAt: now,
+    }
+  })
+  if (!changed) return false
+  await persistTasks(projectId, next)
+  return true
+}
+
+export async function updateTaskAnnotatedFileCount(
+  projectId: string,
+  taskId: string,
+  annotatedFileCount: number,
+): Promise<boolean> {
+  const safeCount = Math.max(0, Math.floor(Number(annotatedFileCount) || 0))
+  const tasks = await loadTasks(projectId)
+  let changed = false
+  const now = new Date().toISOString()
+  const next = tasks.map((task) => {
+    if (task.id !== taskId) return task
+    if (task.annotatedFileCount === safeCount) return task
+    changed = true
+    return {
+      ...task,
+      annotatedFileCount: safeCount,
       updatedAt: now,
     }
   })

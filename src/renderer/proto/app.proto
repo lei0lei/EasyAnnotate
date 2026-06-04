@@ -262,6 +262,16 @@ message ImportTaskImageZipResponse {
   int32 imported_image_count = 3;
 }
 
+/** 统计图片 ZIP 内可导入的图片数量（不解压到任务目录）。 */
+message CountTaskImageZipRequest {
+  string zip_path = 1;
+}
+
+message CountTaskImageZipResponse {
+  string error_message = 1;
+  int32 image_count = 2;
+}
+
 /** 导入已标注 ZIP 到任务目录。 */
 message ImportAnnotatedTaskZipRequest {
   string global_config_dir = 1;
@@ -279,6 +289,62 @@ message ImportAnnotatedTaskZipResponse {
   int32 imported_image_count = 3;
   int32 imported_annotation_count = 4;
   string detected_format = 5;
+}
+
+message StartAnnotatedTaskZipImportRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string subset = 4;
+  string zip_path = 5;
+  string import_format = 6;
+}
+
+message StartAnnotatedTaskZipImportResponse {
+  string error_message = 1;
+  string job_id = 2;
+}
+
+message StartTaskDeleteRequest {
+  string global_config_dir = 1;
+  string database_dir = 2;
+  string project_id = 3;
+  string task_id = 4;
+}
+
+message StartTaskDeleteResponse {
+  string error_message = 1;
+  string job_id = 2;
+}
+
+message ListAnnotatedTaskImportJobsResponse {
+  repeated AnnotatedTaskImportJobItem jobs = 1;
+}
+
+message GetAnnotatedTaskImportJobRequest {
+  string job_id = 1;
+}
+
+message GetAnnotatedTaskImportJobResponse {
+  bool found = 1;
+  AnnotatedTaskImportJobItem job = 2;
+  string error_message = 3;
+}
+
+message AnnotatedTaskImportJobItem {
+  string id = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string subset = 4;
+  string import_format = 5;
+  string status = 6;
+  int32 progress = 7;
+  string message = 8;
+  int32 imported_image_count = 9;
+  int32 imported_annotation_count = 10;
+  string detected_format = 11;
+  string created_at = 12;
+  string updated_at = 13;
 }
 
 message DefaultDatabaseDirResponse {
@@ -301,6 +367,8 @@ message TaskFileItem {
   string subset = 4;
   string file_path = 5;
   string created_at = 6;
+  /** 图片旁存在非空同名 .json 标注文件 */
+  bool has_annotation = 7;
 }
 
 message ListTaskFilesResponse {
@@ -318,6 +386,8 @@ message ProjectTaskItem {
   string created_at = 5;
   string updated_at = 6;
   string cover_color = 7;
+  /** 已标注图片数（导入或统计写入；未设置时项目页延迟加载） */
+  int32 annotated_file_count = 8;
 }
 
 message ListProjectTasksRequest {
@@ -338,6 +408,21 @@ message SaveProjectTasksRequest {
 
 message SaveProjectTasksResponse {
   string error_message = 1;
+}
+
+message GetProjectTaskAnnotatedCountsRequest {
+  string database_dir = 1;
+  string project_id = 2;
+}
+
+message TaskAnnotatedCountItem {
+  string task_id = 1;
+  int32 annotated_image_count = 2;
+}
+
+message GetProjectTaskAnnotatedCountsResponse {
+  repeated TaskAnnotatedCountItem items = 1;
+  string error_message = 2;
 }
 
 /** 项目导出页 Version 配置（JSON 文档，与 renderer ExportVersionDoc 对齐） */
@@ -647,9 +732,15 @@ service AppService {
   rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
   rpc SaveTaskFiles(SaveTaskFilesRequest) returns (SaveTaskFilesResponse);
   rpc ImportTaskImageZip(ImportTaskImageZipRequest) returns (ImportTaskImageZipResponse);
+  rpc CountTaskImageZip(CountTaskImageZipRequest) returns (CountTaskImageZipResponse);
   rpc ImportAnnotatedTaskZip(ImportAnnotatedTaskZipRequest) returns (ImportAnnotatedTaskZipResponse);
+  rpc StartAnnotatedTaskZipImport(StartAnnotatedTaskZipImportRequest) returns (StartAnnotatedTaskZipImportResponse);
+  rpc StartTaskDelete(StartTaskDeleteRequest) returns (StartTaskDeleteResponse);
+  rpc ListAnnotatedTaskImportJobs(google.protobuf.Empty) returns (ListAnnotatedTaskImportJobsResponse);
+  rpc GetAnnotatedTaskImportJob(GetAnnotatedTaskImportJobRequest) returns (GetAnnotatedTaskImportJobResponse);
   rpc ListTaskFiles(ListTaskFilesRequest) returns (ListTaskFilesResponse);
   rpc ListProjectTasks(ListProjectTasksRequest) returns (ListProjectTasksResponse);
+  rpc GetProjectTaskAnnotatedCounts(GetProjectTaskAnnotatedCountsRequest) returns (GetProjectTaskAnnotatedCountsResponse);
   rpc SaveProjectTasks(SaveProjectTasksRequest) returns (SaveProjectTasksResponse);
   rpc GetProjectExportVersions(GetProjectExportVersionsRequest) returns (GetProjectExportVersionsResponse);
   rpc SaveProjectExportVersions(SaveProjectExportVersionsRequest) returns (SaveProjectExportVersionsResponse);

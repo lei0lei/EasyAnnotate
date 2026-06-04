@@ -39,6 +39,7 @@ export type TaskFileItem = {
   subset: string
   filePath: string
   createdAt: string
+  hasAnnotation: boolean
 }
 
 export type ExportJobItem = {
@@ -245,6 +246,22 @@ export async function saveTaskFiles(payload: {
   }
 }
 
+export type AnnotatedTaskImportJobItem = {
+  id: string
+  projectId: string
+  taskId: string
+  subset: string
+  importFormat: string
+  status: string
+  progress: number
+  message: string
+  importedImageCount: number
+  importedAnnotationCount: number
+  detectedFormat: string
+  createdAt: string
+  updatedAt: string
+}
+
 export async function importAnnotatedTaskZip(payload: {
   projectId: string
   taskId: string
@@ -272,6 +289,153 @@ export async function importAnnotatedTaskZip(payload: {
     importedImageCount: Math.max(0, Math.floor(Number(response.importedImageCount) || 0)),
     importedAnnotationCount: Math.max(0, Math.floor(Number(response.importedAnnotationCount) || 0)),
     detectedFormat: response.detectedFormat || "",
+  }
+}
+
+export async function startAnnotatedTaskZipImport(payload: {
+  projectId: string
+  taskId: string
+  subset: string
+  zipPath: string
+  importFormat: string
+}): Promise<{ errorMessage: string; jobId: string }> {
+  const response = await ipc.app.StartAnnotatedTaskZipImport({
+    globalConfigDir: globalConfigDir(),
+    projectId: payload.projectId,
+    taskId: payload.taskId,
+    subset: payload.subset,
+    zipPath: payload.zipPath,
+    importFormat: payload.importFormat,
+  })
+  return {
+    errorMessage: response.errorMessage || "",
+    jobId: response.jobId || "",
+  }
+}
+
+export const ANNOTATED_IMPORT_EXPORT_FORMAT = "annotated-import"
+const IMPORT_JOB_META_SEP = "\n---IMPORT_META---\n"
+
+export function parseAnnotatedImportJobFromExportJob(job: ExportJobItem): AnnotatedTaskImportJobItem | null {
+  if (job.exportFormat !== ANNOTATED_IMPORT_EXPORT_FORMAT) return null
+  const [statusMessage, meta = ""] = (job.message || "").split(IMPORT_JOB_META_SEP)
+  const [importedImageCountRaw, importedAnnotationCountRaw, detectedFormat = ""] = meta.split("|")
+  return mapAnnotatedImportJobFields({
+    id: job.id,
+    projectId: job.projectId,
+    taskId: job.taskId,
+    subset: job.versionName || "",
+    importFormat: job.outputDir || "",
+    status: job.status || "",
+    progress: job.progress,
+    message: statusMessage || job.message || "",
+    importedImageCount: importedImageCountRaw,
+    importedAnnotationCount: importedAnnotationCountRaw,
+    detectedFormat,
+    createdAt: job.createdAt || "",
+    updatedAt: job.updatedAt || "",
+  })
+}
+
+function mapAnnotatedImportJobFields(input: {
+  id: string
+  projectId: string
+  taskId: string
+  subset: string
+  importFormat: string
+  status: string
+  progress: number | string | undefined
+  message: string
+  importedImageCount: number | string | undefined
+  importedAnnotationCount: number | string | undefined
+  detectedFormat: string
+  createdAt: string
+  updatedAt: string
+}): AnnotatedTaskImportJobItem {
+  return {
+    id: input.id,
+    projectId: input.projectId,
+    taskId: input.taskId,
+    subset: input.subset,
+    importFormat: input.importFormat,
+    status: input.status,
+    progress: Math.max(0, Math.min(100, Math.floor(Number(input.progress) || 0))),
+    message: input.message,
+    importedImageCount: Math.max(0, Math.floor(Number(input.importedImageCount) || 0)),
+    importedAnnotationCount: Math.max(0, Math.floor(Number(input.importedAnnotationCount) || 0)),
+    detectedFormat: input.detectedFormat,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+  }
+}
+
+/** 轮询单个导入 job（只读一个 state 文件，避免 ListExportJobs 全量同步） */
+export async function getAnnotatedTaskImportJob(jobId: string): Promise<AnnotatedTaskImportJobItem | null> {
+  const trimmed = jobId.trim()
+  if (!trimmed) return null
+  try {
+    const response = await ipc.app.GetAnnotatedTaskImportJob({ jobId: trimmed })
+    if (response.errorMessage || !response.found || !response.job) return null
+    const job = response.job
+    return mapAnnotatedImportJobFields({
+      id: job.id || "",
+      projectId: job.projectId || "",
+      taskId: job.taskId || "",
+      subset: job.subset || "",
+      importFormat: job.importFormat || "",
+      status: job.status || "",
+      progress: job.progress,
+      message: job.message || "",
+      importedImageCount: job.importedImageCount,
+      importedAnnotationCount: job.importedAnnotationCount,
+      detectedFormat: job.detectedFormat || "",
+      createdAt: job.createdAt || "",
+      updatedAt: job.updatedAt || "",
+    })
+  } catch {
+    const exportJobs = await listExportJobs()
+    const parsed = exportJobs
+      .map(parseAnnotatedImportJobFromExportJob)
+      .find((item) => item?.id === trimmed)
+    return parsed ?? null
+  }
+}
+
+export async function listAnnotatedTaskImportJobs(): Promise<AnnotatedTaskImportJobItem[]> {
+  try {
+    const response = await ipc.app.ListAnnotatedTaskImportJobs({})
+    return (response.jobs ?? []).map((job) =>
+      mapAnnotatedImportJobFields({
+        id: job.id || "",
+        projectId: job.projectId || "",
+        taskId: job.taskId || "",
+        subset: job.subset || "",
+        importFormat: job.importFormat || "",
+        status: job.status || "",
+        progress: job.progress,
+        message: job.message || "",
+        importedImageCount: job.importedImageCount,
+        importedAnnotationCount: job.importedAnnotationCount,
+        detectedFormat: job.detectedFormat || "",
+        createdAt: job.createdAt || "",
+        updatedAt: job.updatedAt || "",
+      }),
+    )
+  } catch {
+    const exportJobs = await listExportJobs()
+    return exportJobs
+      .map(parseAnnotatedImportJobFromExportJob)
+      .filter((job): job is AnnotatedTaskImportJobItem => job !== null)
+  }
+}
+
+export async function countTaskImageZip(zipPath: string): Promise<{ errorMessage: string; imageCount: number }> {
+  const response = await ipc.app.CountTaskImageZip({
+    zipPath,
+  })
+  return {
+    errorMessage: response.errorMessage || "",
+    imageCount: Math.max(0, Math.floor(Number(response.imageCount) || 0)),
   }
 }
 
@@ -316,6 +480,7 @@ export async function listTaskFiles(payload: {
     subset: item.subset ?? "",
     filePath: item.filePath ?? "",
     createdAt: item.createdAt ?? "",
+    hasAnnotation: item.hasAnnotation === true,
   }))
   return {
     files,
@@ -358,19 +523,123 @@ export async function listAllTaskFiles(payload: {
   return { files, errorMessage: "" }
 }
 
-export async function deleteTaskData(payload: {
+export async function deleteTaskData(
+  payload: {
+    projectId: string
+    taskId: string
+  },
+  options?: {
+    onProgress?: (progress: number, message: string) => void
+  },
+): Promise<{ errorMessage: string }> {
+  const started = await startTaskDelete(payload)
+  if (!started.jobId) {
+    return { errorMessage: started.errorMessage || "无法启动删除任务" }
+  }
+  const waited = await waitForTaskDeleteJob(started.jobId, options)
+  if (waited.errorMessage) {
+    return waited
+  }
+  if (started.errorMessage) {
+    return { errorMessage: started.errorMessage }
+  }
+  return { errorMessage: "" }
+}
+
+export const TASK_DELETE_EXPORT_FORMAT = "task-delete"
+const DELETE_JOB_META_SEP = "\n---DELETE_META---\n"
+
+export type TaskDeleteJobItem = {
+  id: string
   projectId: string
   taskId: string
-}): Promise<{ errorMessage: string }> {
-  const response = await ipc.app.SaveTaskFiles({
+  status: string
+  progress: number
+  message: string
+  deletedFileCount: number
+  totalFileCount: number
+  errorMessage: string
+  createdAt: string
+  updatedAt: string
+}
+
+export function parseTaskDeleteJobFromExportJob(job: ExportJobItem): TaskDeleteJobItem | null {
+  if (job.exportFormat !== TASK_DELETE_EXPORT_FORMAT) return null
+  const [statusMessage, meta = ""] = (job.message || "").split(DELETE_JOB_META_SEP)
+  const [deletedFileCountRaw, totalFileCountRaw, errorMessage = ""] = meta.split("|")
+  return {
+    id: job.id,
+    projectId: job.projectId,
+    taskId: job.taskId,
+    status: job.status || "",
+    progress: Math.max(0, Math.min(100, Math.floor(Number(job.progress) || 0))),
+    message: statusMessage || job.message || "",
+    deletedFileCount: Math.max(0, Math.floor(Number(deletedFileCountRaw) || 0)),
+    totalFileCount: Math.max(0, Math.floor(Number(totalFileCountRaw) || 0)),
+    errorMessage,
+    createdAt: job.createdAt || "",
+    updatedAt: job.updatedAt || "",
+  }
+}
+
+export async function listTaskDeleteJobs(): Promise<TaskDeleteJobItem[]> {
+  const exportJobs = await listExportJobs()
+  return exportJobs
+    .map(parseTaskDeleteJobFromExportJob)
+    .filter((job): job is TaskDeleteJobItem => job !== null)
+}
+
+export async function startTaskDelete(payload: {
+  projectId: string
+  taskId: string
+}): Promise<{ errorMessage: string; jobId: string }> {
+  const response = await ipc.app.StartTaskDelete({
     globalConfigDir: globalConfigDir(),
     databaseDir: "",
     projectId: payload.projectId,
     taskId: payload.taskId,
-    subset: "__DELETE_TASK__",
-    files: [],
   })
-  return { errorMessage: response.errorMessage || "" }
+  return {
+    errorMessage: response.errorMessage || "",
+    jobId: response.jobId || "",
+  }
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+export async function waitForTaskDeleteJob(
+  jobId: string,
+  options?: { onProgress?: (progress: number, message: string) => void },
+): Promise<{ errorMessage: string }> {
+  const deadline = Date.now() + 60 * 60 * 1000
+  while (Date.now() < deadline) {
+    let jobs: TaskDeleteJobItem[] = []
+    try {
+      jobs = await listTaskDeleteJobs()
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+    const current = jobs.find((item) => item.id === jobId)
+    if (!current) {
+      await sleepMs(400)
+      continue
+    }
+    options?.onProgress?.(current.progress, current.message)
+    if (current.status === "success") {
+      return { errorMessage: "" }
+    }
+    if (current.status === "failed") {
+      return { errorMessage: current.errorMessage || current.message || "删除失败" }
+    }
+    await sleepMs(500)
+  }
+  return { errorMessage: "删除任务超时" }
 }
 
 export async function readImageFile(path: string): Promise<{ content?: Uint8Array; errorMessage: string }> {
@@ -591,6 +860,8 @@ export type ProjectTaskItem = {
   name: string
   subset: string
   fileCount: number
+  /** 已标注图片数（ZIP 导入等写入；未设置时由项目页延迟统计） */
+  annotatedFileCount?: number
   createdAt: string
   updatedAt: string
   coverColor: string
@@ -610,6 +881,10 @@ function normalizeTasksFromJson(parsed: unknown): ProjectTaskItem[] {
       subset: typeof item.subset === "string" ? item.subset.trim() : "",
       fileCount:
         typeof item.fileCount === "number" && Number.isFinite(item.fileCount) ? Math.max(0, Math.floor(item.fileCount)) : 0,
+      annotatedFileCount:
+        typeof item.annotatedFileCount === "number" && Number.isFinite(item.annotatedFileCount)
+          ? Math.max(0, Math.floor(item.annotatedFileCount))
+          : undefined,
       createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
       updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
       coverColor: typeof item.coverColor === "string" && item.coverColor.trim() ? item.coverColor.trim() : "#334155",
@@ -623,6 +898,7 @@ function mapProtoTasksToItems(
     name?: string
     subset?: string
     fileCount?: number
+    annotatedFileCount?: number
     createdAt?: string
     updatedAt?: string
     coverColor?: string
@@ -633,6 +909,10 @@ function mapProtoTasksToItems(
     name: (t.name ?? "").trim(),
     subset: (t.subset ?? "").trim(),
     fileCount: Math.max(0, Math.floor(Number(t.fileCount) || 0)),
+    annotatedFileCount: (() => {
+      const n = Math.floor(Number(t.annotatedFileCount) || 0)
+      return n > 0 ? n : undefined
+    })(),
     createdAt: t.createdAt ?? "",
     updatedAt: t.updatedAt ?? "",
     coverColor: (t.coverColor ?? "").trim() || "#334155",
@@ -651,6 +931,7 @@ async function saveProjectTasksToDisk(
       name: t.name,
       subset: t.subset,
       fileCount: t.fileCount,
+      annotatedFileCount: t.annotatedFileCount ?? 0,
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       coverColor: t.coverColor,
@@ -696,6 +977,25 @@ export async function listProjectTasks(projectId: string): Promise<ProjectTaskIt
 
 export async function saveProjectTasks(projectId: string, tasks: ProjectTaskItem[]): Promise<{ errorMessage: string }> {
   return saveProjectTasksToDisk(projectId, tasks)
+}
+
+export async function getProjectTaskAnnotatedCounts(
+  projectId: string,
+): Promise<{ counts: Record<string, number>; errorMessage: string }> {
+  const response = await ipc.app.GetProjectTaskAnnotatedCounts({
+    databaseDir: "",
+    projectId,
+  })
+  if (response.errorMessage) {
+    return { counts: {}, errorMessage: response.errorMessage }
+  }
+  const counts: Record<string, number> = {}
+  for (const item of response.items ?? []) {
+    const taskId = (item.taskId || "").trim()
+    if (!taskId) continue
+    counts[taskId] = Math.max(0, Math.floor(Number(item.annotatedImageCount) || 0))
+  }
+  return { counts, errorMessage: "" }
 }
 
 export async function getProjectExportVersionsFromDisk(projectId: string): Promise<{

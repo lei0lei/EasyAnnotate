@@ -153,6 +153,7 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
   const hasMoreTaskFilesRef = useRef(false)
   const taskFilesPageLoadingRef = useRef(false)
   const taskFilesPageTokenRef = useRef(0)
+  const loadedFilesCountRef = useRef(0)
 
   useEffect(() => {
     dispatchToolRef.current = dispatchTool
@@ -171,12 +172,13 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     nextPageOffsetRef.current = 0
     hasMoreTaskFilesRef.current = false
     taskFilesPageLoadingRef.current = false
+    loadedFilesCountRef.current = 0
   }, [])
 
   const loadTaskFilesPage = useCallback(
-    async (reset: boolean) => {
-      if (!projectId || !taskId) return
-      if (taskFilesPageLoadingRef.current) return
+    async (reset: boolean): Promise<number> => {
+      if (!projectId || !taskId) return loadedFilesCountRef.current
+      if (taskFilesPageLoadingRef.current) return loadedFilesCountRef.current
       taskFilesPageLoadingRef.current = true
       try {
         const token = taskFilesPageTokenRef.current
@@ -188,20 +190,24 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
           limit: TASK_FILES_BATCH_SIZE,
         })
         if (token !== taskFilesPageTokenRef.current) {
-          return
+          return loadedFilesCountRef.current
         }
         if (result.errorMessage) {
-          if (reset) setFiles([])
+          if (reset) {
+            setFiles([])
+            loadedFilesCountRef.current = 0
+          }
           hasMoreTaskFilesRef.current = false
           setError(result.errorMessage)
           setImageLoadingHint(`任务文件读取失败：${result.errorMessage}`)
-          return
+          return loadedFilesCountRef.current
         }
         setError(null)
         const incoming = result.files
         hasMoreTaskFilesRef.current = result.hasMore
         if (reset) {
           nextPageOffsetRef.current = incoming.length
+          loadedFilesCountRef.current = incoming.length
           setFiles(incoming)
           if (incoming.length === 0) {
             setImageLoadingHint("任务内暂无图片")
@@ -210,28 +216,47 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
           } else {
             setImageLoadingHint(`任务文件已加载 ${incoming.length} 项，准备读取图片`)
           }
-        } else {
-          setFiles((prev) => {
-            const merged = [...prev]
-            const seen = new Set(prev.map((item) => item.filePath))
-            for (const item of incoming) {
-              if (seen.has(item.filePath)) continue
-              seen.add(item.filePath)
-              merged.push(item)
-            }
-            nextPageOffsetRef.current = merged.length
-            const hint = result.hasMore
-              ? `任务文件分页加载：已加载 ${merged.length} 项，翻到末尾继续加载`
-              : `任务文件分页加载完成：共 ${merged.length} 项`
-            setImageLoadingHint(hint)
-            return merged
-          })
+          return loadedFilesCountRef.current
         }
+        let mergedCount = loadedFilesCountRef.current
+        setFiles((prev) => {
+          const merged = [...prev]
+          const seen = new Set(prev.map((item) => item.filePath))
+          for (const item of incoming) {
+            if (seen.has(item.filePath)) continue
+            seen.add(item.filePath)
+            merged.push(item)
+          }
+          mergedCount = merged.length
+          nextPageOffsetRef.current = merged.length
+          const hint = result.hasMore
+            ? `任务文件分页加载：已加载 ${merged.length} 项，翻到末尾继续加载`
+            : `任务文件分页加载完成：共 ${merged.length} 项`
+          setImageLoadingHint(hint)
+          return merged
+        })
+        loadedFilesCountRef.current = mergedCount
+        return mergedCount
       } finally {
         taskFilesPageLoadingRef.current = false
       }
     },
     [projectId, setError, setFiles, setImageLoadingHint, taskId],
+  )
+
+  const ensureFilesLoadedThroughIndex = useCallback(
+    async (targetIndex: number): Promise<number> => {
+      if (!projectId || !taskId) return 0
+      const safeTarget = Math.max(0, Math.floor(targetIndex))
+      let guard = 0
+      const maxPages = Math.max(1, Math.ceil((safeTarget + 1) / TASK_FILES_BATCH_SIZE)) + 2
+      while (loadedFilesCountRef.current <= safeTarget && hasMoreTaskFilesRef.current && guard < maxPages) {
+        guard += 1
+        await loadTaskFilesPage(false)
+      }
+      return Math.max(0, Math.min(safeTarget, loadedFilesCountRef.current - 1))
+    },
+    [loadTaskFilesPage, projectId, taskId],
   )
 
   const maybeLoadNextFilesBatch = useCallback(() => {
@@ -399,5 +424,5 @@ export function useTaskBootstrap(params: UseTaskBootstrapParams) {
     }
   }, [setStageSize, stageRef, currentFilePath])
 
-  return { reloadTaskFiles, handleImageDecodeError }
+  return { reloadTaskFiles, handleImageDecodeError, ensureFilesLoadedThroughIndex }
 }

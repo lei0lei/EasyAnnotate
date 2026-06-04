@@ -1,14 +1,19 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { createTask } from "@/lib/project-tasks-storage"
-import { deleteTaskData, getProject, importAnnotatedTaskZip, importTaskImageZip, type ProjectItem } from "@/lib/projects-api"
+import { appendTaskFileCount, createTask, deleteTask, updateTaskAnnotatedFileCount } from "@/lib/project-tasks-storage"
+import { deleteTaskData, getProject, countTaskImageZip, startAnnotatedTaskZipImport, getAnnotatedTaskImportJob, importTaskImageZip, type ProjectItem } from "@/lib/projects-api"
+import {
+  markProjectBootstrapAfterImport,
+  projectDetailNavStateAfterImport,
+} from "@/lib/project-page-bootstrap"
 import {
   candidatesFromBrowserFiles,
   pickAnnotatedZipViaDialog,
   pickTaskUploadFilesViaDialog,
   saveTaskUploadCandidates,
   splitTaskUploadPaths,
+  TASK_CREATE_IMAGE_UPLOAD_LIMIT,
   TASK_UPLOAD_PREVIEW_LIMIT,
   type TaskUploadCandidate,
 } from "@/lib/task-file-upload"
@@ -40,6 +45,8 @@ export default function ProjectTaskCreatePage() {
   const [subset, setSubset] = useState("")
   const [imageFiles, setImageFiles] = useState<TaskUploadCandidate[]>([])
   const [imageZipPaths, setImageZipPaths] = useState<string[]>([])
+  const [zipImageCounts, setZipImageCounts] = useState<Record<string, number>>({})
+  const [zipCountLoading, setZipCountLoading] = useState(false)
   const [annotatedZipPath, setAnnotatedZipPath] = useState("")
   const [annotatedImportFormat, setAnnotatedImportFormat] = useState<(typeof ANNOTATED_IMPORT_FORMATS)[number]["value"]>(
     "xanylabeling",
@@ -47,6 +54,21 @@ export default function ProjectTaskCreatePage() {
   const [importSummary, setImportSummary] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
+  const [activeImportJobId, setActiveImportJobId] = useState("")
+  const [importProgress, setImportProgress] = useState(0)
+  const [importMessage, setImportMessage] = useState("")
+  type PendingAfterImport = {
+    taskId: string
+    name: string
+    subset: string
+    totalImageCount: number
+    summaryParts: string[]
+    importedAnyImage: boolean
+    taskCreated: boolean
+  }
+  const pendingCreateRef = useRef<PendingAfterImport | null>(null)
+  const importCompletionHandledRef = useRef("")
+  const pageAliveRef = useRef(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [copyErrorLabel, setCopyErrorLabel] = useState("复制错误详情")
 
@@ -68,15 +90,190 @@ export default function ProjectTaskCreatePage() {
     }
   }, [projectId])
 
+  useEffect(() => {
+    let alive = true
+    if (imageZipPaths.length === 0) {
+      setZipImageCounts({})
+      setZipCountLoading(false)
+      return () => {
+        alive = false
+      }
+    }
+    setZipCountLoading(true)
+    void (async () => {
+      const next: Record<string, number> = {}
+      for (const zipPath of imageZipPaths) {
+        const result = await countTaskImageZip(zipPath)
+        if (!alive) return
+        next[zipPath] = result.errorMessage ? 0 : result.imageCount
+      }
+      if (!alive) return
+      setZipImageCounts(next)
+      setZipCountLoading(false)
+    })()
+    return () => {
+      alive = false
+    }
+  }, [imageZipPaths])
+
+  useEffect(() => {
+    pageAliveRef.current = true
+    return () => {
+      pageAliveRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!activeImportJobId) return
+    let alive = true
+    const jobId = activeImportJobId
+
+    const finishImportPolling = () => {
+      setSubmitting(false)
+      setActiveImportJobId("")
+      pendingCreateRef.current = null
+      setImportProgress(0)
+      setImportMessage("")
+    }
+
+    const tick = () => {
+      void getAnnotatedTaskImportJob(jobId)
+        .then((current) => {
+          if (!alive) return
+          if (!current) {
+            window.setTimeout(tick, 500)
+            return
+          }
+          setImportProgress(Math.max(0, Math.min(100, current.progress)))
+          setImportMessage(current.message || `导入进度 ${current.progress}%`)
+          if (current.status === "success") {
+            if (importCompletionHandledRef.current === jobId) return
+            importCompletionHandledRef.current = jobId
+            const pendingSnapshot = pendingCreateRef.current
+            finishImportPolling()
+            void (async () => {
+              const pending = pendingSnapshot
+              const taskId = (pending?.taskId || current.taskId || "").trim()
+              if (!projectId || !taskId) {
+                if (pageAliveRef.current) {
+                  setErrorMessage("导入已完成，但无法关联任务记录，请返回项目页刷新后查看。")
+                }
+                return
+              }
+              const summaryParts = [
+                ...(pending?.summaryParts ?? []),
+                `标注 ZIP 导入 ${current.importedImageCount} 张图片 / ${current.importedAnnotationCount} 份标注（${current.detectedFormat || "unknown"}）`,
+              ]
+              if (pageAliveRef.current) {
+                setImportSummary(summaryParts.join("；"))
+              }
+              try {
+                if (pending?.taskCreated) {
+                  if (current.importedImageCount > 0) {
+                    await appendTaskFileCount(projectId, taskId, current.importedImageCount)
+                  }
+                  if (current.importedAnnotationCount > 0) {
+                    await updateTaskAnnotatedFileCount(projectId, taskId, current.importedAnnotationCount)
+                  }
+                } else {
+                  await createTask(projectId, {
+                    id: taskId,
+                    name: pending?.name ?? name.trim(),
+                    subset: pending?.subset ?? subset.trim(),
+                    fileCount: (pending?.totalImageCount ?? 0) + current.importedImageCount,
+                  })
+                }
+                if (pageAliveRef.current) {
+                  await new Promise<void>((resolve) => {
+                    window.setTimeout(resolve, 300)
+                  })
+                  markProjectBootstrapAfterImport(projectId)
+                  navigate(`/projects/${projectId}`, {
+                    replace: true,
+                    state: projectDetailNavStateAfterImport(),
+                  })
+                }
+              } catch (error) {
+                if (!pageAliveRef.current) return
+                const hadFiles = Boolean(pending?.importedAnyImage || current.importedImageCount > 0)
+                if (hadFiles) {
+                  await deleteTask(projectId, taskId).catch(() => undefined)
+                  const rollback = await deleteTaskData({ projectId, taskId })
+                  if (rollback.errorMessage) {
+                    setErrorMessage(`提交失败且回滚失败：${rollback.errorMessage}`)
+                  } else {
+                    const message = error instanceof Error ? error.message : String(error)
+                    setErrorMessage(`提交失败：${message}`)
+                  }
+                } else {
+                  const message = error instanceof Error ? error.message : String(error)
+                  setErrorMessage(`提交失败：${message}`)
+                }
+              }
+            })()
+            return
+          }
+          if (current.status === "failed") {
+            if (importCompletionHandledRef.current === jobId) return
+            importCompletionHandledRef.current = jobId
+            const pendingSnapshot = pendingCreateRef.current
+            finishImportPolling()
+            void (async () => {
+              const pending = pendingSnapshot
+              const taskId = (pending?.taskId || current.taskId || "").trim()
+              if (projectId && taskId) {
+                if (pending?.taskCreated) {
+                  await deleteTask(projectId, taskId).catch(() => undefined)
+                }
+                const rollback = await deleteTaskData({ projectId, taskId })
+                if (pageAliveRef.current) {
+                  if (rollback.errorMessage) {
+                    setErrorMessage(`导入已标注数据失败且回滚失败：${rollback.errorMessage}`)
+                  } else {
+                    setErrorMessage(`导入已标注数据失败：${current.message || "未知错误"}`)
+                  }
+                }
+              } else if (pageAliveRef.current) {
+                setErrorMessage(`导入已标注数据失败：${current.message || "未知错误"}`)
+              }
+            })()
+            return
+          }
+          window.setTimeout(tick, 500)
+        })
+        .catch((error) => {
+          if (!alive) return
+          const message = error instanceof Error ? error.message : String(error)
+          setErrorMessage(`查询导入进度失败：${message || "IPC 通信异常，请重启应用后重试"}`)
+          finishImportPolling()
+        })
+    }
+    tick()
+    return () => {
+      alive = false
+    }
+  }, [activeImportJobId, name, navigate, projectId, subset])
+
+  const hasImageUploadSelection = imageFiles.length > 0 || imageZipPaths.length > 0
+  const zipImageTotal = useMemo(
+    () => imageZipPaths.reduce((sum, zipPath) => sum + Math.max(0, zipImageCounts[zipPath] ?? 0), 0),
+    [imageZipPaths, zipImageCounts],
+  )
+  const totalSelectedImages = imageFiles.length + zipImageTotal
+  const imageLimitExceeded =
+    hasImageUploadSelection && !zipCountLoading && totalSelectedImages > TASK_CREATE_IMAGE_UPLOAD_LIMIT
+  const imageUploadLimitBlocked =
+    hasImageUploadSelection && (zipCountLoading || totalSelectedImages > TASK_CREATE_IMAGE_UPLOAD_LIMIT)
+
   const canCreate = useMemo(
     () =>
       name.trim().length > 0 &&
       !!projectId &&
       !!project &&
+      !imageUploadLimitBlocked &&
       (imageFiles.length > 0 || imageZipPaths.length > 0 || annotatedZipPath.trim().length > 0),
-    [name, imageFiles.length, imageZipPaths.length, annotatedZipPath, project, projectId],
+    [name, imageFiles.length, imageZipPaths.length, annotatedZipPath, project, projectId, imageUploadLimitBlocked],
   )
-  const hasImageUploadSelection = imageFiles.length > 0 || imageZipPaths.length > 0
   const hasAnnotatedZipSelection = annotatedZipPath.trim().length > 0
   const imageUploadDisabled = hasAnnotatedZipSelection || submitting
   const annotatedZipDisabled = hasImageUploadSelection || submitting
@@ -159,12 +356,19 @@ export default function ProjectTaskCreatePage() {
 
   async function handleCreate() {
     if (!projectId || !project || !canCreate || submitting) return
+    if (hasImageUploadSelection && totalSelectedImages > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
+      setErrorMessage(
+        `已选择 ${totalSelectedImages} 张图片，超过单次上限 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。`,
+      )
+      return
+    }
     setSubmitting(true)
     setErrorMessage(null)
     setImportSummary("")
     setUploadProgress(null)
     let pendingTaskId = ""
     let importedAnyImage = false
+    let importJobStarted = false
     try {
       if (hasImageUploadSelection && hasAnnotatedZipSelection) {
         setErrorMessage("一次仅允许一种上传方式，请先清空其中一类后再提交。")
@@ -210,22 +414,41 @@ export default function ProjectTaskCreatePage() {
       }
 
       if (annotatedZipPath.trim()) {
-        const result = await importAnnotatedTaskZip({
+        setImportProgress(0)
+        setImportMessage("正在启动导入…")
+        importCompletionHandledRef.current = ""
+        await createTask(projectId, {
+          id: taskId,
+          name: name.trim(),
+          subset: subset.trim(),
+          fileCount: totalImageCount,
+        })
+        importedAnyImage = importedAnyImage || totalImageCount > 0
+        const started = await startAnnotatedTaskZipImport({
           projectId,
           taskId,
           subset: subset.trim(),
           zipPath: annotatedZipPath.trim(),
           importFormat: annotatedImportFormat,
         })
-        if (result.errorMessage) {
-          setErrorMessage(`导入已标注数据失败：${result.errorMessage}`)
+        if (started.errorMessage) {
+          await deleteTask(projectId, taskId).catch(() => undefined)
+          setErrorMessage(`导入已标注数据失败：${started.errorMessage}`)
           return
         }
-        totalImageCount += result.importedImageCount
-        importedAnyImage = importedAnyImage || result.importedImageCount > 0
-        summaryParts.push(
-          `标注 ZIP 导入 ${result.importedImageCount} 张图片 / ${result.importedAnnotationCount} 份标注（${result.detectedFormat || "unknown"}）`,
-        )
+        markProjectBootstrapAfterImport(projectId)
+        importJobStarted = true
+        pendingCreateRef.current = {
+          taskId,
+          name: name.trim(),
+          subset: subset.trim(),
+          totalImageCount,
+          summaryParts,
+          importedAnyImage,
+          taskCreated: true,
+        }
+        setActiveImportJobId(started.jobId)
+        return
       }
 
       if (summaryParts.length > 0) {
@@ -250,8 +473,10 @@ export default function ProjectTaskCreatePage() {
       const message = error instanceof Error ? error.message : String(error)
       setErrorMessage(`提交失败：${message}`)
     } finally {
-      setSubmitting(false)
-      setUploadProgress(null)
+      if (!importJobStarted) {
+        setSubmitting(false)
+        setUploadProgress(null)
+      }
     }
   }
 
@@ -361,6 +586,7 @@ export default function ProjectTaskCreatePage() {
                 onClick={() => {
                   setImageFiles([])
                   setImageZipPaths([])
+                  setZipImageCounts({})
                   setImportSummary("")
                   setErrorMessage(null)
                 }}
@@ -372,9 +598,20 @@ export default function ProjectTaskCreatePage() {
               <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
               <p className="mt-2 text-sm text-foreground">支持直接上传图片文件，或导入仅包含图片的 ZIP</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                大批量（如 500 张）请优先用「选择图片文件」或打包为 ZIP；中文文件名乱码时再用「浏览器选图」。
+                单次最多 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张；大批量请优先用「选择图片 / ZIP」。
               </p>
             </div>
+            {zipCountLoading ? <p className="text-xs text-muted-foreground">正在统计 ZIP 内图片数量…</p> : null}
+            {imageLimitExceeded ? (
+              <p className="text-sm font-medium text-destructive">
+                已选择 {totalSelectedImages} 张图片，超过单次上限 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。
+              </p>
+            ) : null}
+            {!imageLimitExceeded && hasImageUploadSelection && !zipCountLoading ? (
+              <p className="text-xs text-muted-foreground">
+                已选 {totalSelectedImages} / {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张
+              </p>
+            ) : null}
             <input
               ref={imageInputRef}
               type="file"
@@ -391,7 +628,13 @@ export default function ProjectTaskCreatePage() {
               }}
             />
             <Input
-              value={`${imageFiles.length} 张图片，${imageZipPaths.length} 个图片 ZIP`}
+              value={
+                zipCountLoading
+                  ? `${imageFiles.length} 张图片，${imageZipPaths.length} 个图片 ZIP（统计中…）`
+                  : `${imageFiles.length} 张图片，${imageZipPaths.length} 个图片 ZIP${
+                      zipImageTotal > 0 ? `（ZIP 内 ${zipImageTotal} 张）` : ""
+                    }`
+              }
               readOnly
               placeholder="未选择文件"
             />
@@ -426,6 +669,7 @@ export default function ProjectTaskCreatePage() {
                   <li key={zip} className="flex items-center justify-between gap-2">
                     <span className="truncate text-muted-foreground" title={zip}>
                       {zip}
+                      {zipCountLoading ? "" : `（${zipImageCounts[zip] ?? 0} 张）`}
                     </span>
                     <Button
                       type="button"
@@ -474,7 +718,9 @@ export default function ProjectTaskCreatePage() {
             <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center transition-colors">
               <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
               <p className="mt-2 text-sm text-foreground">选择导入格式后导入对应标注 ZIP</p>
-              <p className="mt-1 text-xs text-muted-foreground">当前后端支持 xanylabeling、yolo detect、yolo obb，其它格式后续支持。</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                支持 xanylabeling、yolo detect / obb / segment；大批量 ZIP 将走子进程导入并显示进度条。
+              </p>
             </div>
             <div className="space-y-2">
               <label htmlFor="task-create-import-format" className="text-xs font-medium text-foreground">
@@ -521,14 +767,33 @@ export default function ProjectTaskCreatePage() {
             <Button type="button" onClick={() => void handleCreate()} disabled={!canCreate || submitting}>
               {submitting && uploadProgress
                 ? `上传中 ${uploadProgress.done}/${uploadProgress.total}…`
-                : submitting
-                  ? "提交中..."
-                  : "提交"}
+                : submitting && activeImportJobId
+                  ? "导入中..."
+                  : submitting
+                    ? "提交中..."
+                    : "提交"}
             </Button>
             <Button type="button" variant="outline" asChild>
               <Link to={`/projects/${projectId}`}>取消</Link>
             </Button>
           </div>
+
+          {submitting && (activeImportJobId || importMessage) ? (
+            <div className="w-full space-y-1.5">
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted/90">
+                <div
+                  className="h-full rounded-full bg-primary/90 transition-[width] duration-300"
+                  style={{ width: `${importProgress}%` }}
+                  role="progressbar"
+                  aria-valuenow={Math.round(importProgress)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label="标注 ZIP 导入进度"
+                />
+              </div>
+              {importMessage ? <p className="text-xs text-muted-foreground">{importMessage}</p> : null}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>
