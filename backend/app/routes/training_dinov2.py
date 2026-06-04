@@ -76,7 +76,12 @@ def workspace(job_slug: str = Query(...)) -> dict[str, Any]:
 
 @router.get("/devices")
 def devices() -> dict[str, Any]:
-    return {"devices": dinov2_runner.list_devices()}
+    from app.train import yolo_runner
+
+    return {
+        "devices": dinov2_runner.list_devices(),
+        "environment": yolo_runner.cuda_device_environment(),
+    }
 
 
 @router.get("/status")

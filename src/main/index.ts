@@ -50,8 +50,12 @@ import {
   ImportTaskImageZipResponse,
   CountTaskImageZipRequest,
   CountTaskImageZipResponse,
+  CountTaskSourceStatsRequest,
+  CountTaskSourceStatsResponse,
   ImportAnnotatedTaskZipRequest,
   ImportAnnotatedTaskZipResponse,
+  ImportAnnotatedTaskFilesRequest,
+  ImportAnnotatedTaskFilesResponse,
   StartAnnotatedTaskZipImportRequest,
   StartAnnotatedTaskZipImportResponse,
   StartTaskDeleteRequest,
@@ -121,12 +125,16 @@ import {
 import { deleteProjectTasksFile, readProjectTasks, writeProjectTasks } from "./project-tasks-disk";
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
 import {
+  getYoloDatasetZipUploadJob,
+  startYoloDatasetZipUploadFromPath,
+} from "./yolo-dataset-upload";
+import {
   buildUniqueExportFolderPath,
   buildUniqueZipPath,
   listDatasetExportJobsForIpc,
   startDatasetExportJob,
 } from "./dataset-export";
-import { runAnnotatedTaskZipImport } from "./annotated-task-import-core";
+import { runAnnotatedTaskFilesImport, runAnnotatedTaskZipImport } from "./annotated-task-import-core";
 import {
   listAnnotatedTaskImportJobsAsExportJobsForIpc,
   startAnnotatedTaskImportJob,
@@ -803,6 +811,39 @@ function annotationJsonExists(imagePath: string): boolean {
   } catch {
     return false
   }
+}
+
+const TASK_IMAGE_EXTENSIONS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".bmp",
+  ".gif",
+  ".webp",
+  ".tif",
+  ".tiff",
+])
+
+function countTaskSourceStatsInDir(taskRootDir: string): { imageCount: number; annotationCount: number } {
+  if (!fs.existsSync(taskRootDir)) return { imageCount: 0, annotationCount: 0 }
+  let imageCount = 0
+  let annotationCount = 0
+  const stack = [taskRootDir]
+  while (stack.length > 0) {
+    const dir = stack.pop()!
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(absPath)
+        continue
+      }
+      const ext = path.extname(entry.name).toLowerCase()
+      if (!TASK_IMAGE_EXTENSIONS.has(ext)) continue
+      imageCount += 1
+      if (annotationJsonExists(absPath)) annotationCount += 1
+    }
+  }
+  return { imageCount, annotationCount }
 }
 
 function resolveSystemTarExecutable(): string {
@@ -1909,6 +1950,26 @@ ipc.registerService(AppService({
       detectedFormat: result.detectedFormat,
     }
   },
+  async ImportAnnotatedTaskFiles(
+    request: ImportAnnotatedTaskFilesRequest,
+  ): Promise<ImportAnnotatedTaskFilesResponse> {
+    const result = await runAnnotatedTaskFilesImport({
+      globalConfigDir: request.globalConfigDir,
+      projectId: request.projectId,
+      taskId: request.taskId,
+      subset: request.subset,
+      imagePaths: (request.imagePaths ?? []).map((item) => resolveExistingIpcPath(item)).filter(Boolean),
+      labelPaths: (request.labelPaths ?? []).map((item) => resolveExistingIpcPath(item)).filter(Boolean),
+      yoloClassPaths: (request.yoloClassPaths ?? []).map((item) => resolveExistingIpcPath(item)).filter(Boolean),
+      importFormat: request.importFormat,
+    })
+    return {
+      errorMessage: result.errorMessage,
+      importedImageCount: result.importedImageCount,
+      importedAnnotationCount: result.importedAnnotationCount,
+      detectedFormat: result.detectedFormat,
+    }
+  },
   async StartAnnotatedTaskZipImport(
     request: StartAnnotatedTaskZipImportRequest,
   ): Promise<StartAnnotatedTaskZipImportResponse> {
@@ -2074,6 +2135,45 @@ ipc.registerService(AppService({
         files: [],
         errorMessage: error instanceof Error ? error.message : String(error),
         hasMore: false,
+      }
+    }
+  },
+  async CountTaskSourceStats(
+    request: CountTaskSourceStatsRequest,
+  ): Promise<CountTaskSourceStatsResponse> {
+    try {
+      const projectId = (request.projectId || "").trim()
+      if (!projectId) {
+        return { imageCount: 0, annotationCount: 0, errorMessage: "项目 ID 为空。" }
+      }
+      const project = getProject(request.globalConfigDir, projectId)
+      if (!project) {
+        return { imageCount: 0, annotationCount: 0, errorMessage: "项目不存在。" }
+      }
+
+      let taskIds = (request.taskIds ?? []).map((id) => id.trim()).filter(Boolean)
+      if (taskIds.length === 0) {
+        taskIds = readProjectTasks(request.globalConfigDir, projectId).map((t) => t.id)
+      }
+
+      let imageCount = 0
+      let annotationCount = 0
+      for (const taskId of taskIds) {
+        const resolved = resolveTaskRootDir(request.globalConfigDir, projectId, taskId)
+        if (resolved.errorMessage) {
+          return { imageCount: 0, annotationCount: 0, errorMessage: resolved.errorMessage }
+        }
+        const stats = countTaskSourceStatsInDir(resolved.taskRootDir)
+        imageCount += stats.imageCount
+        annotationCount += stats.annotationCount
+      }
+
+      return { imageCount, annotationCount, errorMessage: "" }
+    } catch (error) {
+      return {
+        imageCount: 0,
+        annotationCount: 0,
+        errorMessage: error instanceof Error ? error.message : String(error),
       }
     }
   },
@@ -2846,6 +2946,41 @@ ipc.registerService(AppService({
         errorMessage: error instanceof Error ? error.message : String(error),
         datasetZipPath: "",
       }
+    }
+  },
+  async StartYoloDatasetZipUpload(request) {
+    const globalConfigDir = request.globalConfigDir?.trim() ?? ""
+    const jobSlug = request.jobSlug?.trim() ?? ""
+    const sourceZipPath = request.sourceZipPath?.trim() ?? ""
+    const started = startYoloDatasetZipUploadFromPath({
+      globalConfigDir,
+      jobSlug,
+      sourceZipPath,
+    })
+    return { jobId: started.jobId, errorMessage: started.errorMessage }
+  },
+  async GetYoloDatasetZipUploadJob(request) {
+    const jobId = request.jobId?.trim() ?? ""
+    if (!jobId) {
+      return { found: false, job: undefined, errorMessage: "job_id 为空" }
+    }
+    const job = getYoloDatasetZipUploadJob(jobId)
+    if (!job) {
+      return { found: false, job: undefined, errorMessage: "" }
+    }
+    return {
+      found: true,
+      job: {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        phase: job.phase,
+        message: job.message,
+        dataYaml: job.dataYaml,
+        datasetZipFilename: job.datasetZipFilename,
+        errorMessage: job.errorMessage,
+      },
+      errorMessage: "",
     }
   },
 }))

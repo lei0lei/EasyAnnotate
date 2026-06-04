@@ -46,13 +46,18 @@ function isConfiguredBackendUrl(rawUrl: string): boolean {
   }
 }
 
+/** 远程后端直连 HTTP；本地打包 WebView 仍走主进程代理。 */
+function shouldProxyBackendHttp(): boolean {
+  return !loadAppConfig().backend.remoteConnected
+}
+
 let backendFetchProxyInstalled = false
 let nativeFetchRef: typeof fetch | null = null
 
 async function proxyFetchViaMainProcess(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const request = new Request(input, init)
   const url = request.url
-  if (!isConfiguredBackendUrl(url)) {
+  if (!isConfiguredBackendUrl(url) || !shouldProxyBackendHttp()) {
     return (nativeFetchRef ?? fetch)(input, init)
   }
   if (init?.signal?.aborted) {

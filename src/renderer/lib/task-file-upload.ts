@@ -91,6 +91,81 @@ export function splitTaskUploadPaths(paths: string[]): {
   return { imageCandidates, zipPaths, unsupportedPaths }
 }
 
+export function annotationExtensionForImportFormat(importFormat: string): string {
+  return importFormat.trim().toLowerCase() === "xanylabeling" ? ".json" : ".txt"
+}
+
+export function splitAnnotatedUploadPaths(
+  paths: string[],
+  importFormat: string,
+): {
+  imageCandidates: TaskUploadCandidate[]
+  labelPaths: string[]
+  yoloClassPaths: string[]
+  unsupportedPaths: string[]
+} {
+  const labelExt = annotationExtensionForImportFormat(importFormat)
+  const isYolo = importFormat.trim().toLowerCase() !== "xanylabeling"
+  const imageCandidates: TaskUploadCandidate[] = []
+  const labelPaths: string[] = []
+  const yoloClassPaths: string[] = []
+  const unsupportedPaths: string[] = []
+
+  for (const raw of paths) {
+    const sourcePath = normalizeDialogPath(raw)
+    if (!sourcePath) continue
+    const normalized = sourcePath.replace(/\\/g, "/")
+    const fileName = normalized.slice(normalized.lastIndexOf("/") + 1)
+    const dot = fileName.lastIndexOf(".")
+    const ext = dot >= 0 ? fileName.slice(dot).toLowerCase() : ""
+    const baseLower = fileName.toLowerCase()
+
+    if (isYolo && (baseLower === "data.yaml" || baseLower === "data.yml" || baseLower === "classes.txt")) {
+      yoloClassPaths.push(sourcePath)
+      continue
+    }
+    if (IMAGE_EXTS.has(ext)) {
+      imageCandidates.push({
+        id:
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random()}`,
+        name: fileNameFromPath(sourcePath),
+        sourcePath,
+      })
+      continue
+    }
+    if (ext === labelExt) {
+      labelPaths.push(sourcePath)
+      continue
+    }
+    unsupportedPaths.push(sourcePath)
+  }
+
+  return { imageCandidates, labelPaths, yoloClassPaths, unsupportedPaths }
+}
+
+export function countMatchedAnnotatedLabels(
+  images: TaskUploadCandidate[],
+  labelPaths: string[],
+): number {
+  const labelByStem = new Map<string, string>()
+  for (const labelPath of labelPaths) {
+    const fileName = fileNameFromPath(labelPath)
+    const dot = fileName.lastIndexOf(".")
+    const stem = (dot >= 0 ? fileName.slice(0, dot) : fileName).toLowerCase()
+    if (!stem || labelByStem.has(stem)) continue
+    labelByStem.set(stem, labelPath)
+  }
+  let matched = 0
+  for (const image of images) {
+    const dot = image.name.lastIndexOf(".")
+    const stem = (dot >= 0 ? image.name.slice(0, dot) : image.name).toLowerCase()
+    if (labelByStem.has(stem)) matched += 1
+  }
+  return matched
+}
+
 /** 通过系统对话框选文件（推荐）：只传路径，由主进程 copyFileSync。 */
 export async function pickTaskUploadFilesViaDialog(title: string): Promise<TaskUploadCandidate[]> {
   const picked = await ipc.app.SelectFiles({

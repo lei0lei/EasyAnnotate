@@ -11,6 +11,7 @@ import {
   fetchYoloTrainingModelFiles,
   fetchYoloTrainingResultImages,
   probeBackendHealth,
+  TRAINING_RUNNING_POLL_MS,
   YOLO_ACTIVE_JOB_STORAGE_KEY,
   type YoloTrainingModelFile,
   type YoloTrainingResultImage,
@@ -208,27 +209,9 @@ export default function ModelsTrainingHistoryDetailPage() {
 
   useEffect(() => {
     if (!backendOk || !jobSlug || !isRunning) return
-    const t = window.setInterval(refreshJobState, 2000)
+    const t = window.setInterval(() => refreshJobState({ silent: true }), TRAINING_RUNNING_POLL_MS)
     return () => window.clearInterval(t)
   }, [backendOk, jobSlug, isRunning, refreshJobState])
-
-  useEffect(() => {
-    if (!backendOk || !jobSlug || !isRunning || activeTab !== "logs") return
-    const t = window.setInterval(() => loadLogs({ silent: true }), 3000)
-    return () => window.clearInterval(t)
-  }, [backendOk, jobSlug, isRunning, activeTab, loadLogs])
-
-  useEffect(() => {
-    if (!backendOk || !jobSlug || !isRunning || activeTab !== "results") return
-    const t = window.setInterval(() => loadResults({ silent: true }), 5000)
-    return () => window.clearInterval(t)
-  }, [backendOk, jobSlug, isRunning, activeTab, loadResults])
-
-  useEffect(() => {
-    if (!backendOk || !jobSlug || !isRunning || activeTab !== "models") return
-    const t = window.setInterval(() => loadModels({ silent: true }), 5000)
-    return () => window.clearInterval(t)
-  }, [backendOk, jobSlug, isRunning, activeTab, loadModels])
 
   const pageTitle = useMemo(() => displayName || jobSlug || "训练任务", [displayName, jobSlug])
 
@@ -306,7 +289,9 @@ export default function ModelsTrainingHistoryDetailPage() {
         </p>
       ) : null}
       {isRunning ? (
-        <p className="mt-2 shrink-0 text-sm text-primary">该任务正在训练中，完成后方可删除。</p>
+        <p className="mt-2 shrink-0 text-sm text-primary">
+          该任务正在训练中，完成后方可删除。进度约每分钟自动更新；日志与结果请手动重新加载。
+        </p>
       ) : null}
       {deleteError ? <p className="mt-2 shrink-0 text-sm text-destructive">{deleteError}</p> : null}
 
@@ -346,7 +331,7 @@ export default function ModelsTrainingHistoryDetailPage() {
           >
             <div className="mb-3 flex shrink-0 items-center justify-end gap-2">
               {isRunning ? (
-                <span className="mr-auto text-xs text-muted-foreground">训练中，日志将自动刷新</span>
+                <span className="mr-auto text-xs text-muted-foreground">训练中，请点击「重新加载」查看最新日志</span>
               ) : (
                 <span className="mr-auto" />
               )}
@@ -412,7 +397,7 @@ export default function ModelsTrainingHistoryDetailPage() {
           >
             <div className="mb-3 flex shrink-0 items-center justify-end gap-2">
               {isRunning ? (
-                <span className="mr-auto text-xs text-muted-foreground">训练中，结果图将自动刷新</span>
+                <span className="mr-auto text-xs text-muted-foreground">训练中，请点击「重新加载」查看最新结果图</span>
               ) : (
                 <span className="mr-auto" />
               )}
@@ -448,9 +433,7 @@ export default function ModelsTrainingHistoryDetailPage() {
           >
             <div className="mb-3 flex shrink-0 items-center justify-end gap-2">
               {isRunning ? (
-                <span className="mr-auto text-xs text-muted-foreground">
-                  {m.historyDetail.modelsRefreshing}
-                </span>
+                <span className="mr-auto text-xs text-muted-foreground">训练中，请点击「重新加载」查看最新模型</span>
               ) : (
                 <span className="mr-auto" />
               )}

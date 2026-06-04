@@ -440,9 +440,11 @@ def list_devices() -> list[dict[str, Any]]:
     try:
         import torch
 
-        if torch.cuda.is_available():
-            n = torch.cuda.device_count()
-            for i in range(n):
+        if not torch.cuda.is_available():
+            return devices
+        n = torch.cuda.device_count()
+        for i in range(n):
+            try:
                 name = torch.cuda.get_device_name(i)
                 total_b, used_b = _gpu_memory_bytes(i)
                 if total_b is not None and used_b is not None:
@@ -460,6 +462,46 @@ def list_devices() -> list[dict[str, Any]]:
                 if used_b is not None:
                     entry["memory_used_bytes"] = used_b
                 devices.append(entry)
+            except Exception:
+                devices.append({"id": str(i), "label": f"GPU {i}: （不可用）"})
     except Exception:
         pass
     return devices
+
+
+def _nvidia_smi_gpu_count() -> int | None:
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        lines = [ln for ln in (result.stdout or "").splitlines() if ln.strip().startswith("GPU ")]
+        return len(lines) if lines else None
+    except Exception:
+        return None
+
+
+def cuda_device_environment() -> dict[str, Any]:
+    """供 /devices 诊断：PyTorch 可见卡数 vs nvidia-smi / CUDA_VISIBLE_DEVICES。"""
+    import os
+
+    out: dict[str, Any] = {
+        "torch_cuda_device_count": 0,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        "nvidia_smi_gpu_count": _nvidia_smi_gpu_count(),
+    }
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            out["torch_cuda_device_count"] = int(torch.cuda.device_count())
+    except Exception:
+        pass
+    return out

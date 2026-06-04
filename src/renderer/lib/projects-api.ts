@@ -292,6 +292,38 @@ export async function importAnnotatedTaskZip(payload: {
   }
 }
 
+export async function importAnnotatedTaskFiles(payload: {
+  projectId: string
+  taskId: string
+  subset: string
+  imagePaths: string[]
+  labelPaths: string[]
+  yoloClassPaths: string[]
+  importFormat: string
+}): Promise<{
+  errorMessage: string
+  importedImageCount: number
+  importedAnnotationCount: number
+  detectedFormat: string
+}> {
+  const response = await ipc.app.ImportAnnotatedTaskFiles({
+    globalConfigDir: globalConfigDir(),
+    projectId: payload.projectId,
+    taskId: payload.taskId,
+    subset: payload.subset,
+    imagePaths: payload.imagePaths,
+    labelPaths: payload.labelPaths,
+    yoloClassPaths: payload.yoloClassPaths,
+    importFormat: payload.importFormat,
+  })
+  return {
+    errorMessage: response.errorMessage || "",
+    importedImageCount: Math.max(0, Math.floor(Number(response.importedImageCount) || 0)),
+    importedAnnotationCount: Math.max(0, Math.floor(Number(response.importedAnnotationCount) || 0)),
+    detectedFormat: response.detectedFormat || "",
+  }
+}
+
 export async function startAnnotatedTaskZipImport(payload: {
   projectId: string
   taskId: string
@@ -485,6 +517,22 @@ export async function listTaskFiles(payload: {
   return {
     files,
     hasMore: response.hasMore === true,
+    errorMessage: response.errorMessage || "",
+  }
+}
+
+export async function countTaskSourceStats(payload: {
+  projectId: string
+  taskIds?: string[]
+}): Promise<{ imageCount: number; annotationCount: number; errorMessage: string }> {
+  const response = await ipc.app.CountTaskSourceStats({
+    globalConfigDir: globalConfigDir(),
+    projectId: payload.projectId,
+    taskIds: payload.taskIds ?? [],
+  })
+  return {
+    imageCount: Math.max(0, Math.floor(Number(response.imageCount) || 0)),
+    annotationCount: Math.max(0, Math.floor(Number(response.annotationCount) || 0)),
     errorMessage: response.errorMessage || "",
   }
 }

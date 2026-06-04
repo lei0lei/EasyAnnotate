@@ -1,17 +1,18 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { PageTabs } from "@/components/page-tabs"
 import { appendTaskFileCount, createTask, deleteTask, updateTaskAnnotatedFileCount } from "@/lib/project-tasks-storage"
-import { deleteTaskData, getProject, countTaskImageZip, startAnnotatedTaskZipImport, getAnnotatedTaskImportJob, importTaskImageZip, type ProjectItem } from "@/lib/projects-api"
+import { deleteTaskData, getProject, countTaskImageZip, startAnnotatedTaskZipImport, getAnnotatedTaskImportJob, importTaskImageZip, importAnnotatedTaskFiles, type ProjectItem } from "@/lib/projects-api"
 import {
   markProjectBootstrapAfterImport,
   projectDetailNavStateAfterImport,
 } from "@/lib/project-page-bootstrap"
 import {
-  candidatesFromBrowserFiles,
-  pickAnnotatedZipViaDialog,
+  countMatchedAnnotatedLabels,
   pickTaskUploadFilesViaDialog,
   saveTaskUploadCandidates,
+  splitAnnotatedUploadPaths,
   splitTaskUploadPaths,
   TASK_CREATE_IMAGE_UPLOAD_LIMIT,
   TASK_UPLOAD_PREVIEW_LIMIT,
@@ -35,10 +36,16 @@ const ANNOTATED_IMPORT_FORMATS = [
   { value: "yolo-pose", label: "yolo pose" },
 ] as const
 
+type UploadTabId = "images" | "annotated"
+
+const UPLOAD_TABS = [
+  { id: "images" as const, label: "上传图片" },
+  { id: "annotated" as const, label: "上传图片及标注" },
+]
+
 export default function ProjectTaskCreatePage() {
   const navigate = useNavigate()
   const { projectId } = useParams<{ projectId: string }>()
-  const imageInputRef = useRef<HTMLInputElement | null>(null)
   const [project, setProject] = useState<ProjectItem | undefined>(undefined)
   const [loadingProject, setLoadingProject] = useState(false)
   const [name, setName] = useState("")
@@ -47,10 +54,14 @@ export default function ProjectTaskCreatePage() {
   const [imageZipPaths, setImageZipPaths] = useState<string[]>([])
   const [zipImageCounts, setZipImageCounts] = useState<Record<string, number>>({})
   const [zipCountLoading, setZipCountLoading] = useState(false)
-  const [annotatedZipPath, setAnnotatedZipPath] = useState("")
+  const [annotatedImageFiles, setAnnotatedImageFiles] = useState<TaskUploadCandidate[]>([])
+  const [annotatedLabelPaths, setAnnotatedLabelPaths] = useState<string[]>([])
+  const [annotatedYoloClassPaths, setAnnotatedYoloClassPaths] = useState<string[]>([])
+  const [annotatedZipPaths, setAnnotatedZipPaths] = useState<string[]>([])
   const [annotatedImportFormat, setAnnotatedImportFormat] = useState<(typeof ANNOTATED_IMPORT_FORMATS)[number]["value"]>(
     "xanylabeling",
   )
+  const [uploadTab, setUploadTab] = useState<UploadTabId>("images")
   const [importSummary, setImportSummary] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
@@ -255,6 +266,16 @@ export default function ProjectTaskCreatePage() {
   }, [activeImportJobId, name, navigate, projectId, subset])
 
   const hasImageUploadSelection = imageFiles.length > 0 || imageZipPaths.length > 0
+  const hasAnnotatedFileSelection = annotatedImageFiles.length > 0
+  const hasAnnotatedZipSelection = annotatedZipPaths.length > 0
+  const annotatedMatchedLabelCount = useMemo(
+    () => countMatchedAnnotatedLabels(annotatedImageFiles, annotatedLabelPaths),
+    [annotatedImageFiles, annotatedLabelPaths],
+  )
+  const annotatedImageLimitExceeded =
+    hasAnnotatedFileSelection && annotatedImageFiles.length > TASK_CREATE_IMAGE_UPLOAD_LIMIT
+  const annotatedUploadLimitBlocked =
+    hasAnnotatedFileSelection && annotatedImageFiles.length > TASK_CREATE_IMAGE_UPLOAD_LIMIT
   const zipImageTotal = useMemo(
     () => imageZipPaths.reduce((sum, zipPath) => sum + Math.max(0, zipImageCounts[zipPath] ?? 0), 0),
     [imageZipPaths, zipImageCounts],
@@ -265,18 +286,89 @@ export default function ProjectTaskCreatePage() {
   const imageUploadLimitBlocked =
     hasImageUploadSelection && (zipCountLoading || totalSelectedImages > TASK_CREATE_IMAGE_UPLOAD_LIMIT)
 
-  const canCreate = useMemo(
-    () =>
-      name.trim().length > 0 &&
-      !!projectId &&
-      !!project &&
-      !imageUploadLimitBlocked &&
-      (imageFiles.length > 0 || imageZipPaths.length > 0 || annotatedZipPath.trim().length > 0),
-    [name, imageFiles.length, imageZipPaths.length, annotatedZipPath, project, projectId, imageUploadLimitBlocked],
-  )
-  const hasAnnotatedZipSelection = annotatedZipPath.trim().length > 0
-  const imageUploadDisabled = hasAnnotatedZipSelection || submitting
-  const annotatedZipDisabled = hasImageUploadSelection || submitting
+  const canCreate = useMemo(() => {
+    if (name.trim().length === 0 || !projectId || !project) return false
+    if (uploadTab === "images") {
+      if (imageUploadLimitBlocked) return false
+      return imageFiles.length > 0 || imageZipPaths.length > 0
+    }
+    if (annotatedUploadLimitBlocked) return false
+    return hasAnnotatedFileSelection || hasAnnotatedZipSelection
+  }, [
+    name,
+    uploadTab,
+    imageFiles.length,
+    imageZipPaths.length,
+    hasAnnotatedFileSelection,
+    hasAnnotatedZipSelection,
+    project,
+    projectId,
+    imageUploadLimitBlocked,
+    annotatedUploadLimitBlocked,
+  ])
+
+  function handleUploadTabChange(next: UploadTabId) {
+    if (submitting || next === uploadTab) return
+    if (next === "images") {
+      setAnnotatedImageFiles([])
+      setAnnotatedLabelPaths([])
+      setAnnotatedYoloClassPaths([])
+      setAnnotatedZipPaths([])
+    } else {
+      setImageFiles([])
+      setImageZipPaths([])
+      setZipImageCounts({})
+    }
+    setUploadTab(next)
+    setErrorMessage(null)
+    setImportSummary("")
+  }
+
+  function mergeAnnotatedImageCandidates(incoming: TaskUploadCandidate[]) {
+    if (incoming.length <= 0) return
+    setAnnotatedImageFiles((prev) => {
+      const keyOf = (item: TaskUploadCandidate) => `p:${item.sourcePath.trim().toLowerCase()}`
+      const used = new Set(prev.map((item) => keyOf(item)))
+      const next = [...prev]
+      for (const item of incoming) {
+        const key = keyOf(item)
+        if (used.has(key)) continue
+        used.add(key)
+        next.push(item)
+      }
+      return next
+    })
+  }
+
+  function mergeAnnotatedLabelPaths(incoming: string[]) {
+    if (incoming.length <= 0) return
+    setAnnotatedLabelPaths((prev) => {
+      const used = new Set(prev.map((item) => item.toLowerCase()))
+      const next = [...prev]
+      for (const item of incoming) {
+        const key = item.toLowerCase()
+        if (used.has(key)) continue
+        used.add(key)
+        next.push(item)
+      }
+      return next
+    })
+  }
+
+  function mergeAnnotatedYoloClassPaths(incoming: string[]) {
+    if (incoming.length <= 0) return
+    setAnnotatedYoloClassPaths((prev) => {
+      const used = new Set(prev.map((item) => item.toLowerCase()))
+      const next = [...prev]
+      for (const item of incoming) {
+        const key = item.toLowerCase()
+        if (used.has(key)) continue
+        used.add(key)
+        next.push(item)
+      }
+      return next
+    })
+  }
 
   function mergeImageCandidates(incoming: TaskUploadCandidate[]) {
     if (incoming.length <= 0) return
@@ -313,52 +405,108 @@ export default function ProjectTaskCreatePage() {
     })
   }
 
-  async function handlePickImageFilesOrZip() {
-    if (hasAnnotatedZipSelection) {
-      setErrorMessage("已选择“上传文件及标注”，请先清空后再切换为“上传图片”。")
+  async function handlePickAnnotatedFilesAndLabels() {
+    const picked = await pickTaskUploadFilesViaDialog("选择图片及标注文件")
+    if (picked.length <= 0) return
+    const split = splitAnnotatedUploadPaths(
+      picked.map((item) => item.sourcePath),
+      annotatedImportFormat,
+    )
+    setAnnotatedZipPaths([])
+    mergeAnnotatedImageCandidates(split.imageCandidates)
+    mergeAnnotatedLabelPaths(split.labelPaths)
+    mergeAnnotatedYoloClassPaths(split.yoloClassPaths)
+    const ignored = split.unsupportedPaths.length
+    if (split.imageCandidates.length === 0 && split.labelPaths.length === 0) {
+      setErrorMessage("未识别到有效图片或标注文件，请检查格式与扩展名。")
       return
     }
-    const picked = await pickTaskUploadFilesViaDialog("选择图片文件或 ZIP")
-    if (picked.length <= 0) return
-    const split = splitTaskUploadPaths(picked.map((item) => item.sourcePath))
-    mergeImageCandidates(split.imageCandidates)
-    mergeZipPaths(split.zipPaths)
-    if (split.unsupportedPaths.length > 0) {
-      setErrorMessage(`已忽略 ${split.unsupportedPaths.length} 个非图片/zip 文件。`)
+    if (ignored > 0) {
+      setErrorMessage(`已忽略 ${ignored} 个不支持的文件。`)
     } else {
       setErrorMessage(null)
     }
     setImportSummary("")
   }
 
-  function handlePickImageFilesViaBrowser() {
-    if (hasAnnotatedZipSelection) {
-      setErrorMessage("已选择“上传文件及标注”，请先清空后再切换为“上传图片”。")
-      return
-    }
-    imageInputRef.current?.click()
-  }
-
-  async function handlePickAnnotatedZip() {
-    if (hasImageUploadSelection) {
-      setErrorMessage("已选择“上传图片”，请先清空后再切换为“上传文件及标注”。")
-      return
-    }
-    const picked = await pickAnnotatedZipViaDialog("选择已标注数据 ZIP")
-    if (!picked.trim()) {
+  async function handlePickAnnotatedTabZip() {
+    const picked = await pickTaskUploadFilesViaDialog("选择已标注 ZIP")
+    if (picked.length <= 0) return
+    const split = splitTaskUploadPaths(picked.map((item) => item.sourcePath))
+    if (split.zipPaths.length === 0) {
       setErrorMessage("请选择 .zip 文件。")
       return
     }
-    setAnnotatedZipPath(picked)
+    setAnnotatedImageFiles([])
+    setAnnotatedLabelPaths([])
+    setAnnotatedYoloClassPaths([])
+    setAnnotatedZipPaths((prev) => {
+      const used = new Set(prev.map((item) => item.toLowerCase()))
+      const next = [...prev]
+      for (const item of split.zipPaths) {
+        const key = item.toLowerCase()
+        if (used.has(key)) continue
+        used.add(key)
+        next.push(item)
+      }
+      return next
+    })
+    const ignored = split.imageCandidates.length + split.unsupportedPaths.length
+    if (ignored > 0) {
+      setErrorMessage(`已忽略 ${ignored} 个非 ZIP 文件。`)
+    } else {
+      setErrorMessage(null)
+    }
     setImportSummary("")
-    setErrorMessage(null)
+  }
+
+  async function handlePickImageFiles() {
+    const picked = await pickTaskUploadFilesViaDialog("选择图片文件")
+    if (picked.length <= 0) return
+    const split = splitTaskUploadPaths(picked.map((item) => item.sourcePath))
+    mergeImageCandidates(split.imageCandidates)
+    const ignored = split.zipPaths.length + split.unsupportedPaths.length
+    if (ignored > 0) {
+      setErrorMessage(`已忽略 ${ignored} 个非图片文件。`)
+    } else {
+      setErrorMessage(null)
+    }
+    setImportSummary("")
+  }
+
+  async function handlePickImageZip() {
+    const picked = await pickTaskUploadFilesViaDialog("选择图片 ZIP")
+    if (picked.length <= 0) return
+    const split = splitTaskUploadPaths(picked.map((item) => item.sourcePath))
+    mergeZipPaths(split.zipPaths)
+    const ignored = split.imageCandidates.length + split.unsupportedPaths.length
+    if (split.zipPaths.length === 0) {
+      setErrorMessage("请选择 .zip 文件。")
+      return
+    }
+    if (ignored > 0) {
+      setErrorMessage(`已忽略 ${ignored} 个非 ZIP 文件。`)
+    } else {
+      setErrorMessage(null)
+    }
+    setImportSummary("")
   }
 
   async function handleCreate() {
     if (!projectId || !project || !canCreate || submitting) return
-    if (hasImageUploadSelection && totalSelectedImages > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
+    if (uploadTab === "images" && hasImageUploadSelection && totalSelectedImages > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
       setErrorMessage(
         `已选择 ${totalSelectedImages} 张图片，超过单次上限 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。`,
+      )
+      return
+    }
+    if (
+      uploadTab === "annotated" &&
+      hasAnnotatedFileSelection &&
+      annotatedImageFiles.length > TASK_CREATE_IMAGE_UPLOAD_LIMIT
+    ) {
+      setErrorMessage(
+        `已选择 ${annotatedImageFiles.length} 张图片，超过单次上限 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。`,
       )
       return
     }
@@ -370,50 +518,101 @@ export default function ProjectTaskCreatePage() {
     let importedAnyImage = false
     let importJobStarted = false
     try {
-      if (hasImageUploadSelection && hasAnnotatedZipSelection) {
-        setErrorMessage("一次仅允许一种上传方式，请先清空其中一类后再提交。")
-        return
-      }
       const taskId = generateId()
       pendingTaskId = taskId
       let totalImageCount = 0
       const summaryParts: string[] = []
 
-      if (imageFiles.length > 0) {
-        setUploadProgress({ done: 0, total: imageFiles.length })
-        const saveResult = await saveTaskUploadCandidates({
+      if (uploadTab === "images") {
+        if (imageFiles.length > 0) {
+          setUploadProgress({ done: 0, total: imageFiles.length })
+          const saveResult = await saveTaskUploadCandidates({
+            projectId,
+            taskId,
+            subset: subset.trim(),
+            files: imageFiles,
+            onProgress: setUploadProgress,
+          })
+          if (saveResult.errorMessage) {
+            setErrorMessage(`上传图片失败：${saveResult.errorMessage}`)
+            return
+          }
+          totalImageCount += saveResult.savedCount
+          importedAnyImage = importedAnyImage || saveResult.savedCount > 0
+          summaryParts.push(`上传图片 ${saveResult.savedCount} 张`)
+        }
+
+        for (const zipPath of imageZipPaths) {
+          const zipResult = await importTaskImageZip({
+            projectId,
+            taskId,
+            subset: subset.trim(),
+            zipPath,
+          })
+          if (zipResult.errorMessage) {
+            setErrorMessage(`导入图片 ZIP 失败：${zipResult.errorMessage}`)
+            return
+          }
+          totalImageCount += zipResult.importedImageCount
+          importedAnyImage = importedAnyImage || zipResult.importedImageCount > 0
+          summaryParts.push(`图片 ZIP 导入 ${zipResult.importedImageCount} 张`)
+        }
+
+        if (summaryParts.length > 0) {
+          setImportSummary(summaryParts.join("；"))
+        }
+
+        await createTask(projectId, {
+          id: taskId,
+          name: name.trim(),
+          subset: subset.trim(),
+          fileCount: totalImageCount,
+        })
+        navigate(`/projects/${projectId}`, { replace: true })
+        return
+      }
+
+      if (hasAnnotatedFileSelection) {
+        const imagePaths = annotatedImageFiles.map((item) => item.sourcePath.trim()).filter(Boolean)
+        const importResult = await importAnnotatedTaskFiles({
           projectId,
           taskId,
           subset: subset.trim(),
-          files: imageFiles,
-          onProgress: setUploadProgress,
+          imagePaths,
+          labelPaths: annotatedLabelPaths,
+          yoloClassPaths: annotatedYoloClassPaths,
+          importFormat: annotatedImportFormat,
         })
-        if (saveResult.errorMessage) {
-          setErrorMessage(`上传图片失败：${saveResult.errorMessage}`)
+        if (importResult.errorMessage) {
+          await deleteTaskData({ projectId, taskId }).catch(() => undefined)
+          setErrorMessage(`导入图片及标注失败：${importResult.errorMessage}`)
           return
         }
-        totalImageCount += saveResult.savedCount
-        importedAnyImage = importedAnyImage || saveResult.savedCount > 0
-        summaryParts.push(`上传图片 ${saveResult.savedCount} 张`)
-      }
-
-      for (const zipPath of imageZipPaths) {
-        const zipResult = await importTaskImageZip({
-          projectId,
-          taskId,
+        importedAnyImage = importResult.importedImageCount > 0
+        totalImageCount = importResult.importedImageCount
+        summaryParts.push(
+          `导入 ${importResult.importedImageCount} 张图片 / ${importResult.importedAnnotationCount} 份标注（${importResult.detectedFormat || annotatedImportFormat}）`,
+        )
+        setImportSummary(summaryParts.join("；"))
+        await createTask(projectId, {
+          id: taskId,
+          name: name.trim(),
           subset: subset.trim(),
-          zipPath,
+          fileCount: totalImageCount,
         })
-        if (zipResult.errorMessage) {
-          setErrorMessage(`导入图片 ZIP 失败：${zipResult.errorMessage}`)
-          return
+        if (importResult.importedAnnotationCount > 0) {
+          await updateTaskAnnotatedFileCount(projectId, taskId, importResult.importedAnnotationCount)
         }
-        totalImageCount += zipResult.importedImageCount
-        importedAnyImage = importedAnyImage || zipResult.importedImageCount > 0
-        summaryParts.push(`图片 ZIP 导入 ${zipResult.importedImageCount} 张`)
+        markProjectBootstrapAfterImport(projectId)
+        navigate(`/projects/${projectId}`, {
+          replace: true,
+          state: projectDetailNavStateAfterImport(),
+        })
+        return
       }
 
-      if (annotatedZipPath.trim()) {
+      if (annotatedZipPaths.length > 0) {
+        const zipPath = annotatedZipPaths[0]!
         setImportProgress(0)
         setImportMessage("正在启动导入…")
         importCompletionHandledRef.current = ""
@@ -428,7 +627,7 @@ export default function ProjectTaskCreatePage() {
           projectId,
           taskId,
           subset: subset.trim(),
-          zipPath: annotatedZipPath.trim(),
+          zipPath,
           importFormat: annotatedImportFormat,
         })
         if (started.errorMessage) {
@@ -451,17 +650,7 @@ export default function ProjectTaskCreatePage() {
         return
       }
 
-      if (summaryParts.length > 0) {
-        setImportSummary(summaryParts.join("；"))
-      }
-
-      await createTask(projectId, {
-        id: taskId,
-        name: name.trim(),
-        subset: subset.trim(),
-        fileCount: totalImageCount,
-      })
-      navigate(`/projects/${projectId}`, { replace: true })
+      setErrorMessage("请选择要上传的内容后再提交。")
     } catch (error) {
       if (projectId && pendingTaskId && importedAnyImage) {
         const rollback = await deleteTaskData({ projectId, taskId: pendingTaskId })
@@ -557,194 +746,272 @@ export default function ProjectTaskCreatePage() {
             <p className="text-xs text-muted-foreground">用于对任务分组，后续导出可按子集归档。</p>
           </div>
 
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-foreground">上传文件（仅图片）</p>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="default"
-                size="sm"
-                onClick={() => void handlePickImageFilesOrZip()}
-                disabled={imageUploadDisabled}
-              >
-                选择图片 / ZIP
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => handlePickImageFilesViaBrowser()}
-                disabled={imageUploadDisabled}
-              >
-                浏览器选图（兼容中文名）
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!hasImageUploadSelection || submitting}
-                onClick={() => {
-                  setImageFiles([])
-                  setImageZipPaths([])
-                  setZipImageCounts({})
-                  setImportSummary("")
-                  setErrorMessage(null)
-                }}
-              >
-                清空
-              </Button>
-            </div>
-            <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center transition-colors">
-              <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
-              <p className="mt-2 text-sm text-foreground">支持直接上传图片文件，或导入仅包含图片的 ZIP</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                单次最多 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张；大批量请优先用「选择图片 / ZIP」。
-              </p>
-            </div>
-            {zipCountLoading ? <p className="text-xs text-muted-foreground">正在统计 ZIP 内图片数量…</p> : null}
-            {imageLimitExceeded ? (
-              <p className="text-sm font-medium text-destructive">
-                已选择 {totalSelectedImages} 张图片，超过单次上限 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。
-              </p>
-            ) : null}
-            {!imageLimitExceeded && hasImageUploadSelection && !zipCountLoading ? (
-              <p className="text-xs text-muted-foreground">
-                已选 {totalSelectedImages} / {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张
-              </p>
-            ) : null}
-            <input
-              ref={imageInputRef}
-              type="file"
-              multiple
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => {
-                if (!e.target.files || e.target.files.length <= 0) return
-                const { accepted } = candidatesFromBrowserFiles(e.target.files)
-                mergeImageCandidates(accepted)
-                setErrorMessage(null)
-                setImportSummary("")
-                e.target.value = ""
-              }}
+          <div className="space-y-3">
+            <PageTabs
+              tabs={UPLOAD_TABS.map((tab) => ({
+                ...tab,
+                disabled: submitting,
+              }))}
+              activeId={uploadTab}
+              onChange={(id) => handleUploadTabChange(id as UploadTabId)}
             />
-            <Input
-              value={
-                zipCountLoading
-                  ? `${imageFiles.length} 张图片，${imageZipPaths.length} 个图片 ZIP（统计中…）`
-                  : `${imageFiles.length} 张图片，${imageZipPaths.length} 个图片 ZIP${
-                      zipImageTotal > 0 ? `（ZIP 内 ${zipImageTotal} 张）` : ""
-                    }`
-              }
-              readOnly
-              placeholder="未选择文件"
-            />
-            {imageFiles.length > 0 ? (
-              <ul className="max-h-28 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
-                {imageFiles.slice(0, TASK_UPLOAD_PREVIEW_LIMIT).map((item) => (
-                  <li key={item.id} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-muted-foreground" title={item.sourcePath || item.name}>
-                      {item.name}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => setImageFiles((prev) => prev.filter((f) => f.id !== item.id))}
-                    >
-                      移除
-                    </Button>
-                  </li>
-                ))}
-                {imageFiles.length > TASK_UPLOAD_PREVIEW_LIMIT ? (
-                  <li className="pt-1 text-muted-foreground">
-                    … 另有 {imageFiles.length - TASK_UPLOAD_PREVIEW_LIMIT} 张未列出（共 {imageFiles.length} 张）
-                  </li>
-                ) : null}
-              </ul>
-            ) : null}
-            {imageZipPaths.length > 0 ? (
-              <ul className="max-h-24 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
-                {imageZipPaths.map((zip) => (
-                  <li key={zip} className="flex items-center justify-between gap-2">
-                    <span className="truncate text-muted-foreground" title={zip}>
-                      {zip}
-                      {zipCountLoading ? "" : `（${zipImageCounts[zip] ?? 0} 张）`}
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => setImageZipPaths((prev) => prev.filter((p) => p !== zip))}
-                    >
-                      移除
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            {hasAnnotatedZipSelection ? (
-              <p className="text-xs text-muted-foreground">已选择“上传文件及标注”，当前入口已禁用。</p>
-            ) : null}
-          </div>
 
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-foreground">上传文件及标注（已标注 ZIP）</p>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="default"
-                size="sm"
-                onClick={() => void handlePickAnnotatedZip()}
-                disabled={annotatedZipDisabled}
-              >
-                选择已标注 ZIP
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!hasAnnotatedZipSelection || submitting}
-                onClick={() => {
-                  setAnnotatedZipPath("")
-                  setImportSummary("")
-                  setErrorMessage(null)
-                }}
-              >
-                清空
-              </Button>
+            <div
+              id="tabpanel-images"
+              role="tabpanel"
+              aria-labelledby="tab-images"
+              className={uploadTab === "images" ? "space-y-2" : "hidden"}
+            >
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  onClick={() => void handlePickImageFiles()}
+                  disabled={submitting}
+                >
+                  上传图片
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handlePickImageZip()}
+                  disabled={submitting}
+                >
+                  上传 ZIP
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!hasImageUploadSelection || submitting}
+                  onClick={() => {
+                    setImageFiles([])
+                    setImageZipPaths([])
+                    setZipImageCounts({})
+                    setImportSummary("")
+                    setErrorMessage(null)
+                  }}
+                >
+                  清除
+                </Button>
+              </div>
+              <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center transition-colors">
+                <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
+                <p className="mt-2 text-sm text-foreground">支持直接上传图片文件，或导入仅包含图片的 ZIP</p>
+                <p className="mt-1 text-xs text-muted-foreground">单次最多 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张。</p>
+              </div>
+              {zipCountLoading ? <p className="text-xs text-muted-foreground">正在统计 ZIP 内图片数量…</p> : null}
+              {imageLimitExceeded ? (
+                <p className="text-sm font-medium text-destructive">
+                  已选择 {totalSelectedImages} 张图片，超过单次上限 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。
+                </p>
+              ) : null}
+              {!imageLimitExceeded && hasImageUploadSelection && !zipCountLoading ? (
+                <p className="text-xs text-muted-foreground">
+                  已选 {totalSelectedImages} / {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张
+                </p>
+              ) : null}
+              <Input
+                value={
+                  zipCountLoading
+                    ? `${imageFiles.length} 张图片，${imageZipPaths.length} 个图片 ZIP（统计中…）`
+                    : `${imageFiles.length} 张图片，${imageZipPaths.length} 个图片 ZIP${
+                        zipImageTotal > 0 ? `（ZIP 内 ${zipImageTotal} 张）` : ""
+                      }`
+                }
+                readOnly
+                placeholder="未选择文件"
+              />
+              {imageFiles.length > 0 ? (
+                <ul className="max-h-28 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
+                  {imageFiles.slice(0, TASK_UPLOAD_PREVIEW_LIMIT).map((item) => (
+                    <li key={item.id} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-muted-foreground" title={item.sourcePath || item.name}>
+                        {item.name}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setImageFiles((prev) => prev.filter((f) => f.id !== item.id))}
+                      >
+                        移除
+                      </Button>
+                    </li>
+                  ))}
+                  {imageFiles.length > TASK_UPLOAD_PREVIEW_LIMIT ? (
+                    <li className="pt-1 text-muted-foreground">
+                      … 另有 {imageFiles.length - TASK_UPLOAD_PREVIEW_LIMIT} 张未列出（共 {imageFiles.length} 张）
+                    </li>
+                  ) : null}
+                </ul>
+              ) : null}
+              {imageZipPaths.length > 0 ? (
+                <ul className="max-h-24 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
+                  {imageZipPaths.map((zip) => (
+                    <li key={zip} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-muted-foreground" title={zip}>
+                        {zip}
+                        {zipCountLoading ? "" : `（${zipImageCounts[zip] ?? 0} 张）`}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setImageZipPaths((prev) => prev.filter((p) => p !== zip))}
+                      >
+                        移除
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
-            <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center transition-colors">
-              <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
-              <p className="mt-2 text-sm text-foreground">选择导入格式后导入对应标注 ZIP</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                支持 xanylabeling、yolo detect / obb / segment；大批量 ZIP 将走子进程导入并显示进度条。
-              </p>
+
+            <div
+              id="tabpanel-annotated"
+              role="tabpanel"
+              aria-labelledby="tab-annotated"
+              className={uploadTab === "annotated" ? "space-y-2" : "hidden"}
+            >
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="default"
+                  size="sm"
+                  onClick={() => void handlePickAnnotatedFilesAndLabels()}
+                  disabled={submitting}
+                >
+                  上传图片及标注文件
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handlePickAnnotatedTabZip()}
+                  disabled={submitting}
+                >
+                  上传 ZIP
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={(!hasAnnotatedFileSelection && !hasAnnotatedZipSelection) || submitting}
+                  onClick={() => {
+                    setAnnotatedImageFiles([])
+                    setAnnotatedLabelPaths([])
+                    setAnnotatedYoloClassPaths([])
+                    setAnnotatedZipPaths([])
+                    setImportSummary("")
+                    setErrorMessage(null)
+                  }}
+                >
+                  清除
+                </Button>
+              </div>
+              <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 text-center transition-colors">
+                <Upload className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden />
+                <p className="mt-2 text-sm text-foreground">可同时选择图片与同名标注文件，或导入已标注 ZIP</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  图片最多 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张；标注与图片同名、扩展名不同（xanylabeling 为 .json，YOLO 为 .txt），无标注文件的图片也可导入。
+                </p>
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="task-create-import-format" className="text-xs font-medium text-foreground">
+                  标注导入格式
+                </label>
+                <select
+                  id="task-create-import-format"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={annotatedImportFormat}
+                  onChange={(e) =>
+                    setAnnotatedImportFormat(e.target.value as (typeof ANNOTATED_IMPORT_FORMATS)[number]["value"])
+                  }
+                  disabled={submitting}
+                >
+                  {ANNOTATED_IMPORT_FORMATS.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {annotatedImageLimitExceeded ? (
+                <p className="text-sm font-medium text-destructive">
+                  已选择 {annotatedImageFiles.length} 张图片，超过单次上限 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。
+                </p>
+              ) : null}
+              {!annotatedImageLimitExceeded && hasAnnotatedFileSelection ? (
+                <p className="text-xs text-muted-foreground">
+                  已选 {annotatedImageFiles.length} / {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张图片，{annotatedMatchedLabelCount}{" "}
+                  份已配对标注
+                  {annotatedLabelPaths.length > annotatedMatchedLabelCount
+                    ? `（另有 ${annotatedLabelPaths.length - annotatedMatchedLabelCount} 份标注未匹配到图片，将忽略）`
+                    : ""}
+                </p>
+              ) : null}
+              {hasAnnotatedFileSelection ? (
+                <Input
+                  value={`${annotatedImageFiles.length} 张图片，${annotatedLabelPaths.length} 份标注文件${
+                    annotatedYoloClassPaths.length > 0 ? `，${annotatedYoloClassPaths.length} 个类别文件` : ""
+                  }`}
+                  readOnly
+                  placeholder="未选择文件"
+                />
+              ) : null}
+              {annotatedImageFiles.length > 0 ? (
+                <ul className="max-h-28 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
+                  {annotatedImageFiles.slice(0, TASK_UPLOAD_PREVIEW_LIMIT).map((item) => (
+                    <li key={item.id} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-muted-foreground" title={item.sourcePath || item.name}>
+                        {item.name}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setAnnotatedImageFiles((prev) => prev.filter((f) => f.id !== item.id))}
+                      >
+                        移除
+                      </Button>
+                    </li>
+                  ))}
+                  {annotatedImageFiles.length > TASK_UPLOAD_PREVIEW_LIMIT ? (
+                    <li className="pt-1 text-muted-foreground">
+                      … 另有 {annotatedImageFiles.length - TASK_UPLOAD_PREVIEW_LIMIT} 张未列出（共{" "}
+                      {annotatedImageFiles.length} 张）
+                    </li>
+                  ) : null}
+                </ul>
+              ) : null}
+              {hasAnnotatedZipSelection ? (
+                <ul className="max-h-24 space-y-1 overflow-auto rounded-md border border-border/70 bg-muted/10 p-2 text-xs">
+                  {annotatedZipPaths.map((zip) => (
+                    <li key={zip} className="flex items-center justify-between gap-2">
+                      <span className="truncate text-muted-foreground" title={zip}>
+                        {zip}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setAnnotatedZipPaths((prev) => prev.filter((p) => p !== zip))}
+                      >
+                        移除
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {importSummary ? <p className="text-xs text-emerald-600 dark:text-emerald-400">{importSummary}</p> : null}
             </div>
-            <div className="space-y-2">
-              <label htmlFor="task-create-import-format" className="text-xs font-medium text-foreground">
-                标注导入格式
-              </label>
-              <select
-                id="task-create-import-format"
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={annotatedImportFormat}
-                onChange={(e) => setAnnotatedImportFormat(e.target.value as (typeof ANNOTATED_IMPORT_FORMATS)[number]["value"])}
-                disabled={submitting || hasImageUploadSelection}
-              >
-                {ANNOTATED_IMPORT_FORMATS.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <Input value={annotatedZipPath} readOnly placeholder="未选择已标注 ZIP 文件" />
-            {importSummary ? <p className="text-xs text-emerald-600 dark:text-emerald-400">{importSummary}</p> : null}
-            {hasImageUploadSelection ? (
-              <p className="text-xs text-muted-foreground">已选择“上传图片”，当前入口已禁用。</p>
-            ) : null}
           </div>
 
           {errorMessage ? (

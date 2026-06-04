@@ -49,9 +49,10 @@ import { useYoloTrainingMessages } from "@/lib/i18n"
 import {
   formatYoloBackendEndpointLabel,
   unpackYoloDatasetWithTimeout,
-  uploadYoloDatasetZipWithProgress,
+  uploadYoloDatasetZipFromPathWithProgress,
   type YoloDatasetUploadProgress,
 } from "@/lib/yolo-dataset-upload"
+import type { YoloCudaEnvironment } from "@/lib/training-yolo-api"
 import { GpuSwitch } from "@/pages/models-backend"
 import { cn } from "@/lib/utils"
 import { ArrowLeft, Loader2, Plus, Upload } from "lucide-react"
@@ -131,7 +132,6 @@ function ChecklistRow({ label, tone }: { label: string; tone: ChecklistTone }) {
 export default function ModelsTrainingYoloPage() {
   const { m } = useYoloTrainingMessages()
   const weightFileRef = useRef<HTMLInputElement>(null)
-  const datasetFileRef = useRef<HTMLInputElement>(null)
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
 
   const [trainingName, setTrainingName] = useState("")
@@ -173,6 +173,7 @@ export default function ModelsTrainingYoloPage() {
   const [device, setDevice] = useState("cpu")
   const [exportOnnx, setExportOnnx] = useState(false)
   const [devices, setDevices] = useState<YoloDeviceOption[]>([])
+  const [deviceEnvironment, setDeviceEnvironment] = useState<YoloCudaEnvironment | null>(null)
 
   const [augmentEnabled, setAugmentEnabled] = useState(false)
   const [optimizerEnabled, setOptimizerEnabled] = useState(false)
@@ -252,13 +253,36 @@ export default function ModelsTrainingYoloPage() {
 
   const devicesInflightRef = useRef<Promise<YoloDeviceOption[]> | null>(null)
 
+  const deviceEnvironmentHint = useMemo(() => {
+    const env = deviceEnvironment
+    if (!env) return null
+    const smi = env.nvidia_smi_gpu_count
+    const torchN = env.torch_cuda_device_count
+    if (smi != null && smi > torchN && torchN >= 0) {
+      const visible = env.cuda_visible_devices.trim()
+      if (visible) {
+        return `远程 PyTorch 仅可见 ${torchN} 张 GPU（nvidia-smi 共 ${smi} 张）。请检查后端进程的 CUDA_VISIBLE_DEVICES=${visible}。`
+      }
+      return `远程 PyTorch 仅可见 ${torchN} 张 GPU（nvidia-smi 共 ${smi} 张）。请检查后端启动环境是否限制了可见 GPU。`
+    }
+    return null
+  }, [deviceEnvironment])
+
   const fetchDevicesList = useCallback((): Promise<YoloDeviceOption[]> => {
     if (!backendOk) {
+      setDeviceEnvironment(null)
       return Promise.resolve([{ id: "cpu", label: "CPU" }])
     }
     if (devicesInflightRef.current) return devicesInflightRef.current
     const p = fetchYoloDevices()
-      .catch(() => [{ id: "cpu", label: "CPU" }])
+      .then(({ devices: list, environment }) => {
+        setDeviceEnvironment(environment)
+        return list
+      })
+      .catch(() => {
+        setDeviceEnvironment(null)
+        return [{ id: "cpu", label: "CPU" }]
+      })
       .finally(() => {
         devicesInflightRef.current = null
       })
@@ -523,11 +547,7 @@ export default function ModelsTrainingYoloPage() {
       setDatasetError(m.errors.createWorkspaceFirst)
       return
     }
-    if (!isLocalBackend) {
-      setDatasetError(m.errors.remoteZipUpload)
-      return
-    }
-    if (!localBackendDir) {
+    if (!localBackendDir && isLocalBackend) {
       setDatasetError(m.errors.pickBackendDir)
       return
     }
@@ -541,19 +561,29 @@ export default function ModelsTrainingYoloPage() {
       if (picked.canceled || !picked.paths[0]) return
       const sourcePath = picked.paths[0]
       const originalName = sourcePath.split(/[/\\]/).pop() ?? "dataset.zip"
-      const copy = await ipc.app.CopyYoloTrainingDatasetZip({
-        backendDirectory: localBackendDir,
-        sourceZipPath: sourcePath,
-        trainingName: trainingName.trim() || jobSlug,
-      })
-      if (!copy.ok) {
-        setDatasetError(copy.errorMessage || m.errors.copyDatasetFailed)
-        return
+
+      if (isLocalBackend) {
+        const copy = await ipc.app.CopyYoloTrainingDatasetZip({
+          backendDirectory: localBackendDir,
+          sourceZipPath: sourcePath,
+          trainingName: trainingName.trim() || jobSlug,
+        })
+        if (!copy.ok) {
+          setDatasetError(copy.errorMessage || m.errors.copyDatasetFailed)
+          return
+        }
+        setDatasetUploadProgress({ phase: "unpacking", percent: 35 })
+        const unpacked = await unpackYoloDatasetWithTimeout(jobSlug, originalName)
+        setDataYaml(unpacked.data_yaml)
+        setDatasetZipFilename(unpacked.dataset_zip_filename ?? originalName)
+      } else {
+        setDatasetUploadProgress({ phase: "uploading", percent: 0 })
+        const uploaded = await uploadYoloDatasetZipFromPathWithProgress(jobSlug, sourcePath, {
+          onProgress: setDatasetUploadProgress,
+        })
+        setDataYaml(uploaded.data_yaml)
+        setDatasetZipFilename(uploaded.dataset_zip_filename ?? originalName)
       }
-      setDatasetUploadProgress({ phase: "unpacking", percent: 35 })
-      const unpacked = await unpackYoloDatasetWithTimeout(jobSlug, originalName)
-      setDataYaml(unpacked.data_yaml)
-      setDatasetZipFilename(unpacked.dataset_zip_filename ?? originalName)
       refreshWorkspace()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -567,41 +597,7 @@ export default function ModelsTrainingYoloPage() {
   }
 
   function handleDatasetUploadClick() {
-    if (isLocalBackend) {
-      void handlePickDatasetZip()
-    } else {
-      datasetFileRef.current?.click()
-    }
-  }
-
-  async function handleUploadDatasetZip(file: File | null) {
-    if (!jobSlug || !file) return
-    setDatasetBusy(true)
-    setDatasetError(null)
-    setDatasetUploadProgress({ phase: "uploading", percent: 0 })
-    try {
-      const uploaded = await uploadYoloDatasetZipWithProgress(jobSlug, file, {
-        onProgress: setDatasetUploadProgress,
-      })
-      setDataYaml(uploaded.data_yaml)
-      setDatasetZipFilename(uploaded.dataset_zip_filename ?? file.name)
-      refreshWorkspace()
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      if (msg.includes("??")) {
-        setDatasetError(m.errors.datasetUploadTimeout)
-      } else if (msg.includes("??") || msg.includes("??")) {
-        setDatasetError(m.errors.datasetUploadNetwork)
-      } else if (msg.includes("??")) {
-        setDatasetError(m.errors.datasetUnpackTimeout)
-      } else {
-        setDatasetError(msg)
-      }
-    } finally {
-      setDatasetBusy(false)
-      setDatasetUploadProgress(null)
-      if (datasetFileRef.current) datasetFileRef.current.value = ""
-    }
+    void handlePickDatasetZip()
   }
 
   async function handleStartTraining() {
@@ -798,7 +794,7 @@ export default function ModelsTrainingYoloPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs font-medium text-muted-foreground">{m.labelZipData}</p>
                 {!isLocalBackend ? (
-                  <span className="text-[11px] text-muted-foreground">{m.zipHintRemote}</span>
+                  <span className="text-[11px] text-muted-foreground">远程 · 选文件后主进程分片上传</span>
                 ) : (
                   <span className="text-[11px] text-muted-foreground">{m.zipHintLocal}</span>
                 )}
@@ -809,14 +805,6 @@ export default function ModelsTrainingYoloPage() {
                   className="h-9 min-w-0 flex-1 bg-muted/30"
                   value={datasetZipFilename ?? ""}
                   placeholder={m.zipPlaceholder}
-                />
-                <input
-                  ref={datasetFileRef}
-                  type="file"
-                  accept=".zip"
-                  className="hidden"
-                  disabled={!jobReady || !backendOk || datasetBusy}
-                  onChange={(e) => void handleUploadDatasetZip(e.target.files?.[0] ?? null)}
                 />
                 <Button
                   type="button"
@@ -940,6 +928,9 @@ export default function ModelsTrainingYoloPage() {
                       </option>
                     ))}
                   </select>
+                  {deviceEnvironmentHint ? (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">{deviceEnvironmentHint}</p>
+                  ) : null}
                 </label>
               </div>
               <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-4">

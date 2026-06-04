@@ -11,8 +11,8 @@ import {
 import {
   getProject,
   listExportJobs,
-  listTaskFiles,
   listProjectTasks,
+  countTaskSourceStats,
   startDatasetExport,
   type ProjectTaskItem,
 } from "@/lib/projects-api"
@@ -73,8 +73,6 @@ const PREPROCESS_OPTIONS = [
   "去除无标签图像",
 ] as const
 
-const SOURCE_IMAGE_COUNT_PAGE_SIZE = 100
-
 const PREPROCESS_ICONS: Record<(typeof PREPROCESS_OPTIONS)[number], LucideIcon> = {
   切块: Layers,
   旋转: RotateCw,
@@ -123,46 +121,6 @@ const AUGMENT_OPTIONS = {
 } as const
 
 type AugmentCategory = keyof typeof AUGMENT_OPTIONS
-
-async function countImageFilesByPaging(projectId: string, taskIds: string[]): Promise<number> {
-  let total = 0
-  for (const taskId of taskIds) {
-    let offset = 0
-    while (true) {
-      const page = await listTaskFiles({
-        projectId,
-        taskId,
-        offset,
-        limit: SOURCE_IMAGE_COUNT_PAGE_SIZE,
-      })
-      if (page.errorMessage || page.files.length === 0) break
-      total += page.files.length
-      if (!page.hasMore) break
-      offset += page.files.length
-    }
-  }
-  return total
-}
-
-async function countAnnotationFilesByPaging(projectId: string, taskIds: string[]): Promise<number> {
-  let total = 0
-  for (const taskId of taskIds) {
-    let offset = 0
-    while (true) {
-      const page = await listTaskFiles({
-        projectId,
-        taskId,
-        offset,
-        limit: SOURCE_IMAGE_COUNT_PAGE_SIZE,
-      })
-      if (page.errorMessage || page.files.length === 0) break
-      total += page.files.filter((file) => file.hasAnnotation).length
-      if (!page.hasMore) break
-      offset += page.files.length
-    }
-  }
-  return total
-}
 
 function formatTypeLabel(taskId?: string): string {
   return taskId ? "任务导出" : "项目导出"
@@ -362,11 +320,15 @@ export default function ProjectExportPage() {
     setSourceImageCounting(true)
     setExportMessage("正在重新统计图片数量…")
     const targetTaskIds = taskId ? [taskId] : projectTasks.map((item) => item.id)
-    void countImageFilesByPaging(projectId, targetTaskIds)
-      .then((nextImageCount) => {
+    void countTaskSourceStats({ projectId, taskIds: targetTaskIds })
+      .then(({ imageCount, annotationCount, errorMessage }) => {
         if (sourceImageCountTokenRef.current !== token) return
-        setSourceStats((prev) => ({ ...prev, imageCount: nextImageCount }))
-        setExportMessage("图片数量统计已更新")
+        if (errorMessage) {
+          setExportMessage(`统计失败：${errorMessage}`)
+          return
+        }
+        setSourceStats((prev) => ({ ...prev, imageCount, annotationFileCount: annotationCount }))
+        setExportMessage("图片与标注数量统计已更新")
       })
       .catch((error) => {
         if (sourceImageCountTokenRef.current !== token) return
@@ -385,11 +347,15 @@ export default function ProjectExportPage() {
     setSourceAnnotationCounting(true)
     setExportMessage("正在重新统计标注文件数量…")
     const targetTaskIds = taskId ? [taskId] : projectTasks.map((item) => item.id)
-    void countAnnotationFilesByPaging(projectId, targetTaskIds)
-      .then((nextAnnotationFileCount) => {
+    void countTaskSourceStats({ projectId, taskIds: targetTaskIds })
+      .then(({ imageCount, annotationCount, errorMessage }) => {
         if (sourceAnnotationCountTokenRef.current !== token) return
-        setSourceStats((prev) => ({ ...prev, annotationFileCount: nextAnnotationFileCount }))
-        setExportMessage("标注文件数量统计已更新")
+        if (errorMessage) {
+          setExportMessage(`统计失败：${errorMessage}`)
+          return
+        }
+        setSourceStats((prev) => ({ ...prev, imageCount, annotationFileCount: annotationCount }))
+        setExportMessage("图片与标注数量统计已更新")
       })
       .catch((error) => {
         if (sourceAnnotationCountTokenRef.current !== token) return

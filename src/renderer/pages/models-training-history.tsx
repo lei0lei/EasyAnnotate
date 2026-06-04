@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import {
   fetchYoloTrainingHistory,
   probeBackendHealth,
+  TRAINING_RUNNING_POLL_MS,
   type YoloHistoryItem,
 } from "@/lib/training-yolo-api"
 import { cn } from "@/lib/utils"
@@ -198,7 +199,7 @@ export default function ModelsTrainingHistoryPage() {
 
   useEffect(() => {
     if (!backendOk || !hasRunning) return
-    const t = window.setInterval(() => loadHistory({ silent: true }), 1500)
+    const t = window.setInterval(() => loadHistory({ silent: true }), TRAINING_RUNNING_POLL_MS)
     return () => window.clearInterval(t)
   }, [backendOk, hasRunning, loadHistory])
 
@@ -218,7 +219,7 @@ export default function ModelsTrainingHistoryPage() {
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">训练历史</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             扫描 <code className="text-xs">external/temp</code> 下的历次训练目录
-            {hasRunning ? " · 进行中任务将自动刷新进度" : ""}
+            {hasRunning ? " · 进行中任务约每分钟自动刷新进度" : ""}
           </p>
         </div>
         <Button

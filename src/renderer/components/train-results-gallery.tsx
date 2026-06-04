@@ -1,13 +1,73 @@
-import type { YoloTrainingResultImage } from "@/lib/training-yolo-api"
-import { yoloTrainingResultImageUrl } from "@/lib/training-yolo-api"
+import {
+  fetchYoloTrainingResultImageObjectUrl,
+  type YoloTrainingResultImage,
+} from "@/lib/training-yolo-api"
 import { cn } from "@/lib/utils"
-import { useState } from "react"
+import { Loader2 } from "lucide-react"
+import { useEffect, useState } from "react"
 
 type TrainResultsGalleryProps = {
   jobSlug: string
   items: YoloTrainingResultImage[]
   emptyMessage?: string
   className?: string
+}
+
+type TrainResultImageProps = {
+  jobSlug: string
+  item: YoloTrainingResultImage
+  alt: string
+  className?: string
+  loading?: "lazy" | "eager"
+}
+
+function TrainResultImage({ jobSlug, item, alt, className, loading }: TrainResultImageProps) {
+  const [src, setSrc] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    let objectUrl: string | null = null
+    setSrc(null)
+    setFailed(false)
+    void fetchYoloTrainingResultImageObjectUrl(jobSlug, item.path, item.mtime)
+      .then((url) => {
+        if (!alive) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        objectUrl = url
+        setSrc(url)
+      })
+      .catch(() => {
+        if (alive) setFailed(true)
+      })
+    return () => {
+      alive = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [jobSlug, item.path, item.mtime])
+
+  if (failed) {
+    return (
+      <div
+        className={cn("flex items-center justify-center bg-muted/20 text-xs text-muted-foreground", className)}
+        title="图片加载失败"
+      >
+        加载失败
+      </div>
+    )
+  }
+
+  if (!src) {
+    return (
+      <div className={cn("flex items-center justify-center bg-muted/20 text-muted-foreground", className)}>
+        <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+      </div>
+    )
+  }
+
+  return <img src={src} alt={alt} loading={loading} className={className} />
 }
 
 export function TrainResultsGallery({
@@ -33,9 +93,10 @@ export function TrainResultsGallery({
           </p>
         </div>
         <div className="flex min-h-[200px] items-center justify-center bg-background/50 p-3">
-          <img
+          <TrainResultImage
             key={`${previewItem.path}-${previewItem.mtime}`}
-            src={yoloTrainingResultImageUrl(jobSlug, previewItem.path, previewItem.mtime)}
+            jobSlug={jobSlug}
+            item={previewItem}
             alt={previewItem.name}
             className="max-h-[min(52vh,520px)] w-full object-contain"
           />
@@ -58,8 +119,9 @@ export function TrainResultsGallery({
               onClick={() => setPreviewPath(item.path)}
             >
               <div className="aspect-[4/3] bg-muted/30">
-                <img
-                  src={yoloTrainingResultImageUrl(jobSlug, item.path, item.mtime)}
+                <TrainResultImage
+                  jobSlug={jobSlug}
+                  item={item}
                   alt={item.name}
                   loading="lazy"
                   className="h-full w-full object-contain p-1"

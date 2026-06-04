@@ -496,6 +496,161 @@ function emptyResult(errorMessage: string): AnnotatedImportResult {
   }
 }
 
+export type AnnotatedFilesImportRequest = {
+  globalConfigDir: string
+  projectId: string
+  taskId: string
+  subset: string
+  imagePaths: string[]
+  labelPaths: string[]
+  yoloClassPaths: string[]
+  importFormat: string
+}
+
+const MAX_ANNOTATED_FILES_IMPORT = 500
+
+export async function runAnnotatedTaskFilesImport(
+  request: AnnotatedFilesImportRequest,
+  report?: AnnotatedImportProgressReporter,
+): Promise<AnnotatedImportResult> {
+  const emit = (patch: Parameters<AnnotatedImportProgressReporter>[0]) => {
+    report?.(patch)
+  }
+  try {
+    const importFormat = (request.importFormat || "xanylabeling").trim().toLowerCase()
+    const allowFormats = new Set(["xanylabeling", "yolo-detect", "yolo-obb", "yolo-segment", "yolo-pose"])
+    if (!allowFormats.has(importFormat)) {
+      return emptyResult(`不支持的导入格式：${importFormat}`)
+    }
+    if (
+      importFormat !== "xanylabeling" &&
+      importFormat !== "yolo-detect" &&
+      importFormat !== "yolo-obb" &&
+      importFormat !== "yolo-segment"
+    ) {
+      return emptyResult(`导入格式 ${importFormat} 暂未实现，当前支持 xanylabeling / yolo-detect / yolo-obb / yolo-segment。`)
+    }
+
+    const project = getProject(request.globalConfigDir, request.projectId)
+    if (!project) return emptyResult("项目不存在。")
+
+    const images = (request.imagePaths ?? [])
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .filter((item) => fs.existsSync(item))
+    if (images.length <= 0) return emptyResult("未选择有效图片文件。")
+    if (images.length > MAX_ANNOTATED_FILES_IMPORT) {
+      return emptyResult(`图片数量不能超过 ${MAX_ANNOTATED_FILES_IMPORT} 张。`)
+    }
+
+    const labelByStem = new Map<string, string>()
+    for (const rawLabelPath of request.labelPaths ?? []) {
+      const labelPath = rawLabelPath.trim()
+      if (!labelPath || !fs.existsSync(labelPath)) continue
+      const stem = path.basename(labelPath, path.extname(labelPath)).toLowerCase()
+      if (!stem) continue
+      if (!labelByStem.has(stem)) {
+        labelByStem.set(stem, labelPath)
+      }
+    }
+
+    const yoloClassFilePaths = (request.yoloClassPaths ?? [])
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .filter((item) => fs.existsSync(item))
+
+    const detectedFormat =
+      importFormat === "xanylabeling"
+        ? "xanylabeling"
+        : importFormat === "yolo-detect"
+          ? "yolo-detect"
+          : importFormat === "yolo-obb"
+            ? "yolo-obb"
+            : "yolo-segment"
+
+    const rawSubset = (request.subset || "").trim()
+    const baseRoot =
+      project.storageType === "local" && project.localPath ? project.localPath : path.dirname(project.configFilePath)
+    const taskRootDir = path.join(baseRoot, "data", "tasks", sanitizeSegment(request.taskId))
+    const subset = sanitizeSegment(rawSubset || "default")
+    const taskDir = path.join(taskRootDir, subset)
+    await fs.promises.mkdir(taskDir, { recursive: true })
+
+    let importedImageCount = 0
+    let importedAnnotationCount = 0
+    const projectTagNames = (project.tags ?? []).map((tag) => tag.name.trim()).filter(Boolean)
+    const yoloNames = importFormat === "xanylabeling" ? [] : await readYoloClassNamesFromPaths(yoloClassFilePaths)
+    const yoloClassNames = yoloNames.length > 0 ? yoloNames : projectTagNames
+    const totalImages = images.length
+    const imageSizeCache = new Map<string, { width: number; height: number }>()
+    const yieldEvery = isYoloImportFormat(importFormat) ? YOLO_IMPORT_YIELD_EVERY : XANY_IMPORT_YIELD_EVERY
+
+    emit({ progress: 5, statusMessage: `开始导入 ${totalImages} 张图片…` })
+
+    for (let i = 0; i < images.length; i += 1) {
+      const srcImagePath = images[i]!
+      const imageName = path.basename(srcImagePath)
+      const targetImagePath = buildUniqueFilePath(taskDir, imageName)
+      await fs.promises.copyFile(srcImagePath, targetImagePath)
+      importedImageCount += 1
+
+      const targetJsonPath = resolveAnnotationJsonPath(targetImagePath)
+      const stem = path.basename(srcImagePath, path.extname(srcImagePath)).toLowerCase()
+      const srcLabelPath = labelByStem.get(stem)
+
+      if (importFormat === "xanylabeling") {
+        if (srcLabelPath && fs.existsSync(srcLabelPath) && (await looksLikeXAnyLabelJsonFile(srcLabelPath))) {
+          await fs.promises.copyFile(srcLabelPath, targetJsonPath)
+          importedAnnotationCount += 1
+        }
+      } else if (srcLabelPath && fs.existsSync(srcLabelPath)) {
+        const txtRaw = await readTextFileCapped(srcLabelPath, MAX_YOLO_TXT_BYTES)
+        if (txtRaw.trim()) {
+          const { width, height } = await parseImageSizeFromFileAsync(srcImagePath, imageSizeCache)
+          const shapes =
+            importFormat === "yolo-obb"
+              ? parseYoloTxtToShapesForTarget(txtRaw, yoloClassNames, width, height, "yolo-obb")
+              : importFormat === "yolo-segment"
+                ? parseYoloTxtToShapesForTarget(txtRaw, yoloClassNames, width, height, "yolo-segment")
+                : parseYoloTxtToShapesForTarget(txtRaw, yoloClassNames, width, height, "yolo-detect")
+          if (shapes.length > 0) {
+            const jsonText = createXAnyDocJson({
+              imageFileName: path.basename(targetImagePath),
+              imageWidth: width,
+              imageHeight: height,
+              shapes,
+            })
+            if (await writeXAnyJsonIfSafe(targetJsonPath, jsonText)) {
+              importedAnnotationCount += 1
+            }
+          }
+        }
+      }
+
+      if ((i + 1) % yieldEvery === 0 || i + 1 === totalImages) {
+        const importProgress = 5 + Math.floor(((i + 1) / totalImages) * 93)
+        emit({
+          progress: importProgress,
+          statusMessage: `正在导入 ${i + 1}/${totalImages}…`,
+          importedImageCount,
+          importedAnnotationCount,
+        })
+        await yieldToEventLoop()
+      }
+    }
+
+    emit({ progress: 100, statusMessage: "导入完成", importedImageCount, importedAnnotationCount })
+    return {
+      errorMessage: "",
+      importedImageCount,
+      importedAnnotationCount,
+      detectedFormat,
+    }
+  } catch (error) {
+    return emptyResult(error instanceof Error ? error.message : String(error))
+  }
+}
+
 export async function runAnnotatedTaskZipImport(
   request: AnnotatedImportRequest,
   report?: AnnotatedImportProgressReporter,

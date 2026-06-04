@@ -5,6 +5,9 @@ import { apiV1Root, encodeUrlPathSegments, fetchWithTimeout, readFetchError } fr
 const YOLO_FETCH_TIMEOUT_MS = 60_000
 const YOLO_LOGS_TIMEOUT_MS = 120_000
 
+/** 训练进行中轮询间隔：仅拉 status/history 等小 JSON，避免高频大日志 IPC。 */
+export const TRAINING_RUNNING_POLL_MS = 60_000
+
 export type YoloFamilyId = "yolov8" | "yolo26"
 export type YoloTaskId = "detect" | "segment" | "pose" | "obb" | "classify"
 
@@ -42,6 +45,17 @@ export type YoloDeviceOption = {
   label: string
   memory_total_bytes?: number | null
   memory_used_bytes?: number | null
+}
+
+export type YoloCudaEnvironment = {
+  torch_cuda_device_count: number
+  cuda_visible_devices: string
+  nvidia_smi_gpu_count: number | null
+}
+
+export type YoloDevicesResponse = {
+  devices: YoloDeviceOption[]
+  environment: YoloCudaEnvironment | null
 }
 
 export type YoloHistoryItem = {
@@ -150,6 +164,22 @@ export function yoloTrainingResultImageUrl(jobSlug: string, imagePath: string, m
   const q = new URLSearchParams({ path: imagePath })
   if (mtime != null && mtime > 0) q.set("t", String(mtime))
   return `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results/image?${q}`
+}
+
+/** 经 IPC 代理拉取结果图并转为 blob URL（打包版 WebView 无法直连 http://127.0.0.1）。 */
+export async function fetchYoloTrainingResultImageObjectUrl(
+  jobSlug: string,
+  imagePath: string,
+  mtime?: number,
+): Promise<string> {
+  const res = await fetchWithTimeout(
+    yoloTrainingResultImageUrl(jobSlug, imagePath, mtime),
+    undefined,
+    YOLO_FETCH_TIMEOUT_MS,
+  )
+  if (!res.ok) throw new Error(await readFetchError(res))
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
 }
 
 export type YoloTrainingModelFile = {
@@ -271,11 +301,27 @@ export async function fetchYoloWorkspace(jobSlug: string): Promise<YoloWorkspace
   return res.json()
 }
 
-export async function fetchYoloDevices(): Promise<YoloDeviceOption[]> {
+export async function fetchYoloDevices(): Promise<YoloDevicesResponse> {
   const res = await fetchWithTimeout(`${yoloRoot()}/devices`, undefined, YOLO_FETCH_TIMEOUT_MS)
   if (!res.ok) throw new Error(await readFetchError(res))
-  const data = (await res.json()) as { devices: YoloDeviceOption[] }
-  return data.devices ?? []
+  const data = (await res.json()) as {
+    devices?: YoloDeviceOption[]
+    environment?: Partial<YoloCudaEnvironment> | null
+  }
+  const envRaw = data.environment
+  const environment =
+    envRaw && typeof envRaw === "object"
+      ? {
+          torch_cuda_device_count: Math.max(0, Math.floor(Number(envRaw.torch_cuda_device_count) || 0)),
+          cuda_visible_devices:
+            typeof envRaw.cuda_visible_devices === "string" ? envRaw.cuda_visible_devices : "",
+          nvidia_smi_gpu_count:
+            envRaw.nvidia_smi_gpu_count == null
+              ? null
+              : Math.max(0, Math.floor(Number(envRaw.nvidia_smi_gpu_count) || 0)),
+        }
+      : null
+  return { devices: data.devices ?? [], environment }
 }
 
 export async function fetchYoloTrainStatus(jobSlug: string): Promise<{ job: YoloTrainJob; workspace: YoloWorkspaceSnapshot }> {

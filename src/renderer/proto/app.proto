@@ -291,6 +291,26 @@ message ImportAnnotatedTaskZipResponse {
   string detected_format = 5;
 }
 
+/** 导入已选中的图片及同名标注文件到任务目录。 */
+message ImportAnnotatedTaskFilesRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string subset = 4;
+  repeated string image_paths = 5;
+  repeated string label_paths = 6;
+  repeated string yolo_class_paths = 7;
+  /** xanylabeling / yolo-detect / yolo-obb / yolo-segment / yolo-pose */
+  string import_format = 8;
+}
+
+message ImportAnnotatedTaskFilesResponse {
+  string error_message = 1;
+  int32 imported_image_count = 2;
+  int32 imported_annotation_count = 3;
+  string detected_format = 4;
+}
+
 message StartAnnotatedTaskZipImportRequest {
   string global_config_dir = 1;
   string project_id = 2;
@@ -375,6 +395,20 @@ message ListTaskFilesResponse {
   repeated TaskFileItem files = 1;
   string error_message = 2;
   bool has_more = 3;
+}
+
+/** 导出页等场景：单次扫盘统计图片与标注数量，避免分页 IPC 传完整路径列表。 */
+message CountTaskSourceStatsRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  /** 为空则统计项目下全部任务 */
+  repeated string task_ids = 3;
+}
+
+message CountTaskSourceStatsResponse {
+  int32 image_count = 1;
+  int32 annotation_count = 2;
+  string error_message = 3;
 }
 
 /** 项目任务列表项（与 renderer TaskItem 对齐，持久化于 global_config_dir/project-tasks/） */
@@ -677,6 +711,39 @@ message CopyYoloTrainingDatasetZipResponse {
   string dataset_zip_path = 3;
 }
 
+/** 主进程从本地路径分片上传到远程/本地 HTTP 后端（避免渲染进程 IPC 传 5MB 分片）。 */
+message StartYoloDatasetZipUploadRequest {
+  string global_config_dir = 1;
+  string job_slug = 2;
+  string source_zip_path = 3;
+}
+
+message StartYoloDatasetZipUploadResponse {
+  string job_id = 1;
+  string error_message = 2;
+}
+
+message GetYoloDatasetZipUploadJobRequest {
+  string job_id = 1;
+}
+
+message YoloDatasetZipUploadJobItem {
+  string id = 1;
+  string status = 2;
+  int32 progress = 3;
+  string phase = 4;
+  string message = 5;
+  string data_yaml = 6;
+  string dataset_zip_filename = 7;
+  string error_message = 8;
+}
+
+message GetYoloDatasetZipUploadJobResponse {
+  bool found = 1;
+  YoloDatasetZipUploadJobItem job = 2;
+  string error_message = 3;
+}
+
 /** 将本地 yaml / pt 复制到 backend/external/model_temp/<模型 slug>/ */
 message CopyYoloBatchModelFileRequest {
   string backend_directory = 1;
@@ -734,11 +801,13 @@ service AppService {
   rpc ImportTaskImageZip(ImportTaskImageZipRequest) returns (ImportTaskImageZipResponse);
   rpc CountTaskImageZip(CountTaskImageZipRequest) returns (CountTaskImageZipResponse);
   rpc ImportAnnotatedTaskZip(ImportAnnotatedTaskZipRequest) returns (ImportAnnotatedTaskZipResponse);
+  rpc ImportAnnotatedTaskFiles(ImportAnnotatedTaskFilesRequest) returns (ImportAnnotatedTaskFilesResponse);
   rpc StartAnnotatedTaskZipImport(StartAnnotatedTaskZipImportRequest) returns (StartAnnotatedTaskZipImportResponse);
   rpc StartTaskDelete(StartTaskDeleteRequest) returns (StartTaskDeleteResponse);
   rpc ListAnnotatedTaskImportJobs(google.protobuf.Empty) returns (ListAnnotatedTaskImportJobsResponse);
   rpc GetAnnotatedTaskImportJob(GetAnnotatedTaskImportJobRequest) returns (GetAnnotatedTaskImportJobResponse);
   rpc ListTaskFiles(ListTaskFilesRequest) returns (ListTaskFilesResponse);
+  rpc CountTaskSourceStats(CountTaskSourceStatsRequest) returns (CountTaskSourceStatsResponse);
   rpc ListProjectTasks(ListProjectTasksRequest) returns (ListProjectTasksResponse);
   rpc GetProjectTaskAnnotatedCounts(GetProjectTaskAnnotatedCountsRequest) returns (GetProjectTaskAnnotatedCountsResponse);
   rpc SaveProjectTasks(SaveProjectTasksRequest) returns (SaveProjectTasksResponse);
@@ -773,6 +842,8 @@ service AppService {
   rpc ProxyBackendHttp(ProxyBackendHttpRequest) returns (ProxyBackendHttpResponse);
   rpc ProxyBackendImageUpload(ProxyBackendImageUploadRequest) returns (ProxyBackendImageUploadResponse);
   rpc CopyYoloTrainingDatasetZip(CopyYoloTrainingDatasetZipRequest) returns (CopyYoloTrainingDatasetZipResponse);
+  rpc StartYoloDatasetZipUpload(StartYoloDatasetZipUploadRequest) returns (StartYoloDatasetZipUploadResponse);
+  rpc GetYoloDatasetZipUploadJob(GetYoloDatasetZipUploadJobRequest) returns (GetYoloDatasetZipUploadJobResponse);
   rpc CopyYoloBatchModelFile(CopyYoloBatchModelFileRequest) returns (CopyYoloBatchModelFileResponse);
   rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);
   rpc GetYoloModelDownloadStatus(GetYoloModelDownloadStatusRequest) returns (GetYoloModelDownloadStatusResponse);

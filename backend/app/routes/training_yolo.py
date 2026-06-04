@@ -212,7 +212,10 @@ def workspace(job_slug: str = Query(..., description="训练目录 slug")) -> di
 
 @router.get("/devices")
 def devices() -> dict[str, Any]:
-    return {"devices": yolo_runner.list_devices()}
+    return {
+        "devices": yolo_runner.list_devices(),
+        "environment": yolo_runner.cuda_device_environment(),
+    }
 
 
 @router.get("/status")
