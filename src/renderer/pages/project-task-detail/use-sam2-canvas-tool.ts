@@ -1,9 +1,8 @@
 /**
  * 模块：use-sam2-canvas-tool
- * 职责：SAM2 标注态下点/框交互；仅在当前图尚无缓存时向后端请求 encode-image（首张 prompt 或框确认前），解码前 await 保证与首点无竞态。
+ * 职责：SAM2 标注态下点/框交互；仅在当前图尚无 session 时向后端 prepare（首张 prompt 或框确认前），解码由 FastAPI 排队执行。
  */
-import { fetchSamImageEmbeddings } from "@/lib/sam2-encode-api"
-import type { Sam2EmbedCache } from "@/lib/sam2-encode-api"
+import { prepareSamSession, sessionCacheFromPrepare, type SamSessionCache } from "@/lib/sam2-session-api"
 import type { ImageGeometry } from "@/pages/project-task-detail/canvas-geometry"
 import type { Sam2PromptMode } from "@/pages/project-task-detail/annotateTools/aiTools/types"
 import type { Point } from "@/pages/project-task-detail/types"
@@ -18,7 +17,7 @@ export type Sam2DecodeRequest = {
   promptMode: Sam2PromptMode
   points: Sam2ImagePoint[]
   bbox: { x1: number; y1: number; x2: number; y2: number } | null
-  /** 仅当 decoder 导出预测 IoU 时生效；未导出时忽略 */
+  /** 仅当服务端 decode 返回 pred_iou 时生效 */
   minPredIou?: number
 }
 
@@ -59,7 +58,7 @@ export type Sam2AutoPromptParams = {
   objectBoxW: number
   /** 仅「矩形框 + 自动 prompt」使用；点 + 自动 prompt 忽略 */
   objectBoxH: number
-  /** 0–1，与 decoder 导出的预测 IoU 比较（无 IoU 输出时不生效） */
+  /** 0–1，与服务端 pred_iou 比较（未返回 IoU 时不生效） */
   iouThreshold: number
   /** 0.1–1，悬停触发时间 = 基准 × 该系数 */
   hoverFactor: number
@@ -164,16 +163,16 @@ type Params = {
   labelColor: string
   modelIdRef: MutableRefObject<string>
   sessionNonce: number
-  shouldSkipEncode: () => boolean
-  onEmbeddingsCached: (cache: Sam2EmbedCache) => void
-  onEncodeToast: (ok: boolean, message: string) => void
-  /** 返回当前 encode 缓存；用于 CVAT/ONNX 解码前检查 */
-  getEmbedCache?: () => Sam2EmbedCache | null
-  /** 点变化或框确认后触发；由页面层用 ORT 解码并写入标注 */
+  shouldSkipPrepare: () => boolean
+  onSessionCached: (cache: SamSessionCache) => void
+  onPrepareToast: (ok: boolean, message: string) => void
+  /** 返回当前 session 缓存；用于服务端 decode 前检查 */
+  getSessionCache?: () => SamSessionCache | null
+  /** 点变化或框确认后触发；由页面层请求服务端 decode 并更新预览 */
   onSam2DecodeRequest?: (ctx: Sam2DecodeRequest) => void
   imageNaturalSize: { width: number; height: number }
   sam2Auto: Sam2AutoPromptParams
-  /** 传给后端的 encode 相对原图倍率（0.3–1），与缓存键一致 */
+  /** session prepare 使用的相对原图边长倍率（0.3–1），与缓存键一致 */
   sam2InferScale: number
 }
 
@@ -194,10 +193,10 @@ export function useSam2CanvasTool(params: Params) {
     labelColor,
     modelIdRef,
     sessionNonce,
-    shouldSkipEncode,
-    onEmbeddingsCached,
-    onEncodeToast,
-    getEmbedCache,
+    shouldSkipPrepare,
+    onSessionCached,
+    onPrepareToast,
+    getSessionCache,
     onSam2DecodeRequest,
     imageNaturalSize,
     sam2Auto,
@@ -209,7 +208,7 @@ export function useSam2CanvasTool(params: Params) {
   const [rectHover, setRectHover] = useState<Point | null>(null)
   const [committedBbox, setCommittedBbox] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
   const [autoHoverImage, setAutoHoverImage] = useState<Point | null>(null)
-  const encodeInFlightPromiseRef = useRef<Promise<void> | null>(null)
+  const prepareInFlightPromiseRef = useRef<Promise<void> | null>(null)
   const activeImagePathRef = useRef(activeImagePath)
   activeImagePathRef.current = activeImagePath
 
@@ -280,13 +279,13 @@ export function useSam2CanvasTool(params: Params) {
 
   const hitRadiusImage = useMemo(() => Math.max(6, 10 / Math.max(imageFitScale, 0.001)), [imageFitScale])
 
-  /** 当前图尚无 embeddings 时请求后端；已缓存则立即返回。会等待他人发起的 in-flight 编码结束后再判断是否还需请求（换图中途完成上一张编码）。 */
-  const ensureEmbeddingsForActiveImage = useCallback(async (): Promise<void> => {
+  /** 当前图尚无 session 时请求后端 prepare；已缓存则立即返回。 */
+  const ensureSessionForActiveImage = useCallback(async (): Promise<void> => {
     for (let i = 0; i < 8; i++) {
       const path = activeImagePathRef.current.trim()
       if (!path || !imageReady || !sam2AnnotatingActive) return
-      if (shouldSkipEncode()) return
-      const pending = encodeInFlightPromiseRef.current
+      if (shouldSkipPrepare()) return
+      const pending = prepareInFlightPromiseRef.current
       if (pending) {
         await pending.catch(() => {})
         continue
@@ -296,48 +295,43 @@ export function useSam2CanvasTool(params: Params) {
       holder.flight = (async () => {
         const scaleAtStart = sam2InferScaleRef.current
         try {
-          const response = await fetchSamImageEmbeddings(mid, path, { inferScale: scaleAtStart })
+          const response = await prepareSamSession(mid, path, { inferScale: scaleAtStart })
           if (activeImagePathRef.current.trim() !== path) return
           if (sam2InferScaleRef.current !== scaleAtStart) return
-          if (response.feature_layout === "efficient_sam_cvat_decoder_onnx_v1") {
-            onEncodeToast(
-              false,
-              "EfficientSAM 已不在本应用前端支持；请在「模型 → 自动标注 → SAM 标注」中启动 SAM 2.1 或 MobileSAM 后再标注。",
-            )
-            return
-          }
-          onEmbeddingsCached({ imagePath: path, inferScale: scaleAtStart, response })
-          onEncodeToast(true, "SAM2 图像编码完成，已缓存 embeddings")
+          onSessionCached(
+            sessionCacheFromPrepare(path, scaleAtStart, response),
+          )
+          onPrepareToast(true, "SAM2 session 已就绪")
         } catch (e) {
           if (activeImagePathRef.current.trim() !== path) return
           if (sam2InferScaleRef.current !== scaleAtStart) return
           const msg = e instanceof Error ? e.message : String(e)
-          onEncodeToast(false, `SAM2 编码失败：${msg}`)
+          onPrepareToast(false, `SAM2 session prepare 失败：${msg}`)
         } finally {
-          if (encodeInFlightPromiseRef.current === holder.flight) {
-            encodeInFlightPromiseRef.current = null
+          if (prepareInFlightPromiseRef.current === holder.flight) {
+            prepareInFlightPromiseRef.current = null
           }
         }
       })()
       const flight = holder.flight
-      encodeInFlightPromiseRef.current = flight
+      prepareInFlightPromiseRef.current = flight
       await flight
-      if (shouldSkipEncode()) return
+      if (shouldSkipPrepare()) return
     }
-  }, [imageReady, modelIdRef, onEmbeddingsCached, onEncodeToast, sam2AnnotatingActive, shouldSkipEncode])
+  }, [imageReady, modelIdRef, onSessionCached, onPrepareToast, sam2AnnotatingActive, shouldSkipPrepare])
 
   const emitSam2Decode = useCallback(
     (ctx: Sam2DecodeRequest) => {
-      if (!onSam2DecodeRequest || !getEmbedCache) return
+      if (!onSam2DecodeRequest || !getSessionCache) return
       const path = ctx.imagePath.trim()
       queueMicrotask(() => {
-        const cache = getEmbedCache()
+        const cache = getSessionCache()
         if (!cache || cache.imagePath !== path) return
         if (cache.inferScale !== sam2InferScaleRef.current) return
         onSam2DecodeRequest(ctx)
       })
     },
-    [getEmbedCache, onSam2DecodeRequest],
+    [getSessionCache, onSam2DecodeRequest],
   )
 
   const emitSam2DecodeRef = useRef(emitSam2Decode)
@@ -372,7 +366,7 @@ export function useSam2CanvasTool(params: Params) {
     const path = activeImagePathRef.current.trim()
     void (async () => {
       try {
-        await ensureEmbeddingsForActiveImage()
+        await ensureSessionForActiveImage()
         if (activeImagePathRef.current.trim() !== path) return
         const a = sam2AutoRef.current
         const iw2 = imageNaturalRef.current.width
@@ -406,7 +400,7 @@ export function useSam2CanvasTool(params: Params) {
         autoDecodeFlightRef.current = false
       }
     })()
-  }, [clearAutoDwellTimer, ensureEmbeddingsForActiveImage])
+  }, [clearAutoDwellTimer, ensureSessionForActiveImage])
 
   commitAutoDwellDecodeRef.current = commitAutoDwellDecode
 
@@ -516,7 +510,7 @@ export function useSam2CanvasTool(params: Params) {
       if (sam2PromptMode === "point") {
         const wasEmpty = points.length === 0
         void (async () => {
-          if (wasEmpty) await ensureEmbeddingsForActiveImage()
+          if (wasEmpty) await ensureSessionForActiveImage()
           setPoints((prev) => {
             const next: Sam2ImagePoint[] = [...prev, { id: newPointId(), x: p.x, y: p.y, label: 1 }]
             queueDecode({ promptMode: "point", nextPoints: next, bbox: null })
@@ -545,13 +539,13 @@ export function useSam2CanvasTool(params: Params) {
       setRectAnchor(null)
       setRectHover(null)
       void (async () => {
-        await ensureEmbeddingsForActiveImage()
+        await ensureSessionForActiveImage()
         queueDecode({ promptMode: "bbox", nextPoints: [], bbox: box })
       })()
     },
     [
       committedBbox,
-      ensureEmbeddingsForActiveImage,
+      ensureSessionForActiveImage,
       getCurrentImageGeometry,
       imageReady,
       points.length,
@@ -586,7 +580,7 @@ export function useSam2CanvasTool(params: Params) {
       }
       const wasEmpty = points.length === 0
       void (async () => {
-        if (wasEmpty) await ensureEmbeddingsForActiveImage()
+        if (wasEmpty) await ensureSessionForActiveImage()
         setPoints((prev) => {
           const next: Sam2ImagePoint[] = [...prev, { id: newPointId(), x: p.x, y: p.y, label: 0 }]
           queueDecode({ promptMode: "point", nextPoints: next, bbox: null })
@@ -595,7 +589,7 @@ export function useSam2CanvasTool(params: Params) {
       })()
     },
     [
-      ensureEmbeddingsForActiveImage,
+      ensureSessionForActiveImage,
       getCurrentImageGeometry,
       hitRadiusImage,
       imageReady,

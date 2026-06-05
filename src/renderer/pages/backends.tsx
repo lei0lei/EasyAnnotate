@@ -37,11 +37,21 @@ const GROUPS: BackendRouteGroup[] = [
     routes: [
       { method: "GET", path: "/api/v1/models" },
       { method: "POST", path: "/api/v1/models/{model_id:path}/predict" },
-      { method: "POST", path: "/api/v1/models/{model_id:path}/encode-image" },
       { method: "POST", path: "/api/v1/models/{model_id:path}/patch-features" },
       { method: "POST", path: "/api/v1/models/{model_id:path}/predict-upload" },
-      { method: "POST", path: "/api/v1/models/{model_id:path}/encode-image-upload" },
       { method: "POST", path: "/api/v1/models/{model_id:path}/patch-features-upload" },
+    ],
+  },
+  {
+    id: "sam-session",
+    title: "SAM Session",
+    desc: "SAM 服务端 encode/decode session（每客户端单 session）",
+    icon: Box,
+    routes: [
+      { method: "POST", path: "/api/v1/sam/session/prepare" },
+      { method: "POST", path: "/api/v1/sam/session/prepare-upload" },
+      { method: "POST", path: "/api/v1/sam/session/decode" },
+      { method: "DELETE", path: "/api/v1/sam/session" },
     ],
   },
   {
@@ -52,7 +62,6 @@ const GROUPS: BackendRouteGroup[] = [
     routes: [
       { method: "GET", path: "/api/v1/model-assets" },
       { method: "GET", path: "/api/v1/model-assets/{asset_id:path}/status" },
-      { method: "GET", path: "/api/v1/model-assets/{asset_id:path}/decoder-onnx" },
       { method: "POST", path: "/api/v1/model-assets/{asset_id:path}/ensure" },
     ],
   },

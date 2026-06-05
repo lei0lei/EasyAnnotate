@@ -1,4 +1,4 @@
-/** 任务页 SAM 标注：模型族 + 各族权重（与配置页、encode-image 的 model_id 一致）。 */
+/** 任务页 SAM 标注：模型族 + 各族权重（与配置页、session prepare 的 model_id 一致）。 */
 
 export type SamAnnotationFamily = "sam2" | "mobile_sam"
 
@@ -92,16 +92,6 @@ export function setSamAnnotationModelId(family: SamAnnotationFamily, modelId: st
       // ignore
     }
   }
-}
-
-/** @deprecated 使用 getSamAnnotationModelId("sam2") */
-export function getSam2AnnotationBackendModelId(): string | null {
-  return getSamAnnotationModelId("sam2")
-}
-
-/** @deprecated 使用 setSamAnnotationModelId("sam2", modelId) */
-export function setSam2AnnotationBackendModelId(modelId: string): void {
-  setSamAnnotationModelId("sam2", modelId)
 }
 
 export function defaultModelIdForFamily(family: SamAnnotationFamily): string {

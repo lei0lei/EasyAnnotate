@@ -14,13 +14,13 @@ export type DiffusionCandidateResult = {
   selected: boolean
 }
 import { filterDiffusionRefinedByDinoAndMaskIou } from "@/lib/diffusion-mask-candidate-filter"
-import { decodeSamBboxOnEncodeCache, decodeSamCenterPointOnEncodeCache } from "@/lib/diffusion-sam-decode"
+import { decodeSamBboxOnSession, decodeSamCenterPointOnSession } from "@/lib/diffusion-sam-decode"
 import {
   searchSimilarFromPatchFeatures,
   type DiffusionSimilarityCandidate,
   type DiffusionSimilaritySearchOptions,
 } from "@/lib/diffusion-similarity"
-import type { Sam2EncodeImageResponse } from "@/lib/sam2-encode-api"
+import type { SamSessionCache } from "@/lib/sam2-session-api"
 import {
   foregroundBBoxInclusive,
 } from "@/lib/mask-raster-rle"
@@ -85,7 +85,7 @@ function newCandidateId(): string {
 }
 
 export type RefineDiffusionCandidatesParams = {
-  encodeResponse: Sam2EncodeImageResponse
+  sessionCache: SamSessionCache
   similarityCandidates: DiffusionSimilarityCandidate[]
   postStrategy: DiffusionRefinePostStrategy
   seedDinoProto: Float32Array
@@ -142,8 +142,8 @@ export async function refineDiffusionCandidates(
       let mask: { maskBinary: Uint8Array; w: number; h: number } | null = null
       try {
         mask = useCenterPoint
-          ? await decodeSamCenterPointOnEncodeCache(params.encodeResponse, bbox)
-          : await decodeSamBboxOnEncodeCache(params.encodeResponse, bbox)
+          ? await decodeSamCenterPointOnSession(params.sessionCache, bbox)
+          : await decodeSamBboxOnSession(params.sessionCache, bbox)
       } catch {
         mask = null
       }

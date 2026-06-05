@@ -79,6 +79,7 @@ type UseCanvasSectionPropsParams = {
   rawHighlightCorner: CanvasSectionBaseProps["rawHighlightCorner"]
   dragStageNudge: CanvasSectionBaseProps["dragStageNudge"]
   sam2OverlayActive: CanvasSectionBaseProps["sam2OverlayActive"]
+  sam2DecodeBusy: CanvasSectionBaseProps["sam2DecodeBusy"]
   sam2StagePoints: CanvasSectionBaseProps["sam2StagePoints"]
   sam2PointPositiveColor: CanvasSectionBaseProps["sam2PointPositiveColor"]
   sam2PointNegativeColor: CanvasSectionBaseProps["sam2PointNegativeColor"]
@@ -177,6 +178,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
     rawHighlightCorner,
     dragStageNudge,
     sam2OverlayActive,
+    sam2DecodeBusy,
     sam2StagePoints,
     sam2PointPositiveColor,
     sam2PointNegativeColor,
@@ -344,6 +346,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       polygonDraftStagePoints,
       hoveredDraftVertexIndex,
       sam2OverlayActive,
+      sam2DecodeBusy,
       sam2StagePoints,
       sam2PointPositiveColor,
       sam2PointNegativeColor,
@@ -399,6 +402,7 @@ export function useCanvasSectionProps(params: UseCanvasSectionPropsParams) {
       selectedRotationRect,
       selectedShapeIndex,
       sam2AutoPreviewRect,
+      sam2DecodeBusy,
       sam2OverlayActive,
       sam2PointNegativeColor,
       sam2PointPositiveColor,

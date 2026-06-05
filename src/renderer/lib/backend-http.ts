@@ -6,7 +6,7 @@ import { loadAppConfig } from "@/lib/app-config-storage"
  * 业务路由挂在 `prefix=/api/v1`（见 `backend/app/routes/__init__.py`）。
  *
  * 前端调用集中处：`model-runtime-api.ts`（model-runtime + predict）、
- * `sam2-encode-api.ts`（encode-image、decoder-onnx）。
+ * `sam2-session-api.ts`（SAM session prepare/decode/release）。
  */
 export function backendHttpOrigin(): string {
   const { protocol, host, port, remoteConnected } = loadAppConfig().backend
@@ -100,7 +100,7 @@ export function apiV1Root(): string {
   return `${backendHttpOrigin()}${normalizeBasePath(basePath)}/api/v1`
 }
 
-/** 将含 `/` 的 id 按段编码，供 FastAPI `{param:path}` 路由使用（与 `sam2-encode-api` 一致）。 */
+/** 将含 `/` 的 id 按段编码，供 FastAPI `{param:path}` 路由使用。 */
 export function encodeUrlPathSegments(id: string): string {
   return id.split("/").map(encodeURIComponent).join("/")
 }

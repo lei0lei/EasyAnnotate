@@ -209,6 +209,7 @@ export type ProjectTaskCanvasSectionProps = {
   aiToolPaletteProps: TaskAiToolPaletteProps
   drawHintProps: TaskDrawHintProps
   sam2OverlayActive: boolean
+  sam2DecodeBusy: boolean
   sam2StagePoints: { id: string; stageX: number; stageY: number; label: 1 | 0 }[]
   sam2PointPositiveColor: string
   sam2PointNegativeColor: string
@@ -1181,6 +1182,13 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                         onMouseMove={props.onSam2OverlayMouseMove}
                         onMouseLeave={props.onSam2OverlayMouseLeave}
                       />
+                      {props.sam2DecodeBusy ? (
+                        <div className="pointer-events-none absolute inset-0 z-[24] flex items-start justify-center bg-background/10 pt-3">
+                          <div className="rounded-md border border-border/80 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+                            SAM 分割中…
+                          </div>
+                        </div>
+                      ) : null}
                       <svg className="ea-annotation-svg pointer-events-none absolute inset-0 z-[23] h-full w-full overflow-visible">
                         {props.sam2StagePoints.map((p) => (
                           <circle

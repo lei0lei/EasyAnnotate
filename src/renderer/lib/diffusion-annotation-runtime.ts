@@ -1,5 +1,5 @@
 /**
- * 扩散式标注编排：SAM encode 一次 → 种子 decode → DINOv2 特征 → 前端相似搜索 → 批量 SAM decode。
+ * 扩散式标注编排：SAM session prepare 一次 → 种子 decode → DINOv2 特征 → 前端相似搜索 → 批量 SAM decode。
  */
 import { fetchDinov2PatchFeatures } from "@/lib/dinov2-patch-features-api"
 import { buildSeedDinoPrototype } from "@/lib/diffusion-dino-embedding"
@@ -16,12 +16,9 @@ import {
   type DiffusionPipelineVisualStep,
 } from "@/lib/diffusion-process-visual"
 import type { DiffusionSimilarityCandidate } from "@/lib/diffusion-similarity"
-import { decodeSamBboxOnEncodeCache } from "@/lib/diffusion-sam-decode"
-import {
-  foregroundBBoxInclusive,
-} from "@/lib/mask-raster-rle"
-import { fetchSamImageEmbeddings, type Sam2EmbedCache } from "@/lib/sam2-encode-api"
-import { isSamCvatsFeatureLayout, loadSamDecoderSession } from "@/lib/sam2-cvat-onnx"
+import { decodeSamBboxOnSession } from "@/lib/diffusion-sam-decode"
+import { foregroundBBoxInclusive } from "@/lib/mask-raster-rle"
+import { ensureSamSessionCache, type SamSessionCache } from "@/lib/sam2-session-api"
 
 export type { DiffusionCandidateResult, DiffusionSeedBbox } from "@/lib/diffusion-pipeline-strategies"
 export type {
@@ -37,11 +34,11 @@ export type RunDiffusionPipelineParams = {
   seedBbox: DiffusionSeedBbox
   /** 种子引导策略：仅框 / 仅掩码 / 框+掩码 */
   seedGuideMode?: "bbox" | "mask" | "bbox_and_mask"
-  embedCache: Sam2EmbedCache | null
+  sessionCache: SamSessionCache | null
   similarityThreshold?: number
   maxInstances?: number
   nmsIou?: number
-  /** 候选 SAM 精化并发数（默认 4，建议 1~6） */
+  /** 候选 SAM 精化并发数（默认 4，建议 1~6；服务端仍全局排队） */
   refineConcurrency?: number
   /** 相似峰 → 候选框算法 */
   candidateBoxStrategy?: DiffusionCandidateBoxStrategy
@@ -56,7 +53,7 @@ export type RunDiffusionPipelineParams = {
 export type { DiffusionPipelineVisualStep } from "@/lib/diffusion-process-visual"
 
 export type RunDiffusionPipelineResult = {
-  embedCache: Sam2EmbedCache
+  sessionCache: SamSessionCache
   seedMask: { maskBinary: Uint8Array; w: number; h: number } | null
   candidates: DiffusionCandidateResult[]
   similarityCandidates: DiffusionSimilarityCandidate[]
@@ -74,28 +71,6 @@ function bboxFromMask(mask: { maskBinary: Uint8Array; w: number; h: number }): D
   return { x1: fb.minX, y1: fb.minY, x2: fb.maxX + 1, y2: fb.maxY + 1 }
 }
 
-export async function ensureSamEmbedCache(
-  imagePath: string,
-  samModelId: string,
-  inferScale: number,
-  existing: Sam2EmbedCache | null,
-): Promise<Sam2EmbedCache> {
-  if (
-    existing &&
-    existing.imagePath === imagePath.trim() &&
-    (existing.inferScale ?? 1) === inferScale &&
-    existing.response.model_id === samModelId
-  ) {
-    return existing
-  }
-  const response = await fetchSamImageEmbeddings(samModelId, imagePath, { inferScale })
-  if (!isSamCvatsFeatureLayout(response.feature_layout)) {
-    throw new Error("当前 SAM 模型不支持浏览器 decoder；请使用 SAM 2.1 或 MobileSAM")
-  }
-  await loadSamDecoderSession(response.model_id)
-  return { imagePath: imagePath.trim(), inferScale, response }
-}
-
 export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): Promise<RunDiffusionPipelineResult> {
   const path = params.imagePath.trim()
   const { samModelId, dinov2ModelId, inferScale, seedBbox } = params
@@ -103,10 +78,10 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
   const seedGuideMode = params.seedGuideMode ?? "bbox_and_mask"
 
   onProgress?.("SAM 图像编码…")
-  const embedCache = await ensureSamEmbedCache(path, samModelId, inferScale, params.embedCache)
+  const sessionCache = await ensureSamSessionCache(path, samModelId, inferScale, params.sessionCache)
 
   onProgress?.("SAM 精化种子…")
-  const seedMask = await decodeSamBboxOnEncodeCache(embedCache.response, seedBbox)
+  const seedMask = await decodeSamBboxOnSession(sessionCache, seedBbox)
   const refinedSeedBbox = seedMask ? (bboxFromMask(seedMask) ?? seedBbox) : seedBbox
 
   let querySeedBbox: [number, number, number, number] = [
@@ -146,7 +121,7 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
   }
 
   const refineResult = await refineDiffusionCandidates({
-    encodeResponse: embedCache.response,
+    sessionCache,
     similarityCandidates,
     postStrategy: refinePostStrategy,
     seedDinoProto,
@@ -174,7 +149,7 @@ export async function runDiffusionPipeline(params: RunDiffusionPipelineParams): 
   }
 
   return {
-    embedCache,
+    sessionCache,
     seedMask,
     candidates,
     similarityCandidates,

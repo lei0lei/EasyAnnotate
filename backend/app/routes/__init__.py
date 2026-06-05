@@ -2,7 +2,8 @@
 
 | 前缀 | 模块 | 说明 |
 |------|------|------|
-| ``/models`` | ``models`` | 模型列表、``predict``、SAM2 ``encode-image`` |
+| ``/sam`` | ``sam_session`` | SAM 服务端 session（prepare/decode，每客户端单 session + 私有 embedding） |
+| ``/models`` | ``models`` | 模型列表、``predict``、DINOv2 ``patch-features`` |
 | ``/models`` | ``models_upload`` | 图片上传推理（需 ``python-multipart``；缺失时跳过） |
 | ``/model-assets`` | ``model_assets`` | 资源目录、权重/ONNX 文件、``ensure`` 下载 |
 | ``/model-runtime`` | ``model_runtime`` | 运行目录 ``catalog``、按分类 ``start``/``stop``、``status`` |
@@ -13,10 +14,11 @@
 
 from fastapi import APIRouter
 
-from . import model_assets, model_runtime, models, training_dinov2, training_yolo, yolo_batch
+from . import model_assets, model_runtime, models, sam_session, training_dinov2, training_yolo, yolo_batch
 
 api_router = APIRouter()
 api_router.include_router(models.router, prefix="/models", tags=["models"])
+api_router.include_router(sam_session.router, prefix="/sam", tags=["sam-session"])
 
 try:
     from . import models_upload
