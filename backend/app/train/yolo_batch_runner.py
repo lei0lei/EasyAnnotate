@@ -126,14 +126,13 @@ def get_infer_kwargs(model_slug: str) -> dict[str, Any]:
     }
 
 
-def predict_image(model_slug: str, image_path: str, *, device: str | int | None = None) -> dict[str, Any]:
-    """对单张图片推理（供后续批量标注任务调用）。"""
-    slug = (model_slug or "").strip()
-    with _lock:
-        model = _loaded.get(slug)
-    if model is None:
-        raise RuntimeError(f"模型未启动：{slug}")
-
+def _predict_loaded_model(
+    model: Any,
+    slug: str,
+    source: Any,
+    *,
+    device: str | int | None = None,
+) -> dict[str, Any]:
     meta = load_meta(slug)
     kwargs = get_infer_kwargs(slug)
     if device is not None:
@@ -142,7 +141,7 @@ def predict_image(model_slug: str, image_path: str, *, device: str | int | None 
         kwargs["device"] = _resolve_device(bool(meta.get("use_gpu", True)))
 
     task = (meta.get("task") or "detect").strip().lower()
-    results = model.predict(source=image_path, **kwargs)
+    results = model.predict(source=source, **kwargs)
     if not results:
         return {"model_slug": slug, "task": task, "results": []}
 
@@ -152,6 +151,38 @@ def predict_image(model_slug: str, image_path: str, *, device: str | int | None 
     for r in results:
         out.append(export_ultralytics_result(r, task))
     return {"model_slug": slug, "task": task, "results": out}
+
+
+def predict_image(model_slug: str, image_path: str, *, device: str | int | None = None) -> dict[str, Any]:
+    """对单张图片推理（供后续批量标注任务调用）。"""
+    slug = (model_slug or "").strip()
+    with _lock:
+        model = _loaded.get(slug)
+    if model is None:
+        raise RuntimeError(f"模型未启动：{slug}")
+    return _predict_loaded_model(model, slug, image_path, device=device)
+
+
+def predict_image_bytes(model_slug: str, data: bytes, *, device: str | int | None = None) -> dict[str, Any]:
+    """对内存中的图片字节推理（WebSocket 上传场景，避免写临时文件）。"""
+    slug = (model_slug or "").strip()
+    if not data:
+        raise ValueError("image bytes empty")
+    with _lock:
+        model = _loaded.get(slug)
+    if model is None:
+        raise RuntimeError(f"模型未启动：{slug}")
+
+    import io
+
+    from PIL import Image
+
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception as e:
+        raise ValueError(f"invalid image bytes: {e}") from e
+    return _predict_loaded_model(model, slug, image, device=device)
 
 
 def runtime_status() -> dict[str, Any]:

@@ -211,6 +211,8 @@ export default function ProjectDetailPage() {
   const autoAnnotateAbortRef = useRef<AbortController | null>(null)
   const [autoAnnotatePanelTaskId, setAutoAnnotatePanelTaskId] = useState<string | null>(null)
   const [autoAnnotateModelSlug, setAutoAnnotateModelSlug] = useState("")
+  const [autoAnnotateSkipAnnotated, setAutoAnnotateSkipAnnotated] = useState(true)
+  const [autoAnnotateOverwriteExisting, setAutoAnnotateOverwriteExisting] = useState(false)
   const [autoAnnotateProgressByTaskId, setAutoAnnotateProgressByTaskId] = useState<
     Record<string, YoloAutoAnnotateProgress>
   >({})
@@ -360,6 +362,8 @@ export default function ProjectDetailPage() {
       taskId: task.id,
       modelSlug,
       projectTags: currentTags,
+      skipAnnotated: autoAnnotateSkipAnnotated,
+      overwriteExisting: autoAnnotateOverwriteExisting,
       signal: controller.signal,
       onProgress: (progress) => {
         setAutoAnnotateProgressByTaskId((prev) => ({ ...prev, [task.id]: progress }))
@@ -1244,6 +1248,13 @@ export default function ProjectDetailPage() {
           progress={autoAnnotateProgressByTaskId[autoAnnotatePanelTaskId] ?? null}
           selectedModelSlug={autoAnnotateModelSlug}
           onSelectedModelSlugChange={setAutoAnnotateModelSlug}
+          skipAnnotated={autoAnnotateSkipAnnotated}
+          onSkipAnnotatedChange={setAutoAnnotateSkipAnnotated}
+          overwriteExisting={autoAnnotateOverwriteExisting}
+          onOverwriteExistingChange={(value) => {
+            setAutoAnnotateOverwriteExisting(value)
+            if (value) setAutoAnnotateSkipAnnotated(false)
+          }}
           onClose={closeAutoAnnotatePanel}
           otherTaskRunning={
             autoAnnotateActiveTaskId != null &&

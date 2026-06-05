@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,18 +189,7 @@ async def handle_yolo_batch_text(conn: WsConnection, msg_type: str, request_id: 
 async def _run_predict_from_bytes(pending: _PendingYoloBatchPredict, data: bytes) -> dict[str, Any]:
     if len(data) != pending.byte_length:
         raise ValueError(f"byte length mismatch: expected {pending.byte_length}, got {len(data)}")
-    tmp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(prefix="ea-yolo-batch-ws-", suffix=pending.suffix, delete=False) as f:
-            f.write(data)
-            tmp_path = f.name
-        return await asyncio.to_thread(yolo_batch_runner.predict_image, pending.model_slug, tmp_path)
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    return await asyncio.to_thread(yolo_batch_runner.predict_image_bytes, pending.model_slug, data)
 
 
 async def handle_yolo_batch_binary(conn: WsConnection, data: bytes) -> bool:

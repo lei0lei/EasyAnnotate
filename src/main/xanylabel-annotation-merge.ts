@@ -119,14 +119,30 @@ function loadDoc(jsonPath: string, imagePath: string, imageWidth: number, imageH
   }
 }
 
-export function appendShapesToAnnotationJsonFile(payload: {
+export function annotationJsonHasShapes(jsonPath: string): boolean {
+  if (!jsonPath.trim() || !fs.existsSync(jsonPath)) return false
+  try {
+    const raw = fs.readFileSync(jsonPath, "utf8")
+    if (!raw.trim()) return false
+    const parsed = JSON.parse(raw) as Partial<XAnyLabelFile>
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false
+    if (!Array.isArray(parsed.shapes)) return false
+    return parsed.shapes.some((item) => !!normalizeShape(item))
+  } catch {
+    return false
+  }
+}
+
+export function writeShapesToAnnotationJsonFile(payload: {
   jsonPath: string
   imagePath: string
   imageWidth: number
   imageHeight: number
   shapesJson: string
+  mode?: "append" | "replace"
 }): { jsonPath: string; errorMessage: string } {
   const { jsonPath, imagePath, imageWidth, imageHeight, shapesJson } = payload
+  const mode = payload.mode === "replace" ? "replace" : "append"
   let incoming: unknown[] = []
   try {
     const parsed = JSON.parse(shapesJson || "[]")
@@ -139,8 +155,8 @@ export function appendShapesToAnnotationJsonFile(payload: {
   }
 
   const doc = loadDoc(jsonPath, imagePath, imageWidth, imageHeight)
-  const appended = incoming.map(normalizeShape).filter((item): item is XAnyLabelShape => !!item)
-  doc.shapes = [...doc.shapes, ...appended]
+  const normalized = incoming.map(normalizeShape).filter((item): item is XAnyLabelShape => !!item)
+  doc.shapes = mode === "replace" ? normalized : [...doc.shapes, ...normalized]
   doc.imageWidth = imageWidth
   doc.imageHeight = imageHeight
 
@@ -154,4 +170,14 @@ export function appendShapesToAnnotationJsonFile(payload: {
       errorMessage: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+export function appendShapesToAnnotationJsonFile(payload: {
+  jsonPath: string
+  imagePath: string
+  imageWidth: number
+  imageHeight: number
+  shapesJson: string
+}): { jsonPath: string; errorMessage: string } {
+  return writeShapesToAnnotationJsonFile({ ...payload, mode: "append" })
 }

@@ -49,6 +49,9 @@ try {
     currentFile: "",
     message: "子进程异常",
     errorMessage: message,
+    skippedAlreadyAnnotated: 0,
+    skippedLabelMismatch: 0,
+    summaryMessage: "",
   })
   console.error(message)
   process.exit(1)

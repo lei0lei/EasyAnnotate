@@ -16,6 +16,9 @@ export type YoloAutoAnnotateJobRecord = {
   currentFile: string
   message: string
   errorMessage: string
+  skippedAlreadyAnnotated: number
+  skippedLabelMismatch: number
+  summaryMessage: string
 }
 
 type ChildLaunch = {
@@ -49,11 +52,33 @@ function writeStateFile(jobId: string, job: YoloAutoAnnotateJobRecord): void {
   }
 }
 
+function normalizeJobRecord(parsed: Partial<YoloAutoAnnotateJobRecord>): YoloAutoAnnotateJobRecord | null {
+  if (!parsed || typeof parsed !== "object" || typeof parsed.id !== "string") return null
+  return {
+    id: parsed.id,
+    status:
+      parsed.status === "success" ||
+      parsed.status === "failed" ||
+      parsed.status === "cancelled" ||
+      parsed.status === "running"
+        ? parsed.status
+        : "running",
+    done: Math.max(0, Math.floor(Number(parsed.done) || 0)),
+    total: Math.max(0, Math.floor(Number(parsed.total) || 0)),
+    currentFile: typeof parsed.currentFile === "string" ? parsed.currentFile : "",
+    message: typeof parsed.message === "string" ? parsed.message : "",
+    errorMessage: typeof parsed.errorMessage === "string" ? parsed.errorMessage : "",
+    skippedAlreadyAnnotated: Math.max(0, Math.floor(Number(parsed.skippedAlreadyAnnotated) || 0)),
+    skippedLabelMismatch: Math.max(0, Math.floor(Number(parsed.skippedLabelMismatch) || 0)),
+    summaryMessage: typeof parsed.summaryMessage === "string" ? parsed.summaryMessage : "",
+  }
+}
+
 function readStateFile(jobId: string): YoloAutoAnnotateJobRecord | null {
   try {
     const raw = fs.readFileSync(statePath(jobId), "utf8")
-    const parsed = JSON.parse(raw) as YoloAutoAnnotateJobRecord
-    return parsed && typeof parsed === "object" ? parsed : null
+    const parsed = JSON.parse(raw) as Partial<YoloAutoAnnotateJobRecord>
+    return normalizeJobRecord(parsed)
   } catch {
     return null
   }
@@ -312,6 +337,8 @@ export function startYoloAutoAnnotateJob(args: {
   apiRoot: string
   imagePaths: string[]
   allowedLabels: string[]
+  skipAnnotated?: boolean
+  overwriteExisting?: boolean
 }): { jobId: string; errorMessage: string } {
   const modelSlug = args.modelSlug.trim()
   if (!modelSlug) return { jobId: "", errorMessage: "模型标识为空" }
@@ -337,6 +364,9 @@ export function startYoloAutoAnnotateJob(args: {
     currentFile: "",
     message: "排队中…",
     errorMessage: "",
+    skippedAlreadyAnnotated: 0,
+    skippedLabelMismatch: 0,
+    summaryMessage: "",
   }
   jobs.set(jobId, job)
   writeStateFile(jobId, job)
@@ -347,6 +377,8 @@ export function startYoloAutoAnnotateJob(args: {
     apiRoot,
     imagePaths,
     allowedLabels,
+    skipAnnotated: args.skipAnnotated,
+    overwriteExisting: args.overwriteExisting,
   }
 
   if (!spawnAutoAnnotateChild(job, req)) {

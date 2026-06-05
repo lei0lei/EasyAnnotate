@@ -963,6 +963,10 @@ message StartYoloBatchAutoAnnotateJobRequest {
   string model_slug = 2;
   repeated string image_paths = 3;
   repeated string allowed_labels = 4;
+  /** 默认 true：跳过已有非空标注的图片 */
+  bool skip_annotated = 5;
+  /** 默认 false：为 true 时用新结果覆盖已有标注（忽略 skip_annotated） */
+  bool overwrite_existing = 6;
 }
 
 message StartYoloBatchAutoAnnotateJobResponse {
@@ -982,6 +986,9 @@ message YoloBatchAutoAnnotateJobItem {
   string current_file = 5;
   string message = 6;
   string error_message = 7;
+  int32 skipped_already_annotated = 8;
+  int32 skipped_label_mismatch = 9;
+  string summary_message = 10;
 }
 
 message GetYoloBatchAutoAnnotateJobResponse {

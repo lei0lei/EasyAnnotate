@@ -11,6 +11,10 @@ export type TaskYoloAutoAnnotatePanelProps = {
   progress: YoloAutoAnnotateProgress | null
   selectedModelSlug: string
   onSelectedModelSlugChange: (slug: string) => void
+  skipAnnotated: boolean
+  onSkipAnnotatedChange: (value: boolean) => void
+  overwriteExisting: boolean
+  onOverwriteExistingChange: (value: boolean) => void
   onClose: () => void
   onStart: () => void
   onStop: () => void
@@ -25,6 +29,10 @@ export function TaskYoloAutoAnnotatePanel({
   progress,
   selectedModelSlug,
   onSelectedModelSlugChange,
+  skipAnnotated,
+  onSkipAnnotatedChange,
+  overwriteExisting,
+  onOverwriteExistingChange,
   onClose,
   onStart,
   onStop,
@@ -65,8 +73,10 @@ export function TaskYoloAutoAnnotatePanel({
       if (progress.total <= 0 && progress.statusMessage) return progress.statusMessage
       return `${progress.done} / ${progress.total}`
     }
-    if (progress.phase === "done") return `已完成 ${progress.done} / ${progress.total}`
-    if (progress.phase === "cancelled") return `已取消（${progress.done} / ${progress.total}）`
+    if (progress.phase === "done") return progress.summaryMessage || `已完成 ${progress.done} / ${progress.total}`
+    if (progress.phase === "cancelled") {
+      return progress.summaryMessage || `已取消（${progress.done} / ${progress.total}）`
+    }
     if (progress.phase === "error") return progress.errorMessage ?? "出错"
     return "尚未开始"
   }, [progress])
@@ -135,6 +145,29 @@ export function TaskYoloAutoAnnotatePanel({
           </p>
         ) : null}
 
+        <div className="space-y-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+          <label className="flex items-center gap-2 text-xs text-foreground">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 rounded border-input"
+              checked={skipAnnotated}
+              disabled={running || overwriteExisting}
+              onChange={(e) => onSkipAnnotatedChange(e.target.checked)}
+            />
+            跳过已有标注的图片
+          </label>
+          <label className="flex items-center gap-2 text-xs text-foreground">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 rounded border-input"
+              checked={overwriteExisting}
+              disabled={running}
+              onChange={(e) => onOverwriteExistingChange(e.target.checked)}
+            />
+            覆盖已有标注（用新结果替换）
+          </label>
+        </div>
+
         <p className="text-xs text-muted-foreground">
           推理在独立子进程中执行，每批 10 张图片，全程保持同一 WebSocket 连接。
         </p>
@@ -154,6 +187,10 @@ export function TaskYoloAutoAnnotatePanel({
             />
           </div>
         </div>
+
+        {progress?.summaryMessage && (progress.phase === "done" || progress.phase === "cancelled") ? (
+          <p className="text-xs text-muted-foreground">{progress.summaryMessage}</p>
+        ) : null}
 
         {progress?.phase === "running" && progress.currentFile ? (
           <p className="truncate text-[10px] text-muted-foreground" title={progress.currentFile}>

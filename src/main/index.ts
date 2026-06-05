@@ -3298,6 +3298,8 @@ ipc.registerService(AppService({
       modelSlug: request.modelSlug?.trim() ?? "",
       imagePaths: request.imagePaths ?? [],
       allowedLabels: request.allowedLabels ?? [],
+      skipAnnotated: request.skipAnnotated !== false,
+      overwriteExisting: request.overwriteExisting === true,
     })
     return { jobId: started.jobId, errorMessage: started.errorMessage }
   },
@@ -3320,6 +3322,9 @@ ipc.registerService(AppService({
         currentFile: job.currentFile,
         message: job.message,
         errorMessage: job.errorMessage,
+        skippedAlreadyAnnotated: job.skippedAlreadyAnnotated ?? 0,
+        skippedLabelMismatch: job.skippedLabelMismatch ?? 0,
+        summaryMessage: job.summaryMessage ?? "",
       },
       errorMessage: "",
     }
