@@ -1,15 +1,9 @@
 import { ipc } from "@/gen/ipc"
 import { loadAppConfig } from "@/lib/app-config-storage"
-import {
-  uploadYoloDatasetZipWithProgress,
-  YOLO_DATASET_UPLOAD_TIMEOUT_MS,
-  type YoloDatasetUploadPhase,
-  type YoloDatasetUploadProgress,
-} from "@/lib/yolo-chunk-transfer"
+import { YOLO_DATASET_UPLOAD_TIMEOUT_MS, type YoloDatasetUploadPhase, type YoloDatasetUploadProgress } from "@/lib/yolo-chunk-transfer"
 import { apiV1Root, fetchWithTimeout, readFetchError } from "@/lib/backend-http"
 
 export {
-  uploadYoloDatasetZipWithProgress,
   YOLO_DATASET_UPLOAD_TIMEOUT_MS,
   type YoloDatasetUploadPhase,
   type YoloDatasetUploadProgress,
@@ -24,7 +18,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
-/** 主进程从磁盘分片上传（远程/大文件），避免渲染进程 IPC 传 5MB 分片导致闪退。 */
+/** 主进程从磁盘经 WebSocket 分片上传（远程/大文件），避免渲染进程 IPC 传 5MB 分片导致闪退。 */
 export async function uploadYoloDatasetZipFromPathWithProgress(
   jobSlug: string,
   sourceZipPath: string,

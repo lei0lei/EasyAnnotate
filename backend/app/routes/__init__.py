@@ -2,7 +2,7 @@
 
 | 前缀 | 模块 | 说明 |
 |------|------|------|
-| ``/sam`` | ``sam_session`` | SAM 服务端 session（prepare/decode，每客户端单 session + 私有 embedding） |
+| ``/ws`` | ``ws`` | SAM session WebSocket（prepare/decode/release，每客户端单 session + 私有 embedding） |
 | ``/models`` | ``models`` | 模型列表、``predict``、DINOv2 ``patch-features`` |
 | ``/models`` | ``models_upload`` | 图片上传推理（需 ``python-multipart``；缺失时跳过） |
 | ``/model-assets`` | ``model_assets`` | 资源目录、权重/ONNX 文件、``ensure`` 下载 |
@@ -14,11 +14,13 @@
 
 from fastapi import APIRouter
 
-from . import model_assets, model_runtime, models, sam_session, training_dinov2, training_yolo, yolo_batch
+from app.ws import router as ws_router
+
+from . import model_assets, model_runtime, models, training_dinov2, training_yolo, yolo_batch
 
 api_router = APIRouter()
 api_router.include_router(models.router, prefix="/models", tags=["models"])
-api_router.include_router(sam_session.router, prefix="/sam", tags=["sam-session"])
+api_router.include_router(ws_router, tags=["websocket"])
 
 try:
     from . import models_upload

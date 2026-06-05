@@ -12,7 +12,7 @@ export type YoloTrainingMessages = {
   labelBaseWeight: string
   labelZipData: string
   zipHintRemote: string
-  zipHintLocal: string
+  zipHintUpload: string
   labelCommonParams: string
   noModelsOption: string
   uploadedWeightOption: (name: string) => string
@@ -59,6 +59,7 @@ export type YoloTrainingMessages = {
   }
   ipc: {
     pickDatasetZipTitle: string
+    pickWeightPtTitle: string
   }
   tasks: Record<YoloTaskId, string>
   checklist: {
@@ -113,7 +114,7 @@ const zhCN: YoloTrainingMessages = {
   labelBaseWeight: "初始权重",
   labelZipData: "zip数据",
   zipHintRemote: "HTTP 上传至远程",
-  zipHintLocal: "本地选文件 · tar 解压",
+  zipHintUpload: "选文件 · WebSocket 分片上传",
   labelCommonParams: "常用参数",
   noModelsOption: "无可用模型（请先 install-resources）",
   uploadedWeightOption: (name) => `已上传：${name}`,
@@ -160,6 +161,7 @@ const zhCN: YoloTrainingMessages = {
   },
   ipc: {
     pickDatasetZipTitle: "选择 YOLO 训练数据集 ZIP",
+    pickWeightPtTitle: "选择 .pt 权重文件",
   },
   tasks: {
     detect: "检测",
@@ -221,7 +223,7 @@ const en: YoloTrainingMessages = {
   labelBaseWeight: "Base weights",
   labelZipData: "Dataset ZIP",
   zipHintRemote: "Upload ZIP over HTTP (remote)",
-  zipHintLocal: "Pick local file · tar extract",
+  zipHintUpload: "Pick file · WebSocket chunked upload",
   labelCommonParams: "Common parameters",
   noModelsOption: "No models available (run install-resources first)",
   uploadedWeightOption: (name) => `Uploaded: ${name}`,
@@ -268,6 +270,7 @@ const en: YoloTrainingMessages = {
   },
   ipc: {
     pickDatasetZipTitle: "Select YOLO training dataset ZIP",
+    pickWeightPtTitle: "Select .pt weight file",
   },
   tasks: {
     detect: "Detect",

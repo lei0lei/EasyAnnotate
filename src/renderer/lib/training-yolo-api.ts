@@ -350,22 +350,6 @@ export async function unpackYoloDataset(
   return res.json()
 }
 
-export async function uploadYoloDatasetZip(
-  jobSlug: string,
-  file: File,
-): Promise<{ data_yaml: string; dataset_zip_filename?: string | null }> {
-  const form = new FormData()
-  form.append("file", file)
-  const q = new URLSearchParams({ job_slug: jobSlug })
-  const res = await fetchWithTimeout(
-    `${yoloRoot()}/dataset/upload?${q}`,
-    { method: "POST", body: form },
-    YOLO_FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-  return res.json()
-}
-
 export type YoloWeightMeta = {
   task: string | null
   family: string | null
@@ -461,22 +445,24 @@ export async function selectYoloBaseModel(
   }
 }
 
-export async function uploadYoloBaseModel(
+export async function uploadYoloBaseModelFromPath(
   jobSlug: string,
-  file: File,
+  sourcePtPath: string,
   family: YoloFamilyId,
   task: YoloTaskId,
 ): Promise<YoloWeightValidationResponse> {
-  const form = new FormData()
-  form.append("file", file)
-  const q = new URLSearchParams({ job_slug: jobSlug, family, task })
-  const res = await fetchWithTimeout(
-    `${yoloRoot()}/base-model/upload?${q}`,
-    { method: "POST", body: form },
-    YOLO_FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-  const data = (await res.json()) as {
+  const globalConfigDir = loadAppConfig().storagePaths.globalConfigDir.trim()
+  const res = await ipc.app.UploadYoloBaseModelFromPath({
+    globalConfigDir,
+    jobSlug,
+    sourcePtPath,
+    family,
+    task,
+  })
+  if (!res.ok) {
+    throw new Error(res.errorMessage?.trim() || "上传权重失败")
+  }
+  const data = JSON.parse(res.responseJson || "{}") as {
     weight_meta?: YoloWeightMeta | null
     weight_warnings?: string[]
   }

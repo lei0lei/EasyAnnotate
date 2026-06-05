@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 from typing import Any
 
 import mimetypes
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -26,13 +24,6 @@ class SelectBaseModelBody(BaseModel):
     asset_id: str = Field(..., description="registry 中的 ultralytics 权重 id")
     family: str = Field(..., description="yolov8 | yolo26")
     task: str = Field(..., description="detect | segment | pose | obb | classify")
-
-
-class DatasetUploadInitBody(BaseModel):
-    job_slug: str
-    filename: str = Field(..., min_length=1)
-    total_size: int = Field(..., ge=1)
-    upload_id: str | None = Field(None, description="续传时传入已有 upload_id")
 
 
 class StartTrainBody(BaseModel):
@@ -247,71 +238,6 @@ def unpack_dataset(
     }
 
 
-@router.post("/dataset/upload/init")
-def dataset_upload_init(body: DatasetUploadInitBody) -> dict[str, Any]:
-    slug = _require_slug(body.job_slug)
-    try:
-        return yolo_chunk_transfer.init_dataset_upload(
-            slug,
-            filename=body.filename,
-            total_size=body.total_size,
-            upload_id=body.upload_id,
-        )
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.put("/dataset/upload/chunk")
-async def dataset_upload_chunk(
-    request: Request,
-    job_slug: str = Query(...),
-    upload_id: str = Query(...),
-    chunk_index: int = Query(..., ge=0),
-) -> dict[str, Any]:
-    slug = _require_slug(job_slug)
-    data = await request.body()
-    try:
-        return yolo_chunk_transfer.save_dataset_upload_chunk(slug, upload_id, chunk_index, data)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/dataset/upload/complete")
-def dataset_upload_complete(
-    job_slug: str = Query(...),
-    upload_id: str = Query(...),
-) -> dict[str, Any]:
-    slug = _require_slug(job_slug)
-    try:
-        return yolo_chunk_transfer.complete_dataset_upload(slug, upload_id)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/dataset/upload")
-async def upload_dataset(job_slug: str = Query(...), file: UploadFile = File(...)) -> dict[str, Any]:
-    slug = _require_slug(job_slug)
-    if not file.filename or not file.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="仅支持 .zip 文件")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="空文件")
-    dest = yolo_workspace.dataset_zip_path(slug)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(raw)
-    try:
-        data_yaml = yolo_workspace.unpack_dataset_zip(slug, original_zip_filename=file.filename)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    meta = yolo_workspace.load_meta(slug)
-    return {
-        "ok": True,
-        "dataset_zip": str(dest),
-        "data_yaml": str(data_yaml),
-        "dataset_zip_filename": meta.get("dataset_zip_filename"),
-    }
-
-
 @router.post("/base-model/select")
 def select_base_model(body: SelectBaseModelBody) -> dict[str, Any]:
     slug = _require_slug(body.job_slug)
@@ -324,45 +250,6 @@ def select_base_model(body: SelectBaseModelBody) -> dict[str, Any]:
         )
     except (KeyError, FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    job_meta = yolo_workspace.load_meta(slug)
-    return {
-        "ok": True,
-        "base_model": str(path),
-        "weight_meta": job_meta.get("base_model_weight_meta"),
-        "weight_warnings": job_meta.get("base_model_weight_warnings") or [],
-    }
-
-
-@router.post("/base-model/upload")
-async def upload_base_model(
-    job_slug: str = Query(...),
-    family: str = Query(..., description="yolov8 | yolo26"),
-    task: str = Query(..., description="detect | segment | pose | obb | classify"),
-    file: UploadFile = File(...),
-) -> dict[str, Any]:
-    slug = _require_slug(job_slug)
-    if not file.filename or not file.filename.lower().endswith(".pt"):
-        raise HTTPException(status_code=400, detail="仅支持 .pt 权重")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="空文件")
-    tmp = ""
-    try:
-        with tempfile.NamedTemporaryFile(prefix="ea-yolo-", suffix=".pt", delete=False) as f:
-            f.write(raw)
-            tmp = f.name
-        path = yolo_workspace.save_uploaded_base_model(
-            slug,
-            Path(tmp),
-            original_filename=file.filename or "upload.pt",
-            family=family.strip(),
-            task=task.strip(),
-        )
-    except (ValueError, RuntimeError, FileNotFoundError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    finally:
-        if tmp:
-            Path(tmp).unlink(missing_ok=True)
     job_meta = yolo_workspace.load_meta(slug)
     return {
         "ok": True,

@@ -16,6 +16,7 @@ import {
   type Sam2DraftPreview,
   type SamSessionCache,
 } from "@/lib/sam2-session-api"
+import { useSamBackendWsLifecycle } from "@/hooks/use-sam-backend-ws-lifecycle"
 import {
   formatActiveSamAnnotationLabel,
   persistSamAnnotationSelection,
@@ -174,6 +175,8 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
   const [activeSamRuntime, setActiveSamRuntime] = useState<{ label: string; running: boolean } | null>(null)
   /** 上次用 N 成功提交 SAM2 并已切到选择工具后，再按 N 可回到 SAM2 标注（沿用面板中的标签/输出类型等） */
   const sam2ResumeAfterNCommitRef = useRef(false)
+
+  useSamBackendWsLifecycle(activeSamRuntime?.running === true)
 
   const refreshActiveSamRuntime = useCallback(() => {
     void fetchModelRuntimeCatalog()

@@ -1,9 +1,12 @@
-import { apiV1Root, readFetchError } from "@/lib/backend-http"
+import {
+  connectSamBackendWs,
+  disconnectSamBackendWs,
+  isSamBackendWsConnected,
+  samBackendWsPrepareImage,
+  samBackendWsRpc,
+} from "@/lib/backend-sam-ws"
 import { decodeBase64ToUint8Array } from "@/lib/base64-binary"
-import { isHttpImageSource, postLocalImageAsMultipart } from "@/lib/backend-image-upload"
-
-const SAM_CLIENT_ID_KEY = "ea-sam-client-id"
-const SAM_CLIENT_ID_HEADER = "X-Sam-Client-Id"
+import { isHttpImageSource } from "@/lib/backend-image-upload"
 
 export type SamSessionCache = {
   imagePath: string
@@ -35,6 +38,23 @@ export class SamSessionHttpError extends Error {
   }
 }
 
+function mapWsError(err: unknown): never {
+  const msg = err instanceof Error ? err.message : String(err)
+  if (msg.includes("session_not_found")) {
+    throw new SamSessionHttpError(404, msg)
+  }
+  if (msg.includes("runtime_unavailable") || msg.includes("503")) {
+    throw new SamSessionHttpError(503, msg)
+  }
+  throw err instanceof Error ? err : new Error(msg)
+}
+
+async function requireSamWsConnected(): Promise<void> {
+  if (!(await isSamBackendWsConnected())) {
+    throw new Error("SAM WebSocket 未连接，请确认已进入任务页且 SAM 已启动")
+  }
+}
+
 export function sessionCacheFromPrepare(
   imagePath: string,
   inferScale: number,
@@ -59,9 +79,7 @@ export type SamDecodeRequest = {
   bbox: { x1: number; y1: number; x2: number; y2: number } | null
   minPredIou?: number
   polygonVertexBias?: number
-  /** 扩散式标注等需要二值 mask 时设为 true */
   includeMask?: boolean
-  /** 为 false 时跳过多边形提取（批量 decode 更快） */
   includePolygon?: boolean
 }
 
@@ -81,29 +99,7 @@ export type Sam2DraftPreview = {
   bbox: { x1: number; y1: number; x2: number; y2: number } | null
 }
 
-function samSessionHeaders(): Record<string, string> {
-  return {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    [SAM_CLIENT_ID_HEADER]: getSamClientId(),
-  }
-}
-
-/** Stable per-install client id; backend allows one active SAM session per id. */
-export function getSamClientId(): string {
-  try {
-    const existing = localStorage.getItem(SAM_CLIENT_ID_KEY)?.trim()
-    if (existing) return existing
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `sam-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    localStorage.setItem(SAM_CLIENT_ID_KEY, id)
-    return id
-  } catch {
-    return `sam-fallback-${Date.now()}`
-  }
-}
+export { getSamClientId } from "@/lib/sam-client-id"
 
 export type PrepareSamSessionOptions = {
   inferScale?: number
@@ -141,81 +137,66 @@ export function samDecodeMaskFromResponse(
   return { maskBinary: u8, w, h }
 }
 
+function decodePayloadFromWs(raw: Record<string, unknown>): SamDecodeResponse {
+  return {
+    ok: Boolean(raw.ok),
+    pred_iou: (raw.pred_iou as number | null) ?? null,
+    polygon: (raw.polygon as number[][] | null) ?? null,
+    bbox: (raw.bbox as SamDecodeResponse["bbox"]) ?? null,
+    message: (raw.message as string | null) ?? null,
+    mask_base64: (raw.mask_base64 as string | null) ?? null,
+    mask_width: (raw.mask_width as number | null) ?? null,
+    mask_height: (raw.mask_height as number | null) ?? null,
+  }
+}
+
 export async function prepareSamSession(
   modelId: string,
   source: string,
   options?: PrepareSamSessionOptions,
 ): Promise<SamPrepareResponse> {
-  let url = `${apiV1Root()}/sam/session/prepare`
-  const rs = options?.runtimeSlot?.trim()
-  if (rs) {
-    url += `${url.includes("?") ? "&" : "?"}runtime_slot=${encodeURIComponent(rs)}`
+  await requireSamWsConnected()
+  if (isHttpImageSource(source)) {
+    throw new Error("SAM WebSocket prepare 暂不支持 http(s) 图片 URL，请使用本地路径")
   }
-  const inferScale = options?.inferScale
-  const payload: Record<string, unknown> = { model_id: modelId, source }
-  if (inferScale !== undefined && Number.isFinite(inferScale)) {
-    payload.infer_scale = Math.min(1, Math.max(0.3, inferScale))
-  }
-
-  let res: Response
   try {
-    if (isHttpImageSource(source)) {
-      res = await fetch(url, {
-        method: "POST",
-        headers: samSessionHeaders(),
-        body: JSON.stringify(payload),
-      })
-    } else {
-      let uploadUrl = `${apiV1Root()}/sam/session/prepare-upload`
-      if (rs) {
-        uploadUrl += `${uploadUrl.includes("?") ? "&" : "?"}runtime_slot=${encodeURIComponent(rs)}`
-      }
-      const uploadPayload: Record<string, unknown> = {
-        sam_client_id: getSamClientId(),
-        model_id: modelId,
-      }
-      if (inferScale !== undefined && Number.isFinite(inferScale)) {
-        uploadPayload.infer_scale = Math.min(1, Math.max(0.3, inferScale))
-      }
-      res = await postLocalImageAsMultipart(uploadUrl, source, uploadPayload)
-    }
-  } catch (err) {
-    const hint = err instanceof Error ? err.message : String(err)
-    throw new Error(`无法连接 ${url}（${hint}）`)
+    const inferScale =
+      options?.inferScale !== undefined && Number.isFinite(options.inferScale)
+        ? Math.min(1, Math.max(0.3, options.inferScale))
+        : undefined
+    const raw = await samBackendWsPrepareImage({
+      modelId,
+      imagePath: source,
+      inferScale,
+      runtimeSlot: options?.runtimeSlot,
+    })
+    return raw as SamPrepareResponse
+  } catch (e) {
+    mapWsError(e)
   }
-  if (!res.ok) {
-    throw new SamSessionHttpError(res.status, `sam/session/prepare ${res.status}: ${await readFetchError(res)}`)
-  }
-  return res.json() as Promise<SamPrepareResponse>
 }
 
 export async function decodeSamSession(body: SamDecodeRequest): Promise<SamDecodeResponse> {
-  const url = `${apiV1Root()}/sam/session/decode`
-  const payload = {
-    session_id: body.sessionId,
-    prompt_mode: body.promptMode,
-    points: body.points.map((p) => ({ x: p.x, y: p.y, label: p.label })),
-    bbox: body.bbox,
-    min_pred_iou: body.minPredIou,
-    polygon_vertex_bias: body.polygonVertexBias ?? 50,
-    include_mask: body.includeMask ?? false,
-    include_polygon: body.includePolygon ?? true,
-  }
-  let res: Response
+  await requireSamWsConnected()
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: samSessionHeaders(),
-      body: JSON.stringify(payload),
-    })
-  } catch (err) {
-    const hint = err instanceof Error ? err.message : String(err)
-    throw new Error(`无法连接 ${url}（${hint}）`)
+    const raw = await samBackendWsRpc(
+      "sam.decode",
+      {
+        session_id: body.sessionId,
+        prompt_mode: body.promptMode,
+        points: body.points.map((p) => ({ x: p.x, y: p.y, label: p.label })),
+        bbox: body.bbox,
+        min_pred_iou: body.minPredIou,
+        polygon_vertex_bias: body.polygonVertexBias ?? 50,
+        include_mask: body.includeMask ?? false,
+        include_polygon: body.includePolygon ?? true,
+      },
+      180_000,
+    )
+    return decodePayloadFromWs(raw)
+  } catch (e) {
+    mapWsError(e)
   }
-  if (!res.ok) {
-    throw new SamSessionHttpError(res.status, `sam/session/decode ${res.status}: ${await readFetchError(res)}`)
-  }
-  return res.json() as Promise<SamDecodeResponse>
 }
 
 export type DecodeSamSessionWithRetryContext = {
@@ -245,13 +226,12 @@ export async function decodeSamSessionWithRetry(
 }
 
 export async function releaseSamSession(): Promise<void> {
-  const url = `${apiV1Root()}/sam/session`
+  if (!(await isSamBackendWsConnected())) return
   try {
-    await fetch(url, {
-      method: "DELETE",
-      headers: { [SAM_CLIENT_ID_HEADER]: getSamClientId() },
-    })
+    await samBackendWsRpc("sam.release", {}, 15_000)
   } catch {
-    // best-effort release
+    // best-effort
   }
 }
+
+export { connectSamBackendWs, disconnectSamBackendWs, isSamBackendWsConnected }

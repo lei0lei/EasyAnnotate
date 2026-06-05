@@ -35,7 +35,7 @@ import {
   selectYoloBaseModel,
   startYoloTraining,
   trainingNameToJobSlug,
-  uploadYoloBaseModel,
+  uploadYoloBaseModelFromPath,
   validateYoloBaseModel,
   weightMetaHasMismatch,
   type YoloCatalogModel,
@@ -48,7 +48,6 @@ import {
 import { useYoloTrainingMessages } from "@/lib/i18n"
 import {
   formatYoloBackendEndpointLabel,
-  unpackYoloDatasetWithTimeout,
   uploadYoloDatasetZipFromPathWithProgress,
   type YoloDatasetUploadProgress,
 } from "@/lib/yolo-dataset-upload"
@@ -131,7 +130,6 @@ function ChecklistRow({ label, tone }: { label: string; tone: ChecklistTone }) {
 
 export default function ModelsTrainingYoloPage() {
   const { m } = useYoloTrainingMessages()
-  const weightFileRef = useRef<HTMLInputElement>(null)
   const [backendOk, setBackendOk] = useState<boolean | null>(null)
 
   const [trainingName, setTrainingName] = useState("")
@@ -181,7 +179,6 @@ export default function ModelsTrainingYoloPage() {
   const [optimizerValues, setOptimizerValues] = useState(defaultOptimizerValues)
 
   const isLocalBackend = !loadAppConfig().backend.remoteConnected
-  const localBackendDir = loadAppConfig().backend.localBackendDir?.trim() ?? ""
   const backendEndpoint = formatYoloBackendEndpointLabel()
 
   const refreshBackend = useCallback(() => {
@@ -440,11 +437,8 @@ export default function ModelsTrainingYoloPage() {
     if (dataYaml) {
       return { label: m.checklist.datasetReady(datasetZipFilename), tone: "done" }
     }
-    if (isLocalBackend) {
-      return { label: m.checklist.datasetPickZip, tone: "pending" }
-    }
     return { label: m.checklist.datasetUploadZip, tone: "pending" }
-  }, [jobReady, datasetError, dataYaml, datasetZipFilename, isLocalBackend, m.checklist])
+  }, [jobReady, datasetError, dataYaml, datasetZipFilename, m.checklist])
 
   const startChecklistExtra = useMemo((): { label: string; tone: ChecklistTone } | null => {
     if (!startError) return null
@@ -509,20 +503,27 @@ export default function ModelsTrainingYoloPage() {
     }
   }
 
-  async function handleUploadBaseModel(file: File | null) {
-    if (!jobSlug || !file) return
+  async function handleUploadBaseModel() {
+    if (!jobSlug) return
     setBaseModelBusy(true)
     setBaseModelError(null)
     setBaseModelWarning(null)
     try {
-      const result = await uploadYoloBaseModel(jobSlug, file, family, task)
+      const picked = await ipc.app.SelectFiles({
+        title: m.ipc.pickWeightPtTitle,
+        defaultPath: "",
+      })
+      if (picked.canceled || !picked.paths[0]) return
+      const sourcePath = picked.paths[0]
+      const fileName = sourcePath.split(/[/\\]/).pop() ?? "upload.pt"
+      const result = await uploadYoloBaseModelFromPath(jobSlug, sourcePath, family, task)
       const v = applyWeightValidation(result, family, task, m.errors.weightMismatch)
       setBaseModelValid(v.baseModelValid)
       setBaseModelError(v.baseModelError)
       setBaseModelWarning(v.baseModelWarning)
       setBaseModelReady(true)
       setSelectedWeightKey(UPLOADED_WEIGHT_VALUE)
-      setUploadedWeightLabel(file.name)
+      setUploadedWeightLabel(fileName)
       refreshWorkspace()
     } catch (e) {
       setBaseModelReady(false)
@@ -531,7 +532,6 @@ export default function ModelsTrainingYoloPage() {
       setBaseModelWarning(null)
     } finally {
       setBaseModelBusy(false)
-      if (weightFileRef.current) weightFileRef.current.value = ""
     }
   }
 
@@ -547,10 +547,6 @@ export default function ModelsTrainingYoloPage() {
       setDatasetError(m.errors.createWorkspaceFirst)
       return
     }
-    if (!localBackendDir && isLocalBackend) {
-      setDatasetError(m.errors.pickBackendDir)
-      return
-    }
     setDatasetBusy(true)
     setDatasetError(null)
     try {
@@ -562,28 +558,12 @@ export default function ModelsTrainingYoloPage() {
       const sourcePath = picked.paths[0]
       const originalName = sourcePath.split(/[/\\]/).pop() ?? "dataset.zip"
 
-      if (isLocalBackend) {
-        const copy = await ipc.app.CopyYoloTrainingDatasetZip({
-          backendDirectory: localBackendDir,
-          sourceZipPath: sourcePath,
-          trainingName: trainingName.trim() || jobSlug,
-        })
-        if (!copy.ok) {
-          setDatasetError(copy.errorMessage || m.errors.copyDatasetFailed)
-          return
-        }
-        setDatasetUploadProgress({ phase: "unpacking", percent: 35 })
-        const unpacked = await unpackYoloDatasetWithTimeout(jobSlug, originalName)
-        setDataYaml(unpacked.data_yaml)
-        setDatasetZipFilename(unpacked.dataset_zip_filename ?? originalName)
-      } else {
-        setDatasetUploadProgress({ phase: "uploading", percent: 0 })
-        const uploaded = await uploadYoloDatasetZipFromPathWithProgress(jobSlug, sourcePath, {
-          onProgress: setDatasetUploadProgress,
-        })
-        setDataYaml(uploaded.data_yaml)
-        setDatasetZipFilename(uploaded.dataset_zip_filename ?? originalName)
-      }
+      setDatasetUploadProgress({ phase: "uploading", percent: 0 })
+      const uploaded = await uploadYoloDatasetZipFromPathWithProgress(jobSlug, sourcePath, {
+        onProgress: setDatasetUploadProgress,
+      })
+      setDataYaml(uploaded.data_yaml)
+      setDatasetZipFilename(uploaded.dataset_zip_filename ?? originalName)
       refreshWorkspace()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -761,14 +741,6 @@ export default function ModelsTrainingYoloPage() {
                       </option>
                     ))}
                   </select>
-                  <input
-                    ref={weightFileRef}
-                    type="file"
-                    accept=".pt"
-                    className="hidden"
-                    disabled={!jobReady || !backendOk || baseModelBusy}
-                    onChange={(e) => void handleUploadBaseModel(e.target.files?.[0] ?? null)}
-                  />
                   <Button
                     type="button"
                     variant="outline"
@@ -776,7 +748,7 @@ export default function ModelsTrainingYoloPage() {
                     className="h-9 w-9 shrink-0"
                     aria-label={m.uploadWeightAria}
                     disabled={!jobReady || !backendOk || baseModelBusy}
-                    onClick={() => weightFileRef.current?.click()}
+                    onClick={() => void handleUploadBaseModel()}
                   >
                     {baseModelBusy ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -793,11 +765,7 @@ export default function ModelsTrainingYoloPage() {
             <CardContent className="space-y-3 pt-6">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs font-medium text-muted-foreground">{m.labelZipData}</p>
-                {!isLocalBackend ? (
-                  <span className="text-[11px] text-muted-foreground">远程 · 选文件后主进程分片上传</span>
-                ) : (
-                  <span className="text-[11px] text-muted-foreground">{m.zipHintLocal}</span>
-                )}
+                <span className="text-[11px] text-muted-foreground">{m.zipHintUpload}</span>
               </div>
               <div className="flex gap-2">
                 <Input

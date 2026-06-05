@@ -1,16 +1,13 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process"
 import fs from "node:fs"
-import http from "node:http"
-import https from "node:https"
 import os from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { readAppConfigFromDisk } from "./app-config-disk"
+import { apiRootToWsUrl, uploadYoloDatasetZipViaWs } from "./backend-yolo-training-ws"
 
-const CHUNK_SIZE = 5 * 1024 * 1024
-const UPLOAD_TIMEOUT_MS = 15 * 60 * 1000
-const COMPLETE_TIMEOUT_MS = 30 * 60 * 1000
+const UPLOAD_TIMEOUT_MS = 5 * 60 * 60 * 1000
 const STATE_SYNC_POLL_MS = 400
 
 export type YoloDatasetUploadJobRecord = {
@@ -84,7 +81,7 @@ function normalizeBasePath(input: string): string {
   return withLeading.replace(/\/+$/, "")
 }
 
-function resolveApiV1Root(globalConfigDir: string): { apiRoot: string; errorMessage: string } {
+export function resolveApiV1Root(globalConfigDir: string): { apiRoot: string; errorMessage: string } {
   const { jsonText, exists } = readAppConfigFromDisk(globalConfigDir)
   if (!exists || !jsonText.trim()) {
     return { apiRoot: "", errorMessage: "未找到应用配置。" }
@@ -113,63 +110,6 @@ function resolveApiV1Root(globalConfigDir: string): { apiRoot: string; errorMess
   }
 }
 
-function httpRequest(
-  url: string,
-  options: {
-    method: string
-    headers?: Record<string, string>
-    body?: Buffer
-    timeoutMs: number
-  },
-): Promise<{ ok: boolean; status: number; body: Buffer; errorMessage: string }> {
-  return new Promise((resolve) => {
-    let parsed: URL
-    try {
-      parsed = new URL(url)
-    } catch {
-      resolve({ ok: false, status: 0, body: Buffer.alloc(0), errorMessage: "无效 URL" })
-      return
-    }
-    const lib = parsed.protocol === "https:" ? https : http
-    const req = lib.request(
-      parsed,
-      { method: options.method, headers: options.headers },
-      (res) => {
-        const chunks: Buffer[] = []
-        res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-        res.on("end", () => {
-          const body = Buffer.concat(chunks)
-          const status = res.statusCode ?? 0
-          resolve({
-            ok: status >= 200 && status < 300,
-            status,
-            body,
-            errorMessage:
-              status >= 200 && status < 300
-                ? ""
-                : body.toString("utf8").slice(0, 500) || res.statusMessage || `HTTP ${status}`,
-          })
-        })
-      },
-    )
-    req.setTimeout(options.timeoutMs, () => {
-      req.destroy(new Error("请求超时"))
-    })
-    req.on("error", (err) => {
-      resolve({
-        ok: false,
-        status: 0,
-        body: Buffer.alloc(0),
-        errorMessage: err instanceof Error ? err.message : String(err),
-      })
-    })
-    if (options.body && options.body.length > 0) {
-      req.write(options.body)
-    }
-    req.end()
-  })
-}
-
 function updateJob(jobId: string, patch: Partial<YoloDatasetUploadJobRecord>): void {
   const job = jobs.get(jobId)
   if (!job) return
@@ -178,131 +118,52 @@ function updateJob(jobId: string, patch: Partial<YoloDatasetUploadJobRecord>): v
   writeUploadStateFile(jobId, next)
 }
 
-function yieldEventLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve))
-}
-
 async function runUploadJob(
   jobId: string,
   apiRoot: string,
   jobSlug: string,
   sourceZipPath: string,
 ): Promise<void> {
-  const stat = await fs.promises.stat(sourceZipPath)
-  const totalSize = stat.size
-  const filename = path.basename(sourceZipPath)
-  const totalChunks = Math.ceil(totalSize / CHUNK_SIZE)
-  const yoloRoot = `${apiRoot}/training/yolo`
+  updateJob(jobId, { message: "连接 WebSocket…", progress: 0, phase: "uploading" })
 
-  updateJob(jobId, { message: "初始化上传…", progress: 0, phase: "uploading" })
+  const wsUrl = apiRootToWsUrl(apiRoot)
+  const clientId = `yolo-train-${randomUUID()}`
 
-  const initRes = await httpRequest(`${yoloRoot}/dataset/upload/init`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: Buffer.from(
-      JSON.stringify({
-        job_slug: jobSlug,
-        filename,
-        total_size: totalSize,
-      }),
-      "utf8",
-    ),
-    timeoutMs: 60_000,
-  })
-  if (!initRes.ok) {
-    updateJob(jobId, { status: "failed", progress: 100, errorMessage: initRes.errorMessage || "初始化上传失败" })
-    return
-  }
-
-  let uploadId = ""
   try {
-    const initJson = JSON.parse(initRes.body.toString("utf8")) as { upload_id?: string }
-    uploadId = initJson.upload_id || ""
-  } catch {
-    updateJob(jobId, { status: "failed", progress: 100, errorMessage: "初始化响应无效" })
-    return
-  }
-  if (!uploadId) {
-    updateJob(jobId, { status: "failed", progress: 100, errorMessage: "初始化响应缺少 upload_id" })
-    return
-  }
-
-  const fd = await fs.promises.open(sourceZipPath, "r")
-  try {
-    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-      const start = chunkIndex * CHUNK_SIZE
-      const length = Math.min(CHUNK_SIZE, totalSize - start)
-      const buffer = Buffer.alloc(length)
-      await fd.read(buffer, 0, length, start)
-
-      const q = new URLSearchParams({
-        job_slug: jobSlug,
-        upload_id: uploadId,
-        chunk_index: String(chunkIndex),
-      })
-      const chunkRes = await httpRequest(`${yoloRoot}/dataset/upload/chunk?${q}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: buffer,
-        timeoutMs: UPLOAD_TIMEOUT_MS,
-      })
-      if (!chunkRes.ok) {
+    const result = await uploadYoloDatasetZipViaWs({
+      wsUrl,
+      clientId,
+      jobSlug,
+      sourceZipPath,
+      onChunkProgress: (done, total) => {
+        const ratio = done / total
         updateJob(jobId, {
-          status: "failed",
-          progress: 100,
-          errorMessage: chunkRes.errorMessage || `分片 ${chunkIndex + 1}/${totalChunks} 上传失败`,
+          message: `上传分片 ${done}/${total}`,
+          progress: Math.min(90, Math.max(0, Math.round(ratio * 90))),
+          phase: "uploading",
         })
-        return
-      }
-
-      const ratio = (chunkIndex + 1) / totalChunks
-      updateJob(jobId, {
-        message: `上传分片 ${chunkIndex + 1}/${totalChunks}`,
-        progress: Math.min(90, Math.max(0, Math.round(ratio * 90))),
-        phase: "uploading",
-      })
-      await yieldEventLoop()
-    }
-  } finally {
-    await fd.close()
-  }
-
-  updateJob(jobId, { message: "正在解压数据集…", progress: 92, phase: "unpacking" })
-
-  const completeQ = new URLSearchParams({ job_slug: jobSlug, upload_id: uploadId })
-  const completeRes = await httpRequest(`${yoloRoot}/dataset/upload/complete?${completeQ}`, {
-    method: "POST",
-    timeoutMs: COMPLETE_TIMEOUT_MS,
-  })
-  if (!completeRes.ok) {
-    updateJob(jobId, {
-      status: "failed",
-      progress: 100,
-      errorMessage: completeRes.errorMessage || "完成上传失败",
+      },
+      onBeforeComplete: () => {
+        updateJob(jobId, { message: "正在解压数据集…", progress: 92, phase: "unpacking" })
+      },
+      timeoutMs: UPLOAD_TIMEOUT_MS,
     })
-    return
-  }
 
-  try {
-    const data = JSON.parse(completeRes.body.toString("utf8")) as {
-      data_yaml?: string
-      dataset_zip_filename?: string | null
-    }
-    if (!data.data_yaml) {
-      updateJob(jobId, { status: "failed", progress: 100, errorMessage: "完成响应缺少 data_yaml" })
-      return
-    }
     updateJob(jobId, {
       status: "success",
       progress: 100,
       phase: "idle",
       message: "上传完成",
-      dataYaml: data.data_yaml,
-      datasetZipFilename: data.dataset_zip_filename || filename,
+      dataYaml: result.data_yaml,
+      datasetZipFilename: result.dataset_zip_filename || path.basename(sourceZipPath),
       errorMessage: "",
     })
-  } catch {
-    updateJob(jobId, { status: "failed", progress: 100, errorMessage: "完成响应无效" })
+  } catch (error) {
+    updateJob(jobId, {
+      status: "failed",
+      progress: 100,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    })
   }
 }
 

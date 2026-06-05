@@ -698,6 +698,54 @@ message ProxyBackendImageUploadResponse {
   string error_message = 6;
 }
 
+/** SAM session WebSocket（任务页生命周期内单连接） */
+message ConnectBackendSamWsRequest {
+  string url = 1;
+  string client_id = 2;
+}
+
+message ConnectBackendSamWsResponse {
+  bool ok = 1;
+  string error_message = 2;
+}
+
+message DisconnectBackendSamWsRequest {}
+
+message DisconnectBackendSamWsResponse {
+  bool ok = 1;
+}
+
+message SamWsPrepareImageRequest {
+  string model_id = 1;
+  string image_path = 2;
+  double infer_scale = 3;
+  string runtime_slot = 4;
+  int32 timeout_ms = 5;
+}
+
+message SamWsPrepareImageResponse {
+  bool ok = 1;
+  string error_message = 2;
+  string response_json = 3;
+}
+
+message SamWsSendJsonRequest {
+  string json_text = 1;
+  int32 timeout_ms = 2;
+}
+
+message SamWsSendJsonResponse {
+  bool ok = 1;
+  string error_message = 2;
+  string response_json = 3;
+}
+
+message IsBackendSamWsConnectedRequest {}
+
+message IsBackendSamWsConnectedResponse {
+  bool connected = 1;
+}
+
 /** 将本地 zip 复制到 backend/external/temp/<训练名>/dataset.zip */
 message CopyYoloTrainingDatasetZipRequest {
   string backend_directory = 1;
@@ -711,7 +759,7 @@ message CopyYoloTrainingDatasetZipResponse {
   string dataset_zip_path = 3;
 }
 
-/** 主进程从本地路径分片上传到远程/本地 HTTP 后端（避免渲染进程 IPC 传 5MB 分片）。 */
+/** 主进程从本地路径经 WebSocket 分片上传数据集 zip。 */
 message StartYoloDatasetZipUploadRequest {
   string global_config_dir = 1;
   string job_slug = 2;
@@ -741,6 +789,21 @@ message YoloDatasetZipUploadJobItem {
 message GetYoloDatasetZipUploadJobResponse {
   bool found = 1;
   YoloDatasetZipUploadJobItem job = 2;
+  string error_message = 3;
+}
+
+/** 主进程经 WebSocket 上传基座 .pt 权重（上传前连接、完成后断开）。 */
+message UploadYoloBaseModelFromPathRequest {
+  string global_config_dir = 1;
+  string job_slug = 2;
+  string source_pt_path = 3;
+  string family = 4;
+  string task = 5;
+}
+
+message UploadYoloBaseModelFromPathResponse {
+  bool ok = 1;
+  string response_json = 2;
   string error_message = 3;
 }
 
@@ -841,9 +904,15 @@ service AppService {
   rpc ProbeRemoteBackendHealth(ProbeRemoteBackendHealthRequest) returns (ProbeRemoteBackendHealthResponse);
   rpc ProxyBackendHttp(ProxyBackendHttpRequest) returns (ProxyBackendHttpResponse);
   rpc ProxyBackendImageUpload(ProxyBackendImageUploadRequest) returns (ProxyBackendImageUploadResponse);
+  rpc ConnectBackendSamWs(ConnectBackendSamWsRequest) returns (ConnectBackendSamWsResponse);
+  rpc DisconnectBackendSamWs(DisconnectBackendSamWsRequest) returns (DisconnectBackendSamWsResponse);
+  rpc IsBackendSamWsConnected(IsBackendSamWsConnectedRequest) returns (IsBackendSamWsConnectedResponse);
+  rpc SamWsPrepareImage(SamWsPrepareImageRequest) returns (SamWsPrepareImageResponse);
+  rpc SamWsSendJson(SamWsSendJsonRequest) returns (SamWsSendJsonResponse);
   rpc CopyYoloTrainingDatasetZip(CopyYoloTrainingDatasetZipRequest) returns (CopyYoloTrainingDatasetZipResponse);
   rpc StartYoloDatasetZipUpload(StartYoloDatasetZipUploadRequest) returns (StartYoloDatasetZipUploadResponse);
   rpc GetYoloDatasetZipUploadJob(GetYoloDatasetZipUploadJobRequest) returns (GetYoloDatasetZipUploadJobResponse);
+  rpc UploadYoloBaseModelFromPath(UploadYoloBaseModelFromPathRequest) returns (UploadYoloBaseModelFromPathResponse);
   rpc CopyYoloBatchModelFile(CopyYoloBatchModelFileRequest) returns (CopyYoloBatchModelFileResponse);
   rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);
   rpc GetYoloModelDownloadStatus(GetYoloModelDownloadStatusRequest) returns (GetYoloModelDownloadStatusResponse);

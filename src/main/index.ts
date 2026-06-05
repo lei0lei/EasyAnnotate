@@ -126,8 +126,13 @@ import { deleteProjectTasksFile, readProjectTasks, writeProjectTasks } from "./p
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
 import {
   getYoloDatasetZipUploadJob,
+  resolveApiV1Root,
   startYoloDatasetZipUploadFromPath,
 } from "./yolo-dataset-upload";
+import {
+  apiRootToWsUrl,
+  uploadYoloBaseModelViaWs,
+} from "./backend-yolo-training-ws";
 import {
   buildUniqueExportFolderPath,
   buildUniqueZipPath,
@@ -135,6 +140,14 @@ import {
   startDatasetExportJob,
 } from "./dataset-export";
 import { runAnnotatedTaskFilesImport, runAnnotatedTaskZipImport } from "./annotated-task-import-core";
+import {
+  connectBackendSamWs,
+  disconnectBackendSamWs,
+  isBackendSamWsConnected,
+  samWsPrepareImage,
+  samWsRelease,
+  samWsSendJson,
+} from "./backend-sam-ws";
 import {
   listAnnotatedTaskImportJobsAsExportJobsForIpc,
   startAnnotatedTaskImportJob,
@@ -2788,6 +2801,69 @@ ipc.registerService(AppService({
       errorMessage: result.errorMessage,
     }
   },
+  async ConnectBackendSamWs(request) {
+    try {
+      await connectBackendSamWs(request.url || "", request.clientId || "")
+      return { ok: true, errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async DisconnectBackendSamWs(_request) {
+    try {
+      await samWsRelease()
+    } catch {
+      // best-effort release before close
+    }
+    await disconnectBackendSamWs()
+    return { ok: true }
+  },
+  async IsBackendSamWsConnected(_request) {
+    return { connected: isBackendSamWsConnected() }
+  },
+  async SamWsPrepareImage(request) {
+    try {
+      const inferScale = Number.isFinite(request.inferScale) ? request.inferScale : undefined
+      const payload = await samWsPrepareImage({
+        modelId: request.modelId || "",
+        imagePath: request.imagePath || "",
+        inferScale,
+        runtimeSlot: request.runtimeSlot || undefined,
+        timeoutMs: request.timeoutMs > 0 ? request.timeoutMs : undefined,
+      })
+      return { ok: true, responseJson: JSON.stringify(payload), errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        responseJson: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async SamWsSendJson(request) {
+    try {
+      const parsed = JSON.parse(request.jsonText || "{}") as { type?: string; payload?: Record<string, unknown> }
+      const msgType = (parsed.type || "").trim()
+      if (!msgType) {
+        return { ok: false, responseJson: "", errorMessage: "missing type" }
+      }
+      const payload = await samWsSendJson({
+        type: msgType,
+        payload: parsed.payload ?? {},
+        timeoutMs: request.timeoutMs > 0 ? request.timeoutMs : undefined,
+      })
+      return { ok: true, responseJson: JSON.stringify(payload), errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        responseJson: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
   async StartLocalBackend(request) {
     return await startEmbeddedPythonBackend(request.backendDirectory)
   },
@@ -2981,6 +3057,40 @@ ipc.registerService(AppService({
         errorMessage: job.errorMessage,
       },
       errorMessage: "",
+    }
+  },
+  async UploadYoloBaseModelFromPath(request) {
+    const globalConfigDir = request.globalConfigDir?.trim() ?? ""
+    const jobSlug = request.jobSlug?.trim() ?? ""
+    const sourcePtPath = request.sourcePtPath?.trim() ?? ""
+    const family = request.family?.trim() ?? ""
+    const task = request.task?.trim() ?? ""
+    if (!jobSlug || !sourcePtPath) {
+      return { ok: false, responseJson: "", errorMessage: "job_slug 与 source_pt_path 不能为空" }
+    }
+    const { apiRoot, errorMessage } = resolveApiV1Root(globalConfigDir)
+    if (errorMessage) {
+      return { ok: false, responseJson: "", errorMessage }
+    }
+    if (!apiRoot) {
+      return { ok: false, responseJson: "", errorMessage: "无法解析后端地址" }
+    }
+    try {
+      const result = await uploadYoloBaseModelViaWs({
+        wsUrl: apiRootToWsUrl(apiRoot),
+        clientId: `yolo-train-${randomUUID()}`,
+        jobSlug,
+        sourcePtPath,
+        family,
+        task,
+      })
+      return { ok: true, responseJson: JSON.stringify(result), errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        responseJson: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
     }
   },
 }))

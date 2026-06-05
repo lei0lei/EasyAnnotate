@@ -13,7 +13,7 @@ import {
 } from "lucide-react"
 import { Link, useParams } from "react-router-dom"
 
-type RouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+type RouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "WS"
 type RouteItem = {
   method: RouteMethod
   path: string
@@ -45,14 +45,9 @@ const GROUPS: BackendRouteGroup[] = [
   {
     id: "sam-session",
     title: "SAM Session",
-    desc: "SAM 服务端 encode/decode session（每客户端单 session）",
+    desc: "SAM 服务端 encode/decode session（WebSocket，每客户端单 session）",
     icon: Box,
-    routes: [
-      { method: "POST", path: "/api/v1/sam/session/prepare" },
-      { method: "POST", path: "/api/v1/sam/session/prepare-upload" },
-      { method: "POST", path: "/api/v1/sam/session/decode" },
-      { method: "DELETE", path: "/api/v1/sam/session" },
-    ],
+    routes: [{ method: "WS", path: "/api/v1/ws" }],
   },
   {
     id: "model-assets",
@@ -80,7 +75,7 @@ const GROUPS: BackendRouteGroup[] = [
   {
     id: "training-yolo",
     title: "Training YOLO",
-    desc: "YOLO 训练任务、数据与历史",
+    desc: "YOLO 训练任务、数据与历史（数据集 zip / 基座 .pt 上传走 WebSocket /api/v1/ws）",
     icon: Rocket,
     routes: [
       { method: "GET", path: "/api/v1/training/yolo/catalog" },
@@ -98,12 +93,7 @@ const GROUPS: BackendRouteGroup[] = [
       { method: "GET", path: "/api/v1/training/yolo/devices" },
       { method: "GET", path: "/api/v1/training/yolo/status" },
       { method: "POST", path: "/api/v1/training/yolo/dataset/unpack" },
-      { method: "POST", path: "/api/v1/training/yolo/dataset/upload/init" },
-      { method: "PUT", path: "/api/v1/training/yolo/dataset/upload/chunk" },
-      { method: "POST", path: "/api/v1/training/yolo/dataset/upload/complete" },
-      { method: "POST", path: "/api/v1/training/yolo/dataset/upload" },
       { method: "POST", path: "/api/v1/training/yolo/base-model/select" },
-      { method: "POST", path: "/api/v1/training/yolo/base-model/upload" },
       { method: "POST", path: "/api/v1/training/yolo/base-model/validate" },
       { method: "POST", path: "/api/v1/training/yolo/start" },
     ],
