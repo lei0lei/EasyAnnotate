@@ -30,6 +30,7 @@ function defineMainConfig(): UserConfig {
           "dataset-export-child": path.resolve(__dirname, "./src/main/dataset-export-child.ts"),
           "task-import-child": path.resolve(__dirname, "./src/main/task-import-child.ts"),
           "task-delete-child": path.resolve(__dirname, "./src/main/task-delete-child.ts"),
+          "yolo-dataset-upload-child": path.resolve(__dirname, "./src/main/yolo-dataset-upload-child.ts"),
         },
         external: [
           "mobrowser",

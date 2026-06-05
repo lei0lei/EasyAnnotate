@@ -82,17 +82,19 @@ function yoloRoot(): string {
 
 export async function probeBackendHealth(): Promise<boolean> {
   const { protocol, host, port, remoteConnected, basePath } = loadAppConfig().backend
-  let origin: string
-  if (!remoteConnected) {
-    origin = "http://127.0.0.1:8000"
-  } else {
-    const scheme = protocol === "https" ? "https" : "http"
-    origin = `${scheme}://${host.trim() || "127.0.0.1"}:${(port.trim() || "8000").replace(/^:/, "")}`
-  }
-  const base = basePath.trim() ? (basePath.trim().startsWith("/") ? basePath.trim() : `/${basePath.trim()}`) : ""
   try {
-    const res = await fetch(`${origin}${base}/health`, { signal: AbortSignal.timeout(2500) })
-    return res.ok
+    if (remoteConnected) {
+      const response = await ipc.app.ProbeRemoteBackendHealth({
+        protocol: protocol === "https" ? "https" : "http",
+        host: host.trim() || "127.0.0.1",
+        port: (port.trim() || "8000").replace(/^:/, ""),
+        basePath: basePath.trim(),
+        timeoutMs: 5000,
+      })
+      return response.ok
+    }
+    const local = await ipc.app.GetLocalBackendStatus({})
+    return local.reachable
   } catch {
     return false
   }

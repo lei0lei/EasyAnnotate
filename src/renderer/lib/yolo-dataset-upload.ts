@@ -18,7 +18,7 @@ export {
 /** 本地选文件后仅解压 */
 export const YOLO_DATASET_UNPACK_TIMEOUT_MS = 30 * 60 * 1000
 
-const UPLOAD_JOB_POLL_MS = 500
+const UPLOAD_JOB_POLL_MS = 1500
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))

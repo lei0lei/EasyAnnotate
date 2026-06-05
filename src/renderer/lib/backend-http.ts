@@ -46,9 +46,9 @@ function isConfiguredBackendUrl(rawUrl: string): boolean {
   }
 }
 
-/** 远程后端直连 HTTP；本地打包 WebView 仍走主进程代理。 */
+/** 本地与远程均走主进程代理，避免打包 WebView 无法直连远程 HTTP。大文件上传/下载另有专用主进程路径。 */
 function shouldProxyBackendHttp(): boolean {
-  return !loadAppConfig().backend.remoteConnected
+  return true
 }
 
 let backendFetchProxyInstalled = false
