@@ -861,6 +861,8 @@ message StartYoloBatchFileUploadRequest {
   string source_path = 3;
   /** data_yaml | weights */
   string kind = 4;
+  /** 可选：与渲染进程当前连接的后端一致（优先于 global_config_dir 解析） */
+  string api_root = 5;
 }
 
 message StartYoloBatchFileUploadResponse {
@@ -953,6 +955,46 @@ message YoloBatchPredictImageResponse {
   bool ok = 1;
   string error_message = 2;
   string response_json = 3;
+}
+
+/** 子进程批量自动标注（每批 10 张，持久 WS 推理 + 写标注）。 */
+message StartYoloBatchAutoAnnotateJobRequest {
+  string api_root = 1;
+  string model_slug = 2;
+  repeated string image_paths = 3;
+  repeated string allowed_labels = 4;
+}
+
+message StartYoloBatchAutoAnnotateJobResponse {
+  string job_id = 1;
+  string error_message = 2;
+}
+
+message GetYoloBatchAutoAnnotateJobRequest {
+  string job_id = 1;
+}
+
+message YoloBatchAutoAnnotateJobItem {
+  string id = 1;
+  string status = 2;
+  int32 done = 3;
+  int32 total = 4;
+  string current_file = 5;
+  string message = 6;
+  string error_message = 7;
+}
+
+message GetYoloBatchAutoAnnotateJobResponse {
+  bool found = 1;
+  YoloBatchAutoAnnotateJobItem job = 2;
+}
+
+message CancelYoloBatchAutoAnnotateJobRequest {
+  string job_id = 1;
+}
+
+message CancelYoloBatchAutoAnnotateJobResponse {
+  bool ok = 1;
 }
 
 /** 将本地 yaml / pt 复制到 backend/external/model_temp/<模型 slug>/ */
@@ -1075,6 +1117,9 @@ service AppService {
   rpc DisconnectBackendYoloBatchPredictWs(DisconnectBackendYoloBatchPredictWsRequest) returns (DisconnectBackendYoloBatchPredictWsResponse);
   rpc IsBackendYoloBatchPredictWsConnected(IsBackendYoloBatchPredictWsConnectedRequest) returns (IsBackendYoloBatchPredictWsConnectedResponse);
   rpc YoloBatchPredictImage(YoloBatchPredictImageRequest) returns (YoloBatchPredictImageResponse);
+  rpc StartYoloBatchAutoAnnotateJob(StartYoloBatchAutoAnnotateJobRequest) returns (StartYoloBatchAutoAnnotateJobResponse);
+  rpc GetYoloBatchAutoAnnotateJob(GetYoloBatchAutoAnnotateJobRequest) returns (GetYoloBatchAutoAnnotateJobResponse);
+  rpc CancelYoloBatchAutoAnnotateJob(CancelYoloBatchAutoAnnotateJobRequest) returns (CancelYoloBatchAutoAnnotateJobResponse);
   rpc CopyYoloBatchModelFile(CopyYoloBatchModelFileRequest) returns (CopyYoloBatchModelFileResponse);
   rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);
   rpc GetYoloModelDownloadStatus(GetYoloModelDownloadStatusRequest) returns (GetYoloModelDownloadStatusResponse);

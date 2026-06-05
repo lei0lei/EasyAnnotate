@@ -59,6 +59,15 @@ export function candidatesFromDialogPaths(paths: string[]): TaskUploadCandidate[
 
 const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
 
+export function isTaskImagePath(filePath: string): boolean {
+  const normalized = filePath.trim().replace(/\\/g, "/")
+  if (!normalized) return false
+  const fileName = normalized.slice(normalized.lastIndexOf("/") + 1)
+  const dot = fileName.lastIndexOf(".")
+  const ext = dot >= 0 ? fileName.slice(dot).toLowerCase() : ""
+  return IMAGE_EXTS.has(ext)
+}
+
 export function splitTaskUploadPaths(paths: string[]): {
   imageCandidates: TaskUploadCandidate[]
   zipPaths: string[]

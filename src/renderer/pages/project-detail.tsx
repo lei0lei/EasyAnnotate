@@ -207,7 +207,8 @@ export default function ProjectDetailPage() {
   const [taskCoverById, setTaskCoverById] = useState<Record<string, string>>({})
   const saveFlashTimerRef = useRef<number | undefined>(undefined)
   const taskCoverByIdRef = useRef<Record<string, string>>({})
-  const autoAnnotateAbortRef = useRef<Record<string, AbortController>>({})
+  const [autoAnnotateActiveTaskId, setAutoAnnotateActiveTaskId] = useState<string | null>(null)
+  const autoAnnotateAbortRef = useRef<AbortController | null>(null)
   const [autoAnnotatePanelTaskId, setAutoAnnotatePanelTaskId] = useState<string | null>(null)
   const [autoAnnotateModelSlug, setAutoAnnotateModelSlug] = useState("")
   const [autoAnnotateProgressByTaskId, setAutoAnnotateProgressByTaskId] = useState<
@@ -298,10 +299,9 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     return () => {
-      for (const ac of Object.values(autoAnnotateAbortRef.current)) {
-        ac.abort()
-      }
-      autoAnnotateAbortRef.current = {}
+      autoAnnotateAbortRef.current?.abort()
+      autoAnnotateAbortRef.current = null
+      setAutoAnnotateActiveTaskId(null)
     }
   }, [])
 
@@ -314,8 +314,10 @@ export default function ProjectDetailPage() {
   }
 
   function stopAutoAnnotateForTask(taskId: string) {
-    autoAnnotateAbortRef.current[taskId]?.abort()
-    delete autoAnnotateAbortRef.current[taskId]
+    if (autoAnnotateActiveTaskId !== taskId) return
+    autoAnnotateAbortRef.current?.abort()
+    autoAnnotateAbortRef.current = null
+    setAutoAnnotateActiveTaskId(null)
   }
 
   function startAutoAnnotateForTask(task: TaskItem) {
@@ -325,9 +327,30 @@ export default function ProjectDetailPage() {
       window.alert("请先选择已启动的 YOLO 模型")
       return
     }
-    stopAutoAnnotateForTask(task.id)
+
+    const prevActiveId = autoAnnotateActiveTaskId
+    if (prevActiveId && prevActiveId !== task.id) {
+      autoAnnotateAbortRef.current?.abort()
+      setAutoAnnotateProgressByTaskId((prev) => {
+        const cur = prev[prevActiveId]
+        if (cur?.phase !== "running") return prev
+        return {
+          ...prev,
+          [prevActiveId]: {
+            phase: "cancelled",
+            done: cur.done,
+            total: cur.total,
+            statusMessage: "已被其他任务的自动标注取代",
+          },
+        }
+      })
+    } else {
+      autoAnnotateAbortRef.current?.abort()
+    }
+
     const controller = new AbortController()
-    autoAnnotateAbortRef.current[task.id] = controller
+    autoAnnotateAbortRef.current = controller
+    setAutoAnnotateActiveTaskId(task.id)
     setAutoAnnotateProgressByTaskId((prev) => ({
       ...prev,
       [task.id]: { phase: "running", done: 0, total: 0 },
@@ -341,7 +364,13 @@ export default function ProjectDetailPage() {
       onProgress: (progress) => {
         setAutoAnnotateProgressByTaskId((prev) => ({ ...prev, [task.id]: progress }))
         if (progress.phase === "done" || progress.phase === "error" || progress.phase === "cancelled") {
-          delete autoAnnotateAbortRef.current[task.id]
+          setAutoAnnotateActiveTaskId((activeId) => {
+            if (activeId === task.id) {
+              autoAnnotateAbortRef.current = null
+              return null
+            }
+            return activeId
+          })
           void loadTasks(projectId).then((next) => setTasks(next)).catch(() => undefined)
         }
       },
@@ -355,7 +384,13 @@ export default function ProjectDetailPage() {
           errorMessage: e instanceof Error ? e.message : "自动标注异常退出",
         },
       }))
-      delete autoAnnotateAbortRef.current[task.id]
+      setAutoAnnotateActiveTaskId((activeId) => {
+        if (activeId === task.id) {
+          autoAnnotateAbortRef.current = null
+          return null
+        }
+        return activeId
+      })
     })
   }
   const initialTags = useMemo(() => normalizeTags(project?.tags ?? []), [project?.tags])
@@ -1210,6 +1245,16 @@ export default function ProjectDetailPage() {
           selectedModelSlug={autoAnnotateModelSlug}
           onSelectedModelSlugChange={setAutoAnnotateModelSlug}
           onClose={closeAutoAnnotatePanel}
+          otherTaskRunning={
+            autoAnnotateActiveTaskId != null &&
+            autoAnnotateActiveTaskId !== autoAnnotatePanelTaskId &&
+            autoAnnotateProgressByTaskId[autoAnnotateActiveTaskId]?.phase === "running"
+          }
+          otherTaskName={
+            autoAnnotateActiveTaskId
+              ? (tasks.find((t) => t.id === autoAnnotateActiveTaskId)?.name ?? "")
+              : ""
+          }
           onStart={() => {
             const task = tasks.find((t) => t.id === autoAnnotatePanelTaskId)
             if (task) startAutoAnnotateForTask(task)

@@ -14,6 +14,9 @@ export type TaskYoloAutoAnnotatePanelProps = {
   onClose: () => void
   onStart: () => void
   onStop: () => void
+  /** 另有任务正在自动标注（全局仅允许一个） */
+  otherTaskRunning?: boolean
+  otherTaskName?: string
 }
 
 export function TaskYoloAutoAnnotatePanel({
@@ -25,6 +28,8 @@ export function TaskYoloAutoAnnotatePanel({
   onClose,
   onStart,
   onStop,
+  otherTaskRunning = false,
+  otherTaskName = "",
 }: TaskYoloAutoAnnotatePanelProps) {
   const [models, setModels] = useState<YoloBatchModel[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -123,6 +128,16 @@ export function TaskYoloAutoAnnotatePanel({
             请先在「Models → YOLO 批量标注工具」中启动一个模型（绿点）。
           </p>
         ) : null}
+
+        {otherTaskRunning && otherTaskName ? (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            当前「{otherTaskName}」正在自动标注。在此开始将中止该任务（全局同时仅允许一个自动标注）。
+          </p>
+        ) : null}
+
+        <p className="text-xs text-muted-foreground">
+          推理在独立子进程中执行，每批 10 张图片，全程保持同一 WebSocket 连接。
+        </p>
 
         <div className="space-y-1.5">
           <div className="flex justify-between text-xs text-muted-foreground">

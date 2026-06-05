@@ -52,6 +52,10 @@ export class BackendWsClient {
   }
 
   private waitForMessage(id: string, timeoutMs: number): Promise<WsMessage> {
+    const queued = this.jsonQueue.get(id)
+    if (queued && queued.length > 0) {
+      return Promise.resolve(queued.shift()!)
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingById.delete(id)
@@ -136,7 +140,7 @@ export class BackendWsClient {
         resolve()
       })
       socket.on("message", (data, isBinary) => {
-        if (isBinary || Buffer.isBuffer(data)) {
+        if (isBinary) {
           const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
           if (this.pendingBinary) {
             const p = this.pendingBinary
@@ -170,6 +174,7 @@ export class BackendWsClient {
     })
 
     const helloId = randomUUID()
+    const helloWait = this.waitForMessage(helloId, timeoutMs)
     this.ws!.send(
       JSON.stringify({
         id: helloId,
@@ -177,7 +182,7 @@ export class BackendWsClient {
         payload: { client_id: this.clientId },
       }),
     )
-    const helloRes = await this.waitForMessage(helloId, timeoutMs)
+    const helloRes = await helloWait
     if (helloRes.type !== "hello.ok") {
       throw new Error(`WebSocket hello 失败：${helloRes.type}`)
     }
@@ -205,8 +210,9 @@ export class BackendWsClient {
     }
     const id = msg.id?.trim() || randomUUID()
     const body = { ...msg, id }
+    const wait = this.waitForMessage(id, timeoutMs)
     this.ws.send(JSON.stringify(body))
-    const res = await this.waitForMessage(id, timeoutMs)
+    const res = await wait
     if (res.type === "error") {
       const payload = res.payload ?? {}
       throw new Error(`${String(payload.code ?? "error")}: ${String(payload.message ?? "unknown")}`)

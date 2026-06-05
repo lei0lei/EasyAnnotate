@@ -136,6 +136,11 @@ import {
   startYoloBatchWeightsUploadFromPath,
 } from "./yolo-batch-file-upload";
 import {
+  cancelYoloAutoAnnotateJob,
+  getYoloAutoAnnotateJob,
+  startYoloAutoAnnotateJob,
+} from "./yolo-batch-auto-annotate-job";
+import {
   connectYoloBatchPredictWs,
   disconnectYoloBatchPredictWs,
   isYoloBatchPredictWsConnected,
@@ -3180,11 +3185,13 @@ ipc.registerService(AppService({
   },
   async StartYoloBatchFileUpload(request) {
     const globalConfigDir = request.globalConfigDir?.trim() ?? ""
+    const apiRoot = request.apiRoot?.trim() ?? ""
     const modelSlug = request.modelSlug?.trim() ?? ""
     const sourcePath = request.sourcePath?.trim() ?? ""
     const kind = (request.kind?.trim() === "data_yaml" ? "data_yaml" : "weights") as "data_yaml" | "weights"
     const started = startYoloBatchFileUploadFromPath({
       globalConfigDir,
+      apiRoot,
       modelSlug,
       kind,
       sourcePath,
@@ -3284,5 +3291,41 @@ ipc.registerService(AppService({
         errorMessage: error instanceof Error ? error.message : String(error),
       }
     }
+  },
+  async StartYoloBatchAutoAnnotateJob(request) {
+    const started = startYoloAutoAnnotateJob({
+      apiRoot: request.apiRoot?.trim() ?? "",
+      modelSlug: request.modelSlug?.trim() ?? "",
+      imagePaths: request.imagePaths ?? [],
+      allowedLabels: request.allowedLabels ?? [],
+    })
+    return { jobId: started.jobId, errorMessage: started.errorMessage }
+  },
+  async GetYoloBatchAutoAnnotateJob(request) {
+    const jobId = request.jobId?.trim() ?? ""
+    if (!jobId) {
+      return { found: false, job: undefined, errorMessage: "job_id 为空" }
+    }
+    const job = getYoloAutoAnnotateJob(jobId)
+    if (!job) {
+      return { found: false, job: undefined, errorMessage: "" }
+    }
+    return {
+      found: true,
+      job: {
+        id: job.id,
+        status: job.status,
+        done: job.done,
+        total: job.total,
+        currentFile: job.currentFile,
+        message: job.message,
+        errorMessage: job.errorMessage,
+      },
+      errorMessage: "",
+    }
+  },
+  async CancelYoloBatchAutoAnnotateJob(request) {
+    const jobId = request.jobId?.trim() ?? ""
+    return { ok: cancelYoloAutoAnnotateJob(jobId) }
   },
 }))

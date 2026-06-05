@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto"
 import { BackendWsClient } from "./backend-ws-client"
 
 const CHUNK_SIZE = 5 * 1024 * 1024
+const CONNECT_TIMEOUT_MS = 30_000
 const batchUploadClient = new BackendWsClient()
 
 export type YoloBatchUploadKind = "data_yaml" | "weights"
@@ -45,7 +46,7 @@ export async function uploadYoloBatchFileViaWs(args: {
   validateSourcePath(args.kind, sourcePath)
 
   const prefix = wsKindPrefix(args.kind)
-  await batchUploadClient.connect(args.wsUrl, args.clientId, timeoutMs)
+  await batchUploadClient.connect(args.wsUrl, args.clientId, CONNECT_TIMEOUT_MS)
   try {
     const stat = fs.statSync(sourcePath)
     const totalSize = stat.size

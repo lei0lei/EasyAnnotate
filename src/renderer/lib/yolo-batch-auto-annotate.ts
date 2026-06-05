@@ -1,20 +1,9 @@
-import {
-  appendImageAnnotationShapes,
-  getImageFileInfo,
-  listAllTaskFiles,
-  type ProjectTag,
-} from "@/lib/projects-api"
-import {
-  buildAllowedProjectLabelSet,
-  yoloPredictResultToShapes,
-  type YoloBatchPredictResult,
-} from "@/lib/yolo-predict-to-annotation"
-import { ensureYoloBatchModelRunning, predictYoloBatchImage, probeYoloBatchApiAvailable } from "@/lib/yolo-batch-api"
-import {
-  connectYoloBatchPredictWs,
-  disconnectYoloBatchPredictWs,
-} from "@/lib/backend-yolo-batch-predict-ws"
-import { normalizeDocPointsToInt } from "@/pages/project-task-detail/utils"
+import { ipc } from "@/gen/ipc"
+import { apiV1Root } from "@/lib/backend-http"
+import { listAllTaskFiles, type ProjectTag } from "@/lib/projects-api"
+import { isTaskImagePath } from "@/lib/task-file-upload"
+import { buildAllowedProjectLabelSet } from "@/lib/yolo-predict-to-annotation"
+import { ensureYoloBatchModelRunning, probeYoloBatchApiAvailable } from "@/lib/yolo-batch-api"
 
 export type YoloAutoAnnotatePhase = "idle" | "running" | "done" | "error" | "cancelled"
 
@@ -36,26 +25,34 @@ export type RunYoloBatchAutoAnnotateParams = {
   onProgress: (progress: YoloAutoAnnotateProgress) => void
 }
 
-function dimensionsFromPredict(predict: YoloBatchPredictResult): { width: number; height: number } {
-  const shape = predict.results?.[0]?.shape
-  if (!shape || shape.length < 2) return { width: 0, height: 0 }
-  const h = Number(shape[0])
-  const w = Number(shape[1])
-  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return { width: 0, height: 0 }
-  return { width: Math.round(w), height: Math.round(h) }
+const JOB_POLL_MS = 400
+const JOB_TIMEOUT_MS = 24 * 60 * 60 * 1000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
-function detectionDebugSummary(predict: YoloBatchPredictResult): string {
-  const detections = predict.results?.[0]?.detections ?? []
-  if (detections.length <= 0) return "detections=0"
-  const sample = detections
-    .slice(0, 6)
-    .map((det) => {
-      const name = (det.class_name ?? "").trim()
-      return `${det.class_id}:${name || "<empty>"}`
-    })
-    .join(", ")
-  return `detections=${detections.length}; sample=[${sample}]`
+function mapJobToProgress(job: {
+  status: string
+  done: number
+  total: number
+  currentFile?: string
+  message?: string
+  errorMessage?: string
+}): YoloAutoAnnotateProgress {
+  const status = job.status.trim()
+  let phase: YoloAutoAnnotatePhase = "running"
+  if (status === "success") phase = "done"
+  else if (status === "failed") phase = "error"
+  else if (status === "cancelled") phase = "cancelled"
+  return {
+    phase,
+    done: job.done ?? 0,
+    total: job.total ?? 0,
+    currentFile: job.currentFile?.trim() || undefined,
+    statusMessage: job.message?.trim() || undefined,
+    errorMessage: job.errorMessage?.trim() || undefined,
+  }
 }
 
 export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateParams): Promise<void> {
@@ -88,150 +85,122 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     return
   }
 
-  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "连接推理 WebSocket…" })
-  try {
-    await connectYoloBatchPredictWs()
-  } catch (e) {
+  const allowed = buildAllowedProjectLabelSet(projectTags)
+  if (allowed.size === 0) {
     onProgress({
       phase: "error",
       done: 0,
       total: 0,
-      errorMessage: e instanceof Error ? e.message : "无法连接推理 WebSocket",
+      errorMessage: "项目尚未配置可用的普通类别标签（需与模型 data.yaml 中的类别名一致）",
     })
     return
   }
 
+  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "读取任务图片列表…" })
+  const fileResult = await listAllTaskFiles({ projectId, taskId })
+  if (fileResult.errorMessage) {
+    onProgress({
+      phase: "error",
+      done: 0,
+      total: 0,
+      errorMessage: fileResult.errorMessage,
+    })
+    return
+  }
+
+  const allWithPath = fileResult.files.filter((f) => f.filePath?.trim())
+  const imagePaths = allWithPath.filter((f) => isTaskImagePath(f.filePath)).map((f) => f.filePath.trim())
+  const skippedNonImage = allWithPath.length - imagePaths.length
+
+  if (imagePaths.length === 0) {
+    onProgress({
+      phase: allWithPath.length > 0 ? "error" : "done",
+      done: 0,
+      total: 0,
+      errorMessage:
+        allWithPath.length > 0
+          ? "任务中没有支持的图片文件（支持 .jpg/.jpeg/.png/.bmp/.gif/.webp/.tif/.tiff）"
+          : undefined,
+    })
+    return
+  }
+
+  onProgress({
+    phase: "running",
+    done: 0,
+    total: imagePaths.length,
+    statusMessage:
+      skippedNonImage > 0
+        ? `已跳过 ${skippedNonImage} 个非图片文件，启动子进程（每批 10 张）…`
+        : "启动子进程自动标注（每批 10 张）…",
+  })
+
+  const started = await ipc.app.StartYoloBatchAutoAnnotateJob({
+    apiRoot: apiV1Root(),
+    modelSlug: modelSlug.trim(),
+    imagePaths,
+    allowedLabels: [...allowed],
+  })
+  if (!started.jobId?.trim()) {
+    onProgress({
+      phase: "error",
+      done: 0,
+      total: imagePaths.length,
+      errorMessage: started.errorMessage?.trim() || "无法启动自动标注任务",
+    })
+    return
+  }
+
+  const jobId = started.jobId.trim()
+  const deadline = Date.now() + JOB_TIMEOUT_MS
+
   try {
-    const allowed = buildAllowedProjectLabelSet(projectTags)
-    if (allowed.size === 0) {
-      onProgress({
-        phase: "error",
-        done: 0,
-        total: 0,
-        errorMessage: "项目尚未配置可用的普通类别标签（需与模型 data.yaml 中的类别名一致）",
-      })
-      return
-    }
-
-    onProgress({ phase: "running", done: 0, total: 0, statusMessage: "读取任务图片列表…" })
-    const fileResult = await listAllTaskFiles({ projectId, taskId })
-    if (fileResult.errorMessage) {
-      onProgress({
-        phase: "error",
-        done: 0,
-        total: 0,
-        errorMessage: fileResult.errorMessage,
-      })
-      return
-    }
-
-    const files = fileResult.files.filter((f) => f.filePath?.trim())
-    const total = files.length
-    if (total === 0) {
-      onProgress({ phase: "done", done: 0, total: 0 })
-      return
-    }
-
-    onProgress({ phase: "running", done: 0, total })
-
-    for (let i = 0; i < files.length; i++) {
+    while (Date.now() < deadline) {
       if (signal?.aborted) {
-        onProgress({ phase: "cancelled", done: i, total })
-        return
-      }
-
-      const imagePath = files[i]!.filePath.trim()
-      onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "推理中…" })
-
-      const info = await getImageFileInfo(imagePath)
-      if (!info.exists) {
+        await ipc.app.CancelYoloBatchAutoAnnotateJob({ jobId })
         onProgress({
-          phase: "error",
-          done: i,
-          total,
-          errorMessage: info.errorMessage || `图片不存在或无法访问：${imagePath}`,
+          phase: "cancelled",
+          done: 0,
+          total: imagePaths.length,
+          statusMessage: "已取消",
         })
         return
       }
 
-      let predict: YoloBatchPredictResult
-      try {
-        predict = await predictYoloBatchImage(modelSlug, imagePath)
-      } catch (e) {
-        onProgress({
-          phase: "error",
-          done: i,
-          total,
-          errorMessage: e instanceof Error ? e.message : "推理失败",
-        })
-        return
-      }
-
-      const fromPredict = dimensionsFromPredict(predict)
-      const imageWidth = fromPredict.width > 0 ? fromPredict.width : info.width
-      const imageHeight = fromPredict.height > 0 ? fromPredict.height : info.height
-      if (imageWidth <= 0 || imageHeight <= 0) {
-        onProgress({
-          phase: "error",
-          done: i,
-          total,
-          errorMessage: `无法确定图片尺寸：${imagePath}`,
-        })
-        return
-      }
-
-      const newShapes = normalizeDocPointsToInt({
-        version: "2.5.4",
-        flags: {},
-        shapes: yoloPredictResultToShapes(predict, allowed, imageWidth, imageHeight),
-        description: null,
-        imagePath,
-        imageData: null,
-        imageHeight,
-        imageWidth,
-      }).shapes
-
-      if (newShapes.length <= 0) {
-        const detections = predict.results?.[0]?.detections ?? []
-        if (detections.length > 0) {
-          onProgress({
-            phase: "error",
-            done: i,
-            total,
-            errorMessage:
-              `该图片有模型检测结果，但全部未转为标注（常见原因：类别名映射失败）。` +
-              ` 调试信息：${detectionDebugSummary(predict)}`,
-          })
-          return
-        }
-        onProgress({
-          phase: "running",
-          done: i + 1,
-          total,
-          currentFile: imagePath,
-          statusMessage: "未检测到目标，已跳过",
-        })
+      const res = await ipc.app.GetYoloBatchAutoAnnotateJob({ jobId })
+      if (!res.found || !res.job) {
+        await sleep(JOB_POLL_MS)
         continue
       }
 
-      onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "写入标注…" })
+      const progress = mapJobToProgress(res.job)
+      onProgress(progress)
 
-      const write = await appendImageAnnotationShapes({
-        imagePath,
-        shapesJson: JSON.stringify(newShapes),
-        imageWidth,
-        imageHeight,
-      })
-      if (write.errorMessage) {
-        onProgress({ phase: "error", done: i, total, errorMessage: write.errorMessage })
+      if (progress.phase === "done" || progress.phase === "error" || progress.phase === "cancelled") {
         return
       }
 
-      onProgress({ phase: "running", done: i + 1, total, currentFile: imagePath })
+      await sleep(JOB_POLL_MS)
     }
 
-    onProgress({ phase: "done", done: total, total })
-  } finally {
-    await disconnectYoloBatchPredictWs()
+    await ipc.app.CancelYoloBatchAutoAnnotateJob({ jobId })
+    onProgress({
+      phase: "error",
+      done: 0,
+      total: imagePaths.length,
+      errorMessage: `自动标注超时（超过 ${Math.round(JOB_TIMEOUT_MS / 3_600_000)} 小时）`,
+    })
+  } catch (e) {
+    await ipc.app.CancelYoloBatchAutoAnnotateJob({ jobId }).catch(() => undefined)
+    onProgress({
+      phase: "error",
+      done: 0,
+      total: imagePaths.length,
+      errorMessage: e instanceof Error ? e.message : "自动标注异常退出",
+    })
   }
+}
+
+export async function cancelYoloBatchAutoAnnotateJob(jobId: string): Promise<void> {
+  await ipc.app.CancelYoloBatchAutoAnnotateJob({ jobId: jobId.trim() })
 }

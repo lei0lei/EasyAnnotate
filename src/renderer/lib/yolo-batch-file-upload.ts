@@ -1,4 +1,5 @@
 import { ipc } from "@/gen/ipc"
+import { apiV1Root } from "@/lib/backend-http"
 import { loadAppConfig } from "@/lib/app-config-storage"
 
 export type YoloBatchUploadKind = "data_yaml" | "weights"
@@ -32,6 +33,7 @@ export async function uploadYoloBatchFileFromPathWithProgress(
 
   const started = await ipc.app.StartYoloBatchFileUpload({
     globalConfigDir,
+    apiRoot: apiV1Root(),
     modelSlug,
     sourcePath,
     kind,
@@ -41,14 +43,18 @@ export async function uploadYoloBatchFileFromPathWithProgress(
   }
 
   const jobId = started.jobId.trim()
+  onProgress?.({ kind, percent: 0 })
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    await sleep(UPLOAD_JOB_POLL_MS)
     const res = await ipc.app.GetYoloBatchFileUploadJob({ jobId })
-    if (!res.found || !res.job) continue
+    if (!res.found || !res.job) {
+      await sleep(UPLOAD_JOB_POLL_MS)
+      continue
+    }
     const job = res.job
     if (job.status === "running") {
       onProgress?.({ kind, percent: Math.min(99, job.progress ?? 0) })
+      await sleep(UPLOAD_JOB_POLL_MS)
       continue
     }
     if (job.status === "success") {
