@@ -66,8 +66,9 @@ import type {
   DiffusionPreviewMaskBinary,
   DiffusionPreviewPolygon,
   DiffusionPreviewRectangle,
-  Sam2DraftMaskBinary,
+  Sam2DraftPreviewPolygon,
 } from "@/pages/project-task-detail/rendered-shapes"
+import { buildSam2DraftPreviewRing } from "@/lib/sam2-draft-preview"
 import { useTaskRenderModel } from "@/pages/project-task-detail/use-task-render-model"
 import { useBox3dTool } from "@/pages/project-task-detail/annotateTools/use-box3d-tool"
 import { useKeypointTool } from "@/pages/project-task-detail/annotateTools/use-keypoint-tool"
@@ -1622,14 +1623,19 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     imageNaturalSize.width,
   ])
 
-  const sam2DraftMaskForRender = useMemo((): Sam2DraftMaskBinary | null => {
+  const sam2DraftPreviewForRender = useMemo((): Sam2DraftPreviewPolygon | null => {
     if (!sam2DraftMask || !sam2SelectedLabel.trim()) return null
+    const iw = imageNaturalSize.width
+    const ih = imageNaturalSize.height
+    if (sam2DraftMask.w !== iw || sam2DraftMask.h !== ih) return null
+    const ring = buildSam2DraftPreviewRing(sam2DraftMask, iw, ih)
+    if (!ring || ring.length < 3) return null
     return {
-      ...sam2DraftMask,
       label: sam2SelectedLabel.trim(),
       color: labelColorMap.get(sam2SelectedLabel.trim()) ?? "#f59e0b",
+      imageRing: ring,
     }
-  }, [labelColorMap, sam2DraftMask, sam2SelectedLabel])
+  }, [imageNaturalSize.height, imageNaturalSize.width, labelColorMap, sam2DraftMask, sam2SelectedLabel])
 
   const sam2HasCancelableRound = useMemo(
     () =>
@@ -1667,7 +1673,7 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
       dragLivePoints,
       dragCuboidLivePoints,
       dragVertexLive,
-      sam2DraftMaskBinary: sam2DraftMaskForRender,
+      sam2DraftPreviewPolygon: sam2DraftPreviewForRender,
       diffusionPreviewMasks: diffusionPreviewShapes.masks,
       diffusionPreviewPolygons: diffusionPreviewShapes.polygons,
       diffusionPreviewRectangles: diffusionPreviewShapes.rectangles,

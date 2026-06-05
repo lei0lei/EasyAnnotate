@@ -18,7 +18,7 @@ import {
   type DiffusionPreviewMaskBinary,
   type DiffusionPreviewPolygon,
   type DiffusionPreviewRectangle,
-  type Sam2DraftMaskBinary,
+  type Sam2DraftPreviewPolygon,
 } from "@/pages/project-task-detail/rendered-shapes"
 import type { ProjectTag } from "@/lib/projects-api"
 import type { Point } from "@/pages/project-task-detail/types"
@@ -41,7 +41,7 @@ type UseTaskRenderModelParams = {
   /** 单顶点拖拽：与 dragLivePoints 互斥使用，且仅驱动 polygon / skeleton / cuboid 的 memo */
   dragVertexLive: DragVertexLiveOverride | null
   /** SAM2 当前轮次预览（未按 N 写入文档） */
-  sam2DraftMaskBinary: Sam2DraftMaskBinary | null
+  sam2DraftPreviewPolygon: Sam2DraftPreviewPolygon | null
   diffusionPreviewMasks: DiffusionPreviewMaskBinary[]
   diffusionPreviewPolygons: DiffusionPreviewPolygon[]
   diffusionPreviewRectangles: DiffusionPreviewRectangle[]
@@ -61,7 +61,7 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     dragLivePoints,
     dragCuboidLivePoints,
     dragVertexLive,
-    sam2DraftMaskBinary,
+    sam2DraftPreviewPolygon,
     diffusionPreviewMasks,
     diffusionPreviewPolygons,
     diffusionPreviewRectangles,
@@ -111,10 +111,12 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       dragLivePoints,
       dragVertexLive,
       diffusionPreviewPolygons,
+      sam2DraftPreviewPolygon,
     })
   }, [
     annotationDoc,
     diffusionPreviewPolygons,
+    sam2DraftPreviewPolygon,
     dragLivePoints,
     dragVertexLive,
     hiddenClassLabels,
@@ -133,7 +135,6 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
       stageScale: 1,
       imageToStage: (point) => imageToStageBase(point),
       dragLivePoints,
-      sam2DraftMaskBinary,
       diffusionPreviewMasks,
     })
   }, [
@@ -145,7 +146,6 @@ export function useTaskRenderModel(params: UseTaskRenderModelParams) {
     imageGeometry,
     imageToStageBase,
     labelColorMap,
-    sam2DraftMaskBinary,
   ])
 
   const renderedCuboids2d = useMemo(() => {

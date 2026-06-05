@@ -33,8 +33,8 @@ export type DragLivePointsOverride = { shapeIndex: number; points: number[][] }
 /** 单顶点拖拽预览（polygon / skeleton / cuboid 顶点），避免触发其它类型 rendered* 整表重算 */
 export type DragVertexLiveOverride = { shapeIndex: number; vertexIndex: number; imageX: number; imageY: number }
 
-/** SAM2 会话中尚未按 N 提交的整图二值预览（非文档内形状） */
-export type Sam2DraftMaskBinary = { maskBinary: Uint8Array; w: number; h: number; label: string; color: string }
+/** SAM2 会话中尚未按 N 提交的预览多边形（非文档内形状） */
+export type Sam2DraftPreviewPolygon = { label: string; color: string; imageRing: number[][] }
 
 /** 扩散式标注：相似实例 SAM 预览 mask（非文档内形状） */
 export type DiffusionPreviewMaskBinary = { id: string; maskBinary: Uint8Array; w: number; h: number; label: string; color: string }
@@ -60,8 +60,8 @@ type RenderShapeContext = {
   /** 用于骨架关节显示名与项目模板对齐 */
   projectTags?: ProjectTag[]
   dragLivePoints?: DragLivePointsOverride | null
-  /** SAM2：当前轮次 ONNX 预览 mask，叠在文档 mask 之上 */
-  sam2DraftMaskBinary?: Sam2DraftMaskBinary | null
+  /** SAM2：当前轮次 ONNX 预览多边形，叠在文档形状之上 */
+  sam2DraftPreviewPolygon?: Sam2DraftPreviewPolygon | null
   /** 扩散式标注：批量相似实例预览 */
   diffusionPreviewMasks?: DiffusionPreviewMaskBinary[]
   diffusionPreviewPolygons?: DiffusionPreviewPolygon[]
@@ -271,6 +271,7 @@ export function buildRenderedPolygons(
     dragLivePoints,
     dragVertexLive,
     diffusionPreviewPolygons,
+    sam2DraftPreviewPolygon,
   } = context
   if (!annotationDoc) return []
   const hiddenSet = new Set(hiddenShapeIndexes)
@@ -305,6 +306,21 @@ export function buildRenderedPolygons(
       color: dp.color,
       stagePoints,
     })
+  }
+
+  if (sam2DraftPreviewPolygon) {
+    const stagePoints = sam2DraftPreviewPolygon.imageRing
+      .map((pt) => imageToStage({ x: Number(pt[0] ?? 0), y: Number(pt[1] ?? 0) }))
+      .filter((item): item is Point => !!item)
+    if (stagePoints.length >= 3) {
+      out.push({
+        index: -1,
+        shapeId: "__eaSam2Draft",
+        label: sam2DraftPreviewPolygon.label,
+        color: sam2DraftPreviewPolygon.color,
+        stagePoints,
+      })
+    }
   }
 
   return out
@@ -395,7 +411,6 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
   const {
     annotationDoc,
     imageToStage,
-    sam2DraftMaskBinary,
     diffusionPreviewMasks,
   } =
     context
@@ -421,44 +436,6 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
   const stageImageRect = { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) }
 
   let out = list
-
-  if (sam2DraftMaskBinary && sam2DraftMaskBinary.w === docIw && sam2DraftMaskBinary.h === docIh) {
-    const bin = sam2DraftMaskBinary.maskBinary
-    if (maskBinaryHasForeground(bin)) {
-      const bbox = foregroundBBoxInclusive(bin, docIw, docIh)
-      if (bbox) {
-        const tightCorners: Point[] = [
-          { x: bbox.minX, y: bbox.minY },
-          { x: bbox.maxX + 1, y: bbox.minY },
-          { x: bbox.maxX + 1, y: bbox.maxY + 1 },
-          { x: bbox.minX, y: bbox.maxY + 1 },
-        ]
-        const stageTight = tightCorners.map((p) => imageToStage(p)).filter((item): item is Point => !!item)
-        if (stageTight.length >= 1) {
-          const xs = stageTight.map((item) => item.x)
-          const ys = stageTight.map((item) => item.y)
-          out = [
-            ...out,
-            {
-              index: -1,
-              shapeId: "__eaSam2Draft",
-              label: sam2DraftMaskBinary.label,
-              color: sam2DraftMaskBinary.color,
-              stagePoints: [],
-              stageSegments: [],
-              brushSize: 1,
-              left: Math.min(...xs),
-              top: Math.min(...ys),
-              width: Math.max(1, Math.max(...xs) - Math.min(...xs)),
-              height: Math.max(1, Math.max(...ys) - Math.min(...ys)),
-              raster: { maskBinary: bin, imageWidth: docIw, imageHeight: docIh },
-              stageImageRect,
-            },
-          ]
-        }
-      }
-    }
-  }
 
   for (const dm of diffusionPreviewMasks ?? []) {
     if (dm.w !== docIw || dm.h !== docIh) continue
@@ -495,7 +472,7 @@ export function buildRenderedRasterPreviews(context: RenderShapeContext & { stag
         width: Math.max(1, dright - dleft),
         height: Math.max(1, dbottom - dtop),
         raster: { maskBinary: dBin, imageWidth: docIw, imageHeight: docIh },
-        stageImageRect: { left: sil, top: sit, width: Math.max(1, siw), height: Math.max(1, sih) },
+        stageImageRect,
       },
     ]
   }

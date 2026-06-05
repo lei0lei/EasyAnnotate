@@ -456,21 +456,31 @@ export function ProjectTaskCanvasSection(props: ProjectTaskCanvasSectionProps) {
                     const polygonPoints = item.stagePoints.map((pt) => `${pt.x},${pt.y}`).join(" ")
                     const isSelected = props.selectedShapeIndex === item.index
                     const isHovered = props.hoveredShapeIndex === item.index
+                    const isSam2Draft = item.shapeId === "__eaSam2Draft"
                     return (
-                      <g key={`polygon-${item.shapeId}`} transform={dragNudgeSvgTransform(props.dragStageNudge, item.shapeId)}>
+                      <g
+                        key={`polygon-${item.shapeId}`}
+                        transform={dragNudgeSvgTransform(props.dragStageNudge, item.shapeId)}
+                        opacity={isSam2Draft ? 0.85 : 1}
+                        className={isSam2Draft ? "pointer-events-none" : undefined}
+                      >
                         <polygon
                           points={polygonPoints}
-                          fill={isSelected || isHovered ? `${item.color}33` : "transparent"}
+                          fill={isSam2Draft || isSelected || isHovered ? `${item.color}55` : "transparent"}
                           stroke={item.color}
                           strokeWidth={lw(2)}
-                          className={props.drawingLayerActive ? "pointer-events-none" : "pointer-events-auto"}
-                          onMouseEnter={() => props.onHandleRectangleMouseEnter(item.shapeId)}
-                          onMouseLeave={() => props.onHandleRectangleMouseLeave(item.shapeId)}
-                          onMouseDown={(event) => props.onHandlePolygonMouseDown(item.shapeId, event)}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            props.onSetSelectedShapeId(item.shapeId)
-                          }}
+                          className={props.drawingLayerActive || isSam2Draft ? "pointer-events-none" : "pointer-events-auto"}
+                          onMouseEnter={isSam2Draft ? undefined : () => props.onHandleRectangleMouseEnter(item.shapeId)}
+                          onMouseLeave={isSam2Draft ? undefined : () => props.onHandleRectangleMouseLeave(item.shapeId)}
+                          onMouseDown={isSam2Draft ? undefined : (event) => props.onHandlePolygonMouseDown(item.shapeId, event)}
+                          onClick={
+                            isSam2Draft
+                              ? undefined
+                              : (event) => {
+                                  event.stopPropagation()
+                                  props.onSetSelectedShapeId(item.shapeId)
+                                }
+                          }
                         />
                       </g>
                     )
