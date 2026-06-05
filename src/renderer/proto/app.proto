@@ -444,6 +444,19 @@ message SaveProjectTasksResponse {
   string error_message = 1;
 }
 
+/** 保存项目标签前：主进程 walk 任务目录，删除已移除标签对应的 shapes。 */
+message RemoveDeletedLabelsFromProjectAnnotationsRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  repeated string task_ids = 3;
+  repeated string deleted_labels = 4;
+}
+
+message RemoveDeletedLabelsFromProjectAnnotationsResponse {
+  string error_message = 1;
+  int32 updated_file_count = 2;
+}
+
 message GetProjectTaskAnnotatedCountsRequest {
   string database_dir = 1;
   string project_id = 2;
@@ -957,16 +970,20 @@ message YoloBatchPredictImageResponse {
   string response_json = 3;
 }
 
-/** 子进程批量自动标注（每批 10 张，持久 WS 推理 + 写标注）。 */
+/** 子进程批量自动标注（子进程内枚举任务图片，持久 WS 推理 + 写标注）。 */
 message StartYoloBatchAutoAnnotateJobRequest {
   string api_root = 1;
   string model_slug = 2;
-  repeated string image_paths = 3;
+  reserved 3;
+  reserved "image_paths";
   repeated string allowed_labels = 4;
   /** 默认 true：跳过已有非空标注的图片 */
   bool skip_annotated = 5;
   /** 默认 false：为 true 时用新结果覆盖已有标注（忽略 skip_annotated） */
   bool overwrite_existing = 6;
+  string global_config_dir = 7;
+  string project_id = 8;
+  string task_id = 9;
 }
 
 message StartYoloBatchAutoAnnotateJobResponse {
@@ -1072,6 +1089,7 @@ service AppService {
   rpc ListProjectTasks(ListProjectTasksRequest) returns (ListProjectTasksResponse);
   rpc GetProjectTaskAnnotatedCounts(GetProjectTaskAnnotatedCountsRequest) returns (GetProjectTaskAnnotatedCountsResponse);
   rpc SaveProjectTasks(SaveProjectTasksRequest) returns (SaveProjectTasksResponse);
+  rpc RemoveDeletedLabelsFromProjectAnnotations(RemoveDeletedLabelsFromProjectAnnotationsRequest) returns (RemoveDeletedLabelsFromProjectAnnotationsResponse);
   rpc GetProjectExportVersions(GetProjectExportVersionsRequest) returns (GetProjectExportVersionsResponse);
   rpc SaveProjectExportVersions(SaveProjectExportVersionsRequest) returns (SaveProjectExportVersionsResponse);
   rpc ReadImageFile(ReadImageFileRequest) returns (ReadImageFileResponse);

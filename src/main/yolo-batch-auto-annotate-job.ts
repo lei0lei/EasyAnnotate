@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
+import { getDefaultGlobalConfigDir } from "./app-config-disk"
 import type { YoloAutoAnnotateRunRequest } from "./yolo-batch-auto-annotate-runner"
 
 const STATE_SYNC_POLL_MS = 400
@@ -333,9 +334,11 @@ export function getActiveYoloAutoAnnotateJobId(): string | null {
 }
 
 export function startYoloAutoAnnotateJob(args: {
+  globalConfigDir: string
+  projectId: string
+  taskId: string
   modelSlug: string
   apiRoot: string
-  imagePaths: string[]
   allowedLabels: string[]
   skipAnnotated?: boolean
   overwriteExisting?: boolean
@@ -344,8 +347,10 @@ export function startYoloAutoAnnotateJob(args: {
   if (!modelSlug) return { jobId: "", errorMessage: "模型标识为空" }
   const apiRoot = args.apiRoot.trim()
   if (!apiRoot) return { jobId: "", errorMessage: "无法解析后端地址" }
-  const imagePaths = args.imagePaths.map((p) => p.trim()).filter(Boolean)
-  if (imagePaths.length === 0) return { jobId: "", errorMessage: "没有可标注的图片" }
+  const globalConfigDir = args.globalConfigDir.trim() || getDefaultGlobalConfigDir()
+  const projectId = args.projectId.trim()
+  const taskId = args.taskId.trim()
+  if (!projectId || !taskId) return { jobId: "", errorMessage: "项目或任务标识为空" }
   const allowedLabels = args.allowedLabels.map((l) => l.trim()).filter(Boolean)
   if (allowedLabels.length === 0) {
     return { jobId: "", errorMessage: "项目尚未配置可用的普通类别标签" }
@@ -360,7 +365,7 @@ export function startYoloAutoAnnotateJob(args: {
     id: jobId,
     status: "running",
     done: 0,
-    total: imagePaths.length,
+    total: 0,
     currentFile: "",
     message: "排队中…",
     errorMessage: "",
@@ -373,9 +378,11 @@ export function startYoloAutoAnnotateJob(args: {
 
   const req: YoloAutoAnnotateRunRequest = {
     jobId,
+    globalConfigDir,
+    projectId,
+    taskId,
     modelSlug,
     apiRoot,
-    imagePaths,
     allowedLabels,
     skipAnnotated: args.skipAnnotated,
     overwriteExisting: args.overwriteExisting,

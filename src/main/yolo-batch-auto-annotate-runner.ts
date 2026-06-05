@@ -3,6 +3,10 @@
  * Processes images in batches of 10 over a single persistent WebSocket session.
  */
 import {
+  collectTaskImageListing,
+  resolveTaskRootDir,
+} from "./task-image-paths"
+import {
   connectYoloBatchPredictWs,
   disconnectYoloBatchPredictWs,
   yoloBatchPredictImageViaWs,
@@ -25,9 +29,11 @@ const LABEL_MISMATCH_SAMPLE_LIMIT = 5
 
 export type YoloAutoAnnotateRunRequest = {
   jobId: string
+  globalConfigDir: string
+  projectId: string
+  taskId: string
   modelSlug: string
   apiRoot: string
-  imagePaths: string[]
   allowedLabels: string[]
   skipAnnotated?: boolean
   overwriteExisting?: boolean
@@ -91,19 +97,33 @@ export async function runYoloBatchAutoAnnotateInChild(
   },
 ): Promise<void> {
   const modelSlug = request.modelSlug.trim()
-  const imagePaths = request.imagePaths.map((p) => p.trim()).filter(Boolean)
-  const total = imagePaths.length
+  const projectId = request.projectId.trim()
+  const taskId = request.taskId.trim()
   const allowed = new Set(request.allowedLabels.map((l) => l.trim()).filter(Boolean))
   const wsUrl = apiRootToWsUrl(request.apiRoot.trim())
-  const batchCount = Math.ceil(total / YOLO_AUTO_ANNOTATE_BATCH_SIZE)
   const skipAnnotated = request.overwriteExisting ? false : request.skipAnnotated !== false
   const overwriteExisting = request.overwriteExisting === true
+
+  if (!projectId || !taskId) {
+    options.onState({
+      status: "failed",
+      done: 0,
+      total: 0,
+      currentFile: "",
+      message: "任务无效",
+      errorMessage: "项目或任务标识为空",
+      skippedAlreadyAnnotated: 0,
+      skippedLabelMismatch: 0,
+      summaryMessage: "",
+    })
+    return
+  }
 
   if (!modelSlug) {
     options.onState({
       status: "failed",
       done: 0,
-      total,
+      total: 0,
       currentFile: "",
       message: "模型标识为空",
       errorMessage: "模型标识为空",
@@ -117,7 +137,7 @@ export async function runYoloBatchAutoAnnotateInChild(
     options.onState({
       status: "failed",
       done: 0,
-      total,
+      total: 0,
       currentFile: "",
       message: "无可用类别标签",
       errorMessage: "项目尚未配置可用的普通类别标签（需与模型 data.yaml 中的类别名一致）",
@@ -127,7 +147,76 @@ export async function runYoloBatchAutoAnnotateInChild(
     })
     return
   }
+
+  let done = 0
+  let annotatedCount = 0
+  let skippedAlreadyAnnotated = 0
+  let skippedLabelMismatch = 0
+  let skippedNoDetection = 0
+  const labelMismatchSamples: string[] = []
+  let total = 0
+  let imagePaths: string[] = []
+
+  const emit = (patch: Partial<YoloAutoAnnotateRunState> & { total?: number }): void => {
+    if (typeof patch.total === "number") {
+      total = patch.total
+    }
+    options.onState({
+      status: patch.status ?? "running",
+      done: patch.done ?? done,
+      total,
+      currentFile: patch.currentFile ?? "",
+      message: patch.message ?? "",
+      errorMessage: patch.errorMessage ?? "",
+      skippedAlreadyAnnotated: patch.skippedAlreadyAnnotated ?? skippedAlreadyAnnotated,
+      skippedLabelMismatch: patch.skippedLabelMismatch ?? skippedLabelMismatch,
+      summaryMessage: patch.summaryMessage ?? "",
+    })
+  }
+
+  const patch = (patch: Partial<YoloAutoAnnotateRunState> & { total?: number }): void => {
+    emit(patch)
+  }
+
+  patch({ message: "读取任务图片列表…", total: 0 })
+
+  const resolved = resolveTaskRootDir(request.globalConfigDir, projectId, taskId)
+  if (resolved.errorMessage) {
+    options.onState({
+      status: "failed",
+      done: 0,
+      total: 0,
+      currentFile: "",
+      message: "无法定位任务目录",
+      errorMessage: resolved.errorMessage,
+      skippedAlreadyAnnotated: 0,
+      skippedLabelMismatch: 0,
+      summaryMessage: "",
+    })
+    return
+  }
+
+  const listing = collectTaskImageListing(resolved.taskRootDir)
+  imagePaths = listing.imagePaths
+  total = imagePaths.length
+  const batchCount = Math.ceil(total / YOLO_AUTO_ANNOTATE_BATCH_SIZE)
+
   if (total === 0) {
+    if (listing.nonImageFileCount > 0) {
+      options.onState({
+        status: "failed",
+        done: 0,
+        total: 0,
+        currentFile: "",
+        message: "无可用图片",
+        errorMessage:
+          "任务中没有支持的图片文件（支持 .jpg/.jpeg/.png/.bmp/.gif/.webp/.tif/.tiff）",
+        skippedAlreadyAnnotated: 0,
+        skippedLabelMismatch: 0,
+        summaryMessage: "",
+      })
+      return
+    }
     options.onState({
       status: "success",
       done: 0,
@@ -142,32 +231,7 @@ export async function runYoloBatchAutoAnnotateInChild(
     return
   }
 
-  let done = 0
-  let annotatedCount = 0
-  let skippedAlreadyAnnotated = 0
-  let skippedLabelMismatch = 0
-  let skippedNoDetection = 0
-  const labelMismatchSamples: string[] = []
-
-  const emit = (patch: Partial<YoloAutoAnnotateRunState>): void => {
-    options.onState({
-      status: patch.status ?? "running",
-      done: patch.done ?? done,
-      total,
-      currentFile: patch.currentFile ?? "",
-      message: patch.message ?? "",
-      errorMessage: patch.errorMessage ?? "",
-      skippedAlreadyAnnotated: patch.skippedAlreadyAnnotated ?? skippedAlreadyAnnotated,
-      skippedLabelMismatch: patch.skippedLabelMismatch ?? skippedLabelMismatch,
-      summaryMessage: patch.summaryMessage ?? "",
-    })
-  }
-
-  const patch = (patch: Partial<YoloAutoAnnotateRunState>): void => {
-    emit(patch)
-  }
-
-  patch({ message: "连接推理 WebSocket…" })
+  patch({ message: `共 ${total} 张图片，连接推理 WebSocket…`, total })
 
   try {
     await connectYoloBatchPredictWs(wsUrl, `yolo-batch-predict-${request.jobId}`, 30_000)

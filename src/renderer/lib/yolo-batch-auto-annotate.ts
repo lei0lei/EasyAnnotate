@@ -1,8 +1,8 @@
 import { ipc } from "@/gen/ipc"
+import { loadAppConfig } from "@/lib/app-config-storage"
 import { apiV1Root } from "@/lib/backend-http"
-import { countTaskSourceStats, listAllTaskFiles, type ProjectTag } from "@/lib/projects-api"
+import { countTaskSourceStats, type ProjectTag } from "@/lib/projects-api"
 import { updateTaskAnnotatedFileCount } from "@/lib/project-tasks-storage"
-import { isTaskImagePath } from "@/lib/task-file-upload"
 import { buildAllowedProjectLabelSet } from "@/lib/yolo-predict-to-annotation"
 import { ensureYoloBatchModelRunning, probeYoloBatchApiAvailable } from "@/lib/yolo-batch-api"
 
@@ -124,35 +124,6 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     return
   }
 
-  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "读取任务图片列表…" })
-  const fileResult = await listAllTaskFiles({ projectId, taskId })
-  if (fileResult.errorMessage) {
-    onProgress({
-      phase: "error",
-      done: 0,
-      total: 0,
-      errorMessage: fileResult.errorMessage,
-    })
-    return
-  }
-
-  const allWithPath = fileResult.files.filter((f) => f.filePath?.trim())
-  const imagePaths = allWithPath.filter((f) => isTaskImagePath(f.filePath)).map((f) => f.filePath.trim())
-  const skippedNonImage = allWithPath.length - imagePaths.length
-
-  if (imagePaths.length === 0) {
-    onProgress({
-      phase: allWithPath.length > 0 ? "error" : "done",
-      done: 0,
-      total: 0,
-      errorMessage:
-        allWithPath.length > 0
-          ? "任务中没有支持的图片文件（支持 .jpg/.jpeg/.png/.bmp/.gif/.webp/.tif/.tiff）"
-          : undefined,
-    })
-    return
-  }
-
   const modeHint = overwriteExisting
     ? "覆盖已有标注"
     : skipAnnotated
@@ -161,17 +132,17 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
   onProgress({
     phase: "running",
     done: 0,
-    total: imagePaths.length,
-    statusMessage:
-      skippedNonImage > 0
-        ? `已跳过 ${skippedNonImage} 个非图片文件，启动子进程（${modeHint}）…`
-        : `启动子进程自动标注（${modeHint}）…`,
+    total: 0,
+    statusMessage: `启动子进程自动标注（${modeHint}）…`,
   })
 
+  const globalConfigDir = loadAppConfig().storagePaths.globalConfigDir.trim()
   const started = await ipc.app.StartYoloBatchAutoAnnotateJob({
+    globalConfigDir,
+    projectId: projectId.trim(),
+    taskId: taskId.trim(),
     apiRoot: apiV1Root(),
     modelSlug: modelSlug.trim(),
-    imagePaths,
     allowedLabels: [...allowed],
     skipAnnotated,
     overwriteExisting,
@@ -180,7 +151,7 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     onProgress({
       phase: "error",
       done: 0,
-      total: imagePaths.length,
+      total: 0,
       errorMessage: started.errorMessage?.trim() || "无法启动自动标注任务",
     })
     return
@@ -189,23 +160,17 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
   const jobId = started.jobId.trim()
   const deadline = Date.now() + JOB_TIMEOUT_MS
 
-  const finishAndRefresh = async (progress: YoloAutoAnnotateProgress): Promise<void> => {
-    onProgress(progress)
-    if (progress.phase === "done" || progress.phase === "cancelled") {
-      await refreshTaskAnnotatedFileCount(projectId, taskId).catch(() => undefined)
-    }
-  }
-
   try {
     while (Date.now() < deadline) {
       if (signal?.aborted) {
         await ipc.app.CancelYoloBatchAutoAnnotateJob({ jobId })
-        await finishAndRefresh({
+        onProgress({
           phase: "cancelled",
           done: 0,
-          total: imagePaths.length,
+          total: 0,
           statusMessage: "已取消",
         })
+        await refreshTaskAnnotatedFileCount(projectId, taskId).catch(() => undefined)
         return
       }
 
@@ -232,7 +197,7 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     onProgress({
       phase: "error",
       done: 0,
-      total: imagePaths.length,
+      total: 0,
       errorMessage: `自动标注超时（超过 ${Math.round(JOB_TIMEOUT_MS / 3_600_000)} 小时）`,
     })
   } catch (e) {
@@ -240,7 +205,7 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     onProgress({
       phase: "error",
       done: 0,
-      total: imagePaths.length,
+      total: 0,
       errorMessage: e instanceof Error ? e.message : "自动标注异常退出",
     })
   }

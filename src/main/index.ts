@@ -36,6 +36,8 @@ import {
   ListProjectTasksResponse,
   SaveProjectTasksRequest,
   SaveProjectTasksResponse,
+  RemoveDeletedLabelsFromProjectAnnotationsRequest,
+  RemoveDeletedLabelsFromProjectAnnotationsResponse,
   GetProjectExportVersionsRequest,
   GetProjectExportVersionsResponse,
   SaveProjectExportVersionsRequest,
@@ -117,6 +119,7 @@ import {
 } from "./app-config-disk";
 import { validateProjectDirectory } from "./project-directory";
 import { protoProjectTagsToRecords, projectTagRecordsToProto } from "./project-tag-ipc";
+import { removeDeletedLabelsFromProjectAnnotations } from "./project-tag-annotation-cleanup";
 import {
   deleteProjectExportVersionsFile,
   readProjectExportVersionsJson,
@@ -2260,6 +2263,27 @@ ipc.registerService(AppService({
       return { errorMessage: error instanceof Error ? error.message : String(error) }
     }
   },
+  async RemoveDeletedLabelsFromProjectAnnotations(
+    request: RemoveDeletedLabelsFromProjectAnnotationsRequest,
+  ): Promise<RemoveDeletedLabelsFromProjectAnnotationsResponse> {
+    try {
+      const result = removeDeletedLabelsFromProjectAnnotations({
+        globalConfigDir: request.globalConfigDir ?? "",
+        projectId: request.projectId ?? "",
+        taskIds: request.taskIds ?? [],
+        deletedLabels: request.deletedLabels ?? [],
+      })
+      return {
+        errorMessage: result.errorMessage,
+        updatedFileCount: result.updatedFileCount,
+      }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        updatedFileCount: 0,
+      }
+    }
+  },
   async GetProjectTaskAnnotatedCounts(
     request: GetProjectTaskAnnotatedCountsRequest,
   ): Promise<GetProjectTaskAnnotatedCountsResponse> {
@@ -3294,9 +3318,11 @@ ipc.registerService(AppService({
   },
   async StartYoloBatchAutoAnnotateJob(request) {
     const started = startYoloAutoAnnotateJob({
+      globalConfigDir: request.globalConfigDir?.trim() ?? "",
+      projectId: request.projectId?.trim() ?? "",
+      taskId: request.taskId?.trim() ?? "",
       apiRoot: request.apiRoot?.trim() ?? "",
       modelSlug: request.modelSlug?.trim() ?? "",
-      imagePaths: request.imagePaths ?? [],
       allowedLabels: request.allowedLabels ?? [],
       skipAnnotated: request.skipAnnotated !== false,
       overwriteExisting: request.overwriteExisting === true,

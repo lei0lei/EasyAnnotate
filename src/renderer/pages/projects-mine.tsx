@@ -1,43 +1,13 @@
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { listProjects, readImageFile, type ProjectItem } from "@/lib/projects-api"
+import { loadImageObjectUrl, resolveProjectFirstImagePath } from "@/lib/auto-thumbnails"
+import { listProjects, type ProjectItem } from "@/lib/projects-api"
+import { loadTasks } from "@/lib/project-tasks-storage"
 import { cn } from "@/lib/utils"
 import { ArrowLeft, ArrowRight, Clock, FolderKanban } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 
 const PAGE_SIZE = 8
-const THUMBNAIL_PATHS_KEY = "easyannotate:project-thumbnail-paths"
-
-function guessImageMimeType(path: string): string {
-  const normalized = path.trim().toLowerCase()
-  if (normalized.endsWith(".png")) return "image/png"
-  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg")) return "image/jpeg"
-  if (normalized.endsWith(".webp")) return "image/webp"
-  if (normalized.endsWith(".bmp")) return "image/bmp"
-  if (normalized.endsWith(".gif")) return "image/gif"
-  if (normalized.endsWith(".tif") || normalized.endsWith(".tiff")) return "image/tiff"
-  return "application/octet-stream"
-}
-
-function loadSavedThumbnailPaths(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(THUMBNAIL_PATHS_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== "object") return {}
-    const next: Record<string, string> = {}
-    for (const [projectId, path] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof path !== "string") continue
-      const trimmed = path.trim()
-      if (!trimmed) continue
-      next[projectId] = trimmed
-    }
-    return next
-  } catch {
-    return {}
-  }
-}
 
 function formatUpdated(iso: string): string {
   try {
@@ -58,13 +28,9 @@ function formatUpdated(iso: string): string {
 export default function ProjectsMinePage() {
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [projectCoverById, setProjectCoverById] = useState<Record<string, string>>({})
-  const [manualThumbnailPathByProjectId, setManualThumbnailPathByProjectId] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(0)
   const coverByIdRef = useRef<Record<string, string>>({})
-  const [editingThumbnailProjectId, setEditingThumbnailProjectId] = useState<string | null>(null)
-  const [editingThumbnailPath, setEditingThumbnailPath] = useState("")
-  const [thumbnailDialogError, setThumbnailDialogError] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -95,20 +61,10 @@ export default function ProjectsMinePage() {
   }, [projectCoverById])
 
   useEffect(() => {
-    setManualThumbnailPathByProjectId(loadSavedThumbnailPaths())
-  }, [])
-
-  useEffect(() => {
     let alive = true
     let pendingUrls: string[] = []
 
-    const targetPaths: Record<string, string> = {}
-    for (const project of pagedProjects) {
-      const p = (manualThumbnailPathByProjectId[project.id] || "").trim()
-      if (p) targetPaths[project.id] = p
-    }
-
-    if (Object.keys(targetPaths).length === 0) {
+    if (pagedProjects.length === 0) {
       setProjectCoverById((prev) => {
         for (const url of Object.values(prev)) URL.revokeObjectURL(url)
         return {}
@@ -120,21 +76,15 @@ export default function ProjectsMinePage() {
 
     const loadProjectCovers = async () => {
       const next: Record<string, string> = {}
-      // 串行加载当前页手动路径缩略图，避免并发读取导致压力骤增。
-      for (const [projectId, imagePath] of Object.entries(targetPaths)) {
+      for (const project of pagedProjects) {
         if (!alive) break
-        try {
-          const imageResult = await readImageFile(imagePath)
-          if (imageResult.errorMessage || !imageResult.content || imageResult.content.length === 0) continue
-
-          const bytes = imageResult.content
-          const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-          const objectUrl = URL.createObjectURL(new Blob([buffer], { type: guessImageMimeType(imagePath) }))
-          next[projectId] = objectUrl
-          pendingUrls.push(objectUrl)
-        } catch {
-          // ignore invalid manual path
-        }
+        const tasks = await loadTasks(project.id)
+        const imagePath = await resolveProjectFirstImagePath(project.id, tasks)
+        if (!imagePath) continue
+        const objectUrl = await loadImageObjectUrl(imagePath)
+        if (!objectUrl) continue
+        next[project.id] = objectUrl
+        pendingUrls.push(objectUrl)
       }
 
       if (!alive) {
@@ -155,7 +105,7 @@ export default function ProjectsMinePage() {
       for (const url of pendingUrls) URL.revokeObjectURL(url)
       pendingUrls = []
     }
-  }, [pagedProjects, manualThumbnailPathByProjectId])
+  }, [pagedProjects])
 
   useEffect(() => {
     return () => {
@@ -163,38 +113,6 @@ export default function ProjectsMinePage() {
       for (const url of Object.values(current)) URL.revokeObjectURL(url)
     }
   }, [])
-
-  function openThumbnailPathDialog(projectId: string) {
-    setEditingThumbnailProjectId(projectId)
-    setEditingThumbnailPath(manualThumbnailPathByProjectId[projectId] || "")
-    setThumbnailDialogError(null)
-  }
-
-  function closeThumbnailPathDialog() {
-    setEditingThumbnailProjectId(null)
-    setEditingThumbnailPath("")
-    setThumbnailDialogError(null)
-  }
-
-  function saveThumbnailPath() {
-    const projectId = editingThumbnailProjectId
-    if (!projectId) return
-    const nextPath = editingThumbnailPath.trim()
-    const nextMap = { ...manualThumbnailPathByProjectId }
-    if (nextPath) {
-      nextMap[projectId] = nextPath
-    } else {
-      delete nextMap[projectId]
-    }
-    setManualThumbnailPathByProjectId(nextMap)
-    try {
-      localStorage.setItem(THUMBNAIL_PATHS_KEY, JSON.stringify(nextMap))
-    } catch {
-      setThumbnailDialogError("保存失败：无法写入本地配置。")
-      return
-    }
-    closeThumbnailPathDialog()
-  }
 
   return (
     <div className="mx-auto flex h-[calc(100vh-7rem)] w-full max-w-6xl flex-col gap-6 px-6 pt-8 pb-0">
@@ -206,7 +124,7 @@ export default function ProjectsMinePage() {
         </Button>
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">我的项目</h1>
-          <p className="mt-1 text-sm text-muted-foreground">已创建项目列表，点击进入项目页</p>
+          <p className="mt-1 text-sm text-muted-foreground">已创建项目列表，点击进入项目。</p>
         </div>
       </div>
 
@@ -221,8 +139,8 @@ export default function ProjectsMinePage() {
           还没有项目，先去创建一个吧。
         </div>
       ) : (
-        <div className="relative min-h-0 flex-1 pb-14">
-          <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="relative min-h-0 flex-1 pb-16">
+          <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {pagedProjects.map((p) => (
               <li key={p.id}>
                 <Link
@@ -240,15 +158,7 @@ export default function ProjectsMinePage() {
                       </div>
                     </div>
                     <div className="mt-2 flex min-h-0 flex-1 flex-col">
-                      <button
-                        type="button"
-                        className="flex min-h-0 flex-1 flex-col rounded-md border-2 border-border bg-muted/20 text-left transition-colors hover:bg-accent/20"
-                        title="点击设置缩略图路径"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          openThumbnailPathDialog(p.id)
-                        }}
-                      >
+                      <div className="flex min-h-0 flex-1 flex-col rounded-md border-2 border-border bg-muted/20">
                         <div className="relative min-h-0 flex-1 overflow-hidden rounded-md">
                           {projectCoverById[p.id] ? (
                             <img
@@ -260,7 +170,7 @@ export default function ProjectsMinePage() {
                             />
                           ) : null}
                         </div>
-                      </button>
+                      </div>
                     </div>
                     <div className="mt-2 text-[11px] text-muted-foreground">
                       <p className="inline-flex items-center gap-1">
@@ -310,34 +220,6 @@ export default function ProjectsMinePage() {
           </div>
         </div>
       )}
-      {editingThumbnailProjectId ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <div className="w-full max-w-lg rounded-lg border-2 border-border bg-card p-4">
-            <h2 className="text-base font-medium text-foreground">设置项目缩略图路径</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              输入本地图片完整路径（例如：D:\images\cover.jpg）。留空后保存可清除缩略图。
-            </p>
-            <div className="mt-3">
-              <Input
-                value={editingThumbnailPath}
-                onChange={(e) => setEditingThumbnailPath(e.target.value)}
-                placeholder="输入图片路径"
-                spellCheck={false}
-                autoFocus
-              />
-            </div>
-            {thumbnailDialogError ? <p className="mt-2 text-xs text-destructive">{thumbnailDialogError}</p> : null}
-            <div className="mt-4 flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={closeThumbnailPathDialog}>
-                取消
-              </Button>
-              <Button type="button" onClick={saveThumbnailPath}>
-                保存
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
