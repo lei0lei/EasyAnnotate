@@ -1,9 +1,10 @@
-"""WebSocket YOLO training uploads (dataset zip chunks, base .pt)."""
+"""WebSocket YOLO training uploads (dataset zip chunks, base .pt) and monitor/download."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from app.train import yolo_chunk_transfer
+from app.train import yolo_runner
 from app.train import yolo_workspace
 from app.ws.connection import WsConnection
 from app.ws.protocol_helpers import ws_reply_error as _reply_error
@@ -69,7 +71,7 @@ async def handle_yolo_training_text(conn: WsConnection, msg_type: str, request_i
         return True
 
     if msg_type == "training.yolo.dataset.upload.chunk.begin":
-        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_sam_prepare is not None:
+        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_yolo_batch_chunk is not None or conn.pending_yolo_batch_predict is not None or conn.pending_sam_prepare is not None:
             await _reply_error(conn, request_id, "binary upload already in progress", code="upload_busy")
             return True
         job_slug = str(payload.get("job_slug", "")).strip()
@@ -106,7 +108,7 @@ async def handle_yolo_training_text(conn: WsConnection, msg_type: str, request_i
         return True
 
     if msg_type == "training.yolo.base_model.upload.begin":
-        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_sam_prepare is not None:
+        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_yolo_batch_chunk is not None or conn.pending_yolo_batch_predict is not None or conn.pending_sam_prepare is not None:
             await _reply_error(conn, request_id, "binary upload already in progress", code="upload_busy")
             return True
         job_slug = str(payload.get("job_slug", "")).strip()
@@ -133,6 +135,164 @@ async def handle_yolo_training_text(conn: WsConnection, msg_type: str, request_i
             byte_length=byte_length,
         )
         await _reply_ok(conn, rid, "training.yolo.base_model.upload.ready", {"byte_length": byte_length})
+        return True
+
+    if msg_type == "training.yolo.status.get":
+        rid = request_id or uuid.uuid4().hex
+        job_slug = str(payload.get("job_slug", "")).strip()
+        if not job_slug:
+            await _reply_error(conn, rid, "missing job_slug", code="invalid_request")
+            return True
+        try:
+            job = await asyncio.to_thread(yolo_runner.get_job, job_slug)
+            ws_snap = await asyncio.to_thread(yolo_workspace.workspace_snapshot, job_slug)
+            await _reply_ok(conn, rid, "training.yolo.status.ok", {"job": job, "workspace": ws_snap})
+        except FileNotFoundError as e:
+            await _reply_error(conn, rid, str(e), code="not_found")
+        return True
+
+    if msg_type == "training.yolo.logs.get":
+        rid = request_id or uuid.uuid4().hex
+        job_slug = str(payload.get("job_slug", "")).strip()
+        if not job_slug:
+            await _reply_error(conn, rid, "missing job_slug", code="invalid_request")
+            return True
+        try:
+            text = await asyncio.to_thread(yolo_workspace.read_training_logs, job_slug)
+            await _reply_ok(conn, rid, "training.yolo.logs.ok", {"job_slug": job_slug, "logs": text})
+        except FileNotFoundError as e:
+            await _reply_error(conn, rid, str(e), code="not_found")
+        return True
+
+    if msg_type == "training.yolo.results.list":
+        rid = request_id or uuid.uuid4().hex
+        job_slug = str(payload.get("job_slug", "")).strip()
+        if not job_slug:
+            await _reply_error(conn, rid, "missing job_slug", code="invalid_request")
+            return True
+        try:
+            result = await asyncio.to_thread(yolo_workspace.list_training_result_images, job_slug)
+            await _reply_ok(conn, rid, "training.yolo.results.ok", result)
+        except FileNotFoundError as e:
+            await _reply_error(conn, rid, str(e), code="not_found")
+        return True
+
+    if msg_type == "training.yolo.results.image.begin":
+        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_yolo_batch_chunk is not None or conn.pending_yolo_batch_predict is not None or conn.pending_sam_prepare is not None:
+            await _reply_error(conn, request_id, "binary transfer already in progress", code="transfer_busy")
+            return True
+        job_slug = str(payload.get("job_slug", "")).strip()
+        rel_path = str(payload.get("path", "")).strip()
+        if not job_slug or not rel_path:
+            await _reply_error(conn, request_id, "missing job_slug or path", code="invalid_request")
+            return True
+        rid = request_id or uuid.uuid4().hex
+        try:
+            file_path = await asyncio.to_thread(yolo_workspace.resolve_training_result_image, job_slug, rel_path)
+            data = await asyncio.to_thread(file_path.read_bytes)
+            media_type, _ = mimetypes.guess_type(str(file_path))
+            await _reply_ok(
+                conn,
+                rid,
+                "training.yolo.results.image.ready",
+                {
+                    "byte_length": len(data),
+                    "content_type": media_type or "application/octet-stream",
+                },
+            )
+            await conn.websocket.send_bytes(data)
+            await _reply_ok(conn, rid, "training.yolo.results.image.ok", {"byte_length": len(data)})
+        except ValueError as e:
+            await _reply_error(conn, rid, str(e), code="invalid_request")
+        except FileNotFoundError as e:
+            await _reply_error(conn, rid, str(e), code="not_found")
+        return True
+
+    if msg_type == "training.yolo.models.list":
+        rid = request_id or uuid.uuid4().hex
+        job_slug = str(payload.get("job_slug", "")).strip()
+        if not job_slug:
+            await _reply_error(conn, rid, "missing job_slug", code="invalid_request")
+            return True
+        try:
+            result = await asyncio.to_thread(yolo_workspace.list_training_model_files, job_slug)
+            await _reply_ok(conn, rid, "training.yolo.models.ok", result)
+        except FileNotFoundError as e:
+            await _reply_error(conn, rid, str(e), code="not_found")
+        return True
+
+    if msg_type == "training.yolo.model.download.info":
+        rid = request_id or uuid.uuid4().hex
+        job_slug = str(payload.get("job_slug", "")).strip()
+        rel_path = str(payload.get("path", "")).strip()
+        if not job_slug or not rel_path:
+            await _reply_error(conn, rid, "missing job_slug or path", code="invalid_request")
+            return True
+        try:
+            info = await asyncio.to_thread(yolo_chunk_transfer.model_download_info, job_slug, rel_path)
+            await _reply_ok(conn, rid, "training.yolo.model.download.info.ok", info)
+        except ValueError as e:
+            await _reply_error(conn, rid, str(e), code="invalid_request")
+        except FileNotFoundError as e:
+            await _reply_error(conn, rid, str(e), code="not_found")
+        return True
+
+    if msg_type == "training.yolo.model.download.chunk.begin":
+        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_yolo_batch_chunk is not None or conn.pending_yolo_batch_predict is not None or conn.pending_sam_prepare is not None:
+            await _reply_error(conn, request_id, "binary transfer already in progress", code="transfer_busy")
+            return True
+        job_slug = str(payload.get("job_slug", "")).strip()
+        rel_path = str(payload.get("path", "")).strip()
+        try:
+            chunk_index = int(payload.get("chunk_index", -1))
+            byte_length = int(payload.get("byte_length", 0))
+        except (TypeError, ValueError):
+            chunk_index = -1
+            byte_length = 0
+        if not job_slug or not rel_path or chunk_index < 0 or byte_length <= 0:
+            await _reply_error(conn, request_id, "invalid model download chunk payload", code="invalid_request")
+            return True
+        rid = request_id or uuid.uuid4().hex
+        try:
+            info = await asyncio.to_thread(yolo_chunk_transfer.model_download_info, job_slug, rel_path)
+            chunk_size = int(info.get("chunk_size") or yolo_chunk_transfer.CHUNK_SIZE)
+            total_size = int(info.get("total_size") or 0)
+            start = chunk_index * chunk_size
+            if start >= total_size:
+                await _reply_error(conn, rid, "chunk index out of range", code="invalid_request")
+                return True
+            end = min(start + byte_length - 1, total_size - 1)
+            expected_len = end - start + 1
+            if expected_len != byte_length:
+                await _reply_error(conn, rid, "byte_length mismatch for chunk", code="invalid_request")
+                return True
+            data, _ = await asyncio.to_thread(
+                yolo_chunk_transfer.read_model_byte_range,
+                job_slug,
+                rel_path,
+                start,
+                end,
+            )
+            if len(data) != byte_length:
+                await _reply_error(conn, rid, "chunk read size mismatch", code="internal_error")
+                return True
+            await _reply_ok(
+                conn,
+                rid,
+                "training.yolo.model.download.chunk.ready",
+                {"byte_length": len(data), "chunk_index": chunk_index},
+            )
+            await conn.websocket.send_bytes(data)
+            await _reply_ok(
+                conn,
+                rid,
+                "training.yolo.model.download.chunk.ok",
+                {"chunk_index": chunk_index, "byte_length": len(data)},
+            )
+        except ValueError as e:
+            await _reply_error(conn, rid, str(e), code="invalid_request")
+        except FileNotFoundError as e:
+            await _reply_error(conn, rid, str(e), code="not_found")
         return True
 
     return False

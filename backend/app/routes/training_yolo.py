@@ -4,13 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import mimetypes
-
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from app.train import yolo_chunk_transfer, yolo_runner, yolo_workspace
+from app.train import yolo_runner, yolo_workspace
 
 router = APIRouter()
 
@@ -70,109 +67,6 @@ def history() -> dict[str, Any]:
     return {"items": yolo_workspace.list_training_history()}
 
 
-@router.get("/history/{job_slug}/results")
-def history_results(job_slug: str) -> dict[str, Any]:
-    try:
-        return yolo_workspace.list_training_result_images(job_slug)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-
-@router.get("/history/{job_slug}/results/image")
-def history_result_image(job_slug: str, path: str = Query(..., description="相对 runs/ 的图片路径")) -> FileResponse:
-    try:
-        file_path = yolo_workspace.resolve_training_result_image(job_slug, path)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    media_type, _ = mimetypes.guess_type(str(file_path))
-    return FileResponse(
-        path=str(file_path),
-        media_type=media_type or "application/octet-stream",
-        filename=file_path.name,
-        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
-    )
-
-
-@router.get("/history/{job_slug}/models")
-def history_models(job_slug: str) -> dict[str, Any]:
-    try:
-        return yolo_workspace.list_training_model_files(job_slug)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-
-@router.get("/history/{job_slug}/models/download-info")
-def history_model_download_info(
-    job_slug: str, path: str = Query(..., description="相对训练任务目录的模型路径")
-) -> dict[str, Any]:
-    try:
-        return yolo_chunk_transfer.model_download_info(job_slug, path)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-
-@router.get("/history/{job_slug}/models/file", response_model=None)
-def history_model_file(
-    request: Request,
-    job_slug: str,
-    path: str = Query(..., description="相对训练任务目录的模型路径"),
-):
-    try:
-        file_path = yolo_workspace.resolve_training_model_file(job_slug, path)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-    file_size = file_path.stat().st_size
-    media_type, _ = mimetypes.guess_type(str(file_path))
-    common_headers = {
-        "Cache-Control": "no-store, max-age=0",
-        "Pragma": "no-cache",
-        "Accept-Ranges": "bytes",
-    }
-
-    range_header = request.headers.get("range")
-    parsed = (
-        yolo_chunk_transfer.parse_range_header(range_header, file_size)
-        if range_header and file_size > 0
-        else None
-    )
-    if parsed is not None:
-        start, end = parsed
-        data, _ = yolo_chunk_transfer.read_model_byte_range(job_slug, path, start, end)
-        return Response(
-            content=data,
-            status_code=206,
-            media_type=media_type or "application/octet-stream",
-            headers={
-                **common_headers,
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Content-Length": str(len(data)),
-            },
-        )
-
-    return FileResponse(
-        path=str(file_path),
-        media_type=media_type or "application/octet-stream",
-        filename=file_path.name,
-        headers=common_headers,
-    )
-
-
-@router.get("/history/{job_slug}/logs")
-def history_logs(job_slug: str) -> dict[str, Any]:
-    try:
-        text = yolo_workspace.read_training_logs(job_slug)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    return {"job_slug": job_slug, "logs": text}
-
-
 @router.delete("/history/{job_slug}")
 def delete_history_job(job_slug: str) -> dict[str, Any]:
     try:
@@ -207,17 +101,6 @@ def devices() -> dict[str, Any]:
         "devices": yolo_runner.list_devices(),
         "environment": yolo_runner.cuda_device_environment(),
     }
-
-
-@router.get("/status")
-def status(job_slug: str = Query(...)) -> dict[str, Any]:
-    slug = _require_slug(job_slug)
-    job = yolo_runner.get_job(slug)
-    try:
-        ws = yolo_workspace.workspace_snapshot(slug)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    return {"job": job, "workspace": ws}
 
 
 @router.post("/dataset/unpack")

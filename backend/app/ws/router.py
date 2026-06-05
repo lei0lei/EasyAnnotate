@@ -12,6 +12,7 @@ from app.sam_session.api_common import validate_client_id
 from app.ws.connection import WsConnection
 from app.ws.protocol_helpers import ws_reply_error, ws_reply_ok
 from app.ws.sam_handler import handle_sam_binary, handle_sam_text, on_sam_disconnect
+from app.ws.yolo_batch_handler import handle_yolo_batch_binary, handle_yolo_batch_text
 from app.ws.yolo_training_handler import handle_yolo_training_binary, handle_yolo_training_text
 
 _log = logging.getLogger(__name__)
@@ -57,11 +58,15 @@ async def _handle_text_message(conn: WsConnection, raw: str) -> None:
         return
     if await handle_yolo_training_text(conn, msg_type, request_id, payload):
         return
+    if await handle_yolo_batch_text(conn, msg_type, request_id, payload):
+        return
 
     await ws_reply_error(conn, request_id, f"unknown type: {msg_type}", code="unknown_type")
 
 
 async def _handle_binary_message(conn: WsConnection, data: bytes) -> None:
+    if await handle_yolo_batch_binary(conn, data):
+        return
     if await handle_yolo_training_binary(conn, data):
         return
     if await handle_sam_binary(conn, data):

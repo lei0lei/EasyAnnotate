@@ -10,6 +10,10 @@ import {
   type YoloBatchPredictResult,
 } from "@/lib/yolo-predict-to-annotation"
 import { ensureYoloBatchModelRunning, predictYoloBatchImage, probeYoloBatchApiAvailable } from "@/lib/yolo-batch-api"
+import {
+  connectYoloBatchPredictWs,
+  disconnectYoloBatchPredictWs,
+} from "@/lib/backend-yolo-batch-predict-ws"
 import { normalizeDocPointsToInt } from "@/pages/project-task-detail/utils"
 
 export type YoloAutoAnnotatePhase = "idle" | "running" | "done" | "error" | "cancelled"
@@ -84,135 +88,150 @@ export async function runYoloBatchAutoAnnotate(params: RunYoloBatchAutoAnnotateP
     return
   }
 
-  const allowed = buildAllowedProjectLabelSet(projectTags)
-  if (allowed.size === 0) {
+  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "连接推理 WebSocket…" })
+  try {
+    await connectYoloBatchPredictWs()
+  } catch (e) {
     onProgress({
       phase: "error",
       done: 0,
       total: 0,
-      errorMessage: "项目尚未配置可用的普通类别标签（需与模型 data.yaml 中的类别名一致）",
+      errorMessage: e instanceof Error ? e.message : "无法连接推理 WebSocket",
     })
     return
   }
 
-  onProgress({ phase: "running", done: 0, total: 0, statusMessage: "读取任务图片列表…" })
-  const fileResult = await listAllTaskFiles({ projectId, taskId })
-  if (fileResult.errorMessage) {
-    onProgress({
-      phase: "error",
-      done: 0,
-      total: 0,
-      errorMessage: fileResult.errorMessage,
-    })
-    return
-  }
-
-  const files = fileResult.files.filter((f) => f.filePath?.trim())
-  const total = files.length
-  if (total === 0) {
-    onProgress({ phase: "done", done: 0, total: 0 })
-    return
-  }
-
-  onProgress({ phase: "running", done: 0, total })
-
-  for (let i = 0; i < files.length; i++) {
-    if (signal?.aborted) {
-      onProgress({ phase: "cancelled", done: i, total })
-      return
-    }
-
-    const imagePath = files[i]!.filePath.trim()
-    onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "推理中…" })
-
-    const info = await getImageFileInfo(imagePath)
-    if (!info.exists) {
+  try {
+    const allowed = buildAllowedProjectLabelSet(projectTags)
+    if (allowed.size === 0) {
       onProgress({
         phase: "error",
-        done: i,
-        total,
-        errorMessage: info.errorMessage || `图片不存在或无法访问：${imagePath}`,
+        done: 0,
+        total: 0,
+        errorMessage: "项目尚未配置可用的普通类别标签（需与模型 data.yaml 中的类别名一致）",
       })
       return
     }
 
-    let predict: YoloBatchPredictResult
-    try {
-      predict = await predictYoloBatchImage(modelSlug, imagePath)
-    } catch (e) {
+    onProgress({ phase: "running", done: 0, total: 0, statusMessage: "读取任务图片列表…" })
+    const fileResult = await listAllTaskFiles({ projectId, taskId })
+    if (fileResult.errorMessage) {
       onProgress({
         phase: "error",
-        done: i,
-        total,
-        errorMessage: e instanceof Error ? e.message : "推理失败",
+        done: 0,
+        total: 0,
+        errorMessage: fileResult.errorMessage,
       })
       return
     }
 
-    const fromPredict = dimensionsFromPredict(predict)
-    // 坐标基准统一：优先使用 YOLO 推理返回的原图尺寸（orig_shape）。
-    // 这样可避免“预测坐标按 A 尺寸、文档按 B 尺寸写入”导致的加载期二次缩放偏移。
-    const imageWidth = fromPredict.width > 0 ? fromPredict.width : info.width
-    const imageHeight = fromPredict.height > 0 ? fromPredict.height : info.height
-    if (imageWidth <= 0 || imageHeight <= 0) {
-      onProgress({
-        phase: "error",
-        done: i,
-        total,
-        errorMessage: `无法确定图片尺寸：${imagePath}`,
-      })
+    const files = fileResult.files.filter((f) => f.filePath?.trim())
+    const total = files.length
+    if (total === 0) {
+      onProgress({ phase: "done", done: 0, total: 0 })
       return
     }
 
-    const newShapes = normalizeDocPointsToInt({
-      version: "2.5.4",
-      flags: {},
-      shapes: yoloPredictResultToShapes(predict, allowed, imageWidth, imageHeight),
-      description: null,
-      imagePath,
-      imageData: null,
-      imageHeight,
-      imageWidth,
-    }).shapes
+    onProgress({ phase: "running", done: 0, total })
 
-    if (newShapes.length <= 0) {
-      const detections = predict.results?.[0]?.detections ?? []
-      if (detections.length > 0) {
+    for (let i = 0; i < files.length; i++) {
+      if (signal?.aborted) {
+        onProgress({ phase: "cancelled", done: i, total })
+        return
+      }
+
+      const imagePath = files[i]!.filePath.trim()
+      onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "推理中…" })
+
+      const info = await getImageFileInfo(imagePath)
+      if (!info.exists) {
         onProgress({
           phase: "error",
           done: i,
           total,
-          errorMessage:
-            `该图片有模型检测结果，但全部未转为标注（常见原因：类别名映射失败）。` +
-            ` 调试信息：${detectionDebugSummary(predict)}`,
+          errorMessage: info.errorMessage || `图片不存在或无法访问：${imagePath}`,
         })
         return
       }
-      onProgress({
-        phase: "running",
-        done: i + 1,
-        total,
-        currentFile: imagePath,
-        statusMessage: "未检测到目标，已跳过",
+
+      let predict: YoloBatchPredictResult
+      try {
+        predict = await predictYoloBatchImage(modelSlug, imagePath)
+      } catch (e) {
+        onProgress({
+          phase: "error",
+          done: i,
+          total,
+          errorMessage: e instanceof Error ? e.message : "推理失败",
+        })
+        return
+      }
+
+      const fromPredict = dimensionsFromPredict(predict)
+      const imageWidth = fromPredict.width > 0 ? fromPredict.width : info.width
+      const imageHeight = fromPredict.height > 0 ? fromPredict.height : info.height
+      if (imageWidth <= 0 || imageHeight <= 0) {
+        onProgress({
+          phase: "error",
+          done: i,
+          total,
+          errorMessage: `无法确定图片尺寸：${imagePath}`,
+        })
+        return
+      }
+
+      const newShapes = normalizeDocPointsToInt({
+        version: "2.5.4",
+        flags: {},
+        shapes: yoloPredictResultToShapes(predict, allowed, imageWidth, imageHeight),
+        description: null,
+        imagePath,
+        imageData: null,
+        imageHeight,
+        imageWidth,
+      }).shapes
+
+      if (newShapes.length <= 0) {
+        const detections = predict.results?.[0]?.detections ?? []
+        if (detections.length > 0) {
+          onProgress({
+            phase: "error",
+            done: i,
+            total,
+            errorMessage:
+              `该图片有模型检测结果，但全部未转为标注（常见原因：类别名映射失败）。` +
+              ` 调试信息：${detectionDebugSummary(predict)}`,
+          })
+          return
+        }
+        onProgress({
+          phase: "running",
+          done: i + 1,
+          total,
+          currentFile: imagePath,
+          statusMessage: "未检测到目标，已跳过",
+        })
+        continue
+      }
+
+      onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "写入标注…" })
+
+      const write = await appendImageAnnotationShapes({
+        imagePath,
+        shapesJson: JSON.stringify(newShapes),
+        imageWidth,
+        imageHeight,
       })
-      continue
+      if (write.errorMessage) {
+        onProgress({ phase: "error", done: i, total, errorMessage: write.errorMessage })
+        return
+      }
+
+      onProgress({ phase: "running", done: i + 1, total, currentFile: imagePath })
     }
 
-    onProgress({ phase: "running", done: i, total, currentFile: imagePath, statusMessage: "写入标注…" })
-
-    const write = await appendImageAnnotationShapes({
-      imagePath,
-      shapesJson: JSON.stringify(newShapes),
-      imageWidth,
-      imageHeight,
-    })
-    if (write.errorMessage) {
-      onProgress({ phase: "error", done: i, total, errorMessage: write.errorMessage })
-      return
-    }
-
-    onProgress({ phase: "running", done: i + 1, total, currentFile: imagePath })
+    onProgress({ phase: "done", done: total, total })
+  } finally {
+    await disconnectYoloBatchPredictWs()
   }
-
-  onProgress({ phase: "done", done: total, total })
 }

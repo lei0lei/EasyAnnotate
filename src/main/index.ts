@@ -130,6 +130,18 @@ import {
   startYoloDatasetZipUploadFromPath,
 } from "./yolo-dataset-upload";
 import {
+  getYoloBatchFileUploadJob,
+  getYoloBatchWeightsUploadJob,
+  startYoloBatchFileUploadFromPath,
+  startYoloBatchWeightsUploadFromPath,
+} from "./yolo-batch-file-upload";
+import {
+  connectYoloBatchPredictWs,
+  disconnectYoloBatchPredictWs,
+  isYoloBatchPredictWsConnected,
+  yoloBatchPredictImageViaWs,
+} from "./backend-yolo-batch-predict-ws";
+import {
   apiRootToWsUrl,
   uploadYoloBaseModelViaWs,
 } from "./backend-yolo-training-ws";
@@ -148,6 +160,14 @@ import {
   samWsRelease,
   samWsSendJson,
 } from "./backend-sam-ws";
+import {
+  connectYoloTrainingMonitorWs,
+  disconnectYoloTrainingMonitorWs,
+  isYoloTrainingMonitorWsConnected,
+  yoloMonitorWsDownloadModelToFile,
+  yoloMonitorWsFetchResultImage,
+  yoloMonitorWsSendJson,
+} from "./backend-yolo-training-monitor-ws";
 import {
   listAnnotatedTaskImportJobsAsExportJobsForIpc,
   startAnnotatedTaskImportJob,
@@ -339,11 +359,11 @@ function pruneYoloModelDownloadJobs(): void {
   }
 }
 
-function startHttpModelDownloadJob(downloadId: string, url: string, targetPath: string): void {
+function startWsModelDownloadJob(downloadId: string, jobSlug: string, filePath: string, targetPath: string): void {
   _yoloModelDownloadJobs.set(downloadId, { status: "pending", savedPath: "", errorMessage: "" })
   void (async () => {
     try {
-      await downloadUrlToFile(url, targetPath)
+      await yoloMonitorWsDownloadModelToFile({ jobSlug, path: filePath, targetPath })
       _yoloModelDownloadJobs.set(downloadId, {
         status: "success",
         savedPath: targetPath,
@@ -2864,6 +2884,67 @@ ipc.registerService(AppService({
       }
     }
   },
+  async ConnectBackendYoloMonitorWs(request) {
+    try {
+      await connectYoloTrainingMonitorWs(request.url || "", request.clientId || "")
+      return { ok: true, errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async DisconnectBackendYoloMonitorWs(_request) {
+    await disconnectYoloTrainingMonitorWs()
+    return { ok: true }
+  },
+  async IsBackendYoloMonitorWsConnected(_request) {
+    return { connected: isYoloTrainingMonitorWsConnected() }
+  },
+  async YoloMonitorWsSendJson(request) {
+    try {
+      const parsed = JSON.parse(request.jsonText || "{}") as { type?: string; payload?: Record<string, unknown> }
+      const msgType = (parsed.type || "").trim()
+      if (!msgType) {
+        return { ok: false, responseJson: "", errorMessage: "missing type" }
+      }
+      const payload = await yoloMonitorWsSendJson({
+        type: msgType,
+        payload: parsed.payload ?? {},
+        timeoutMs: request.timeoutMs > 0 ? request.timeoutMs : undefined,
+      })
+      return { ok: true, responseJson: JSON.stringify(payload), errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        responseJson: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async YoloMonitorWsFetchResultImage(request) {
+    try {
+      const result = await yoloMonitorWsFetchResultImage({
+        jobSlug: request.jobSlug || "",
+        path: request.path || "",
+        timeoutMs: request.timeoutMs > 0 ? request.timeoutMs : undefined,
+      })
+      return {
+        ok: true,
+        body: result.bytes,
+        contentType: result.contentType,
+        errorMessage: "",
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        body: Buffer.alloc(0),
+        contentType: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
   async StartLocalBackend(request) {
     return await startEmbeddedPythonBackend(request.backendDirectory)
   },
@@ -2879,12 +2960,16 @@ ipc.registerService(AppService({
   async DownloadYoloTrainingModel(
     request: DownloadYoloTrainingModelRequest,
   ): Promise<DownloadYoloTrainingModelResponse> {
-    const url = (request.downloadUrl || "").trim()
+    const jobSlug = (request.jobSlug || "").trim()
+    const filePath = (request.filePath || "").trim()
     const fileName = sanitizeModelDownloadFileName(request.suggestedFileName || "")
 
     try {
-      if (!url) {
-        return { canceled: true, savedPath: "", errorMessage: "下载地址为空。", downloadId: "" }
+      if (!jobSlug || !filePath) {
+        return { canceled: true, savedPath: "", errorMessage: "缺少 job_slug 或 file_path。", downloadId: "" }
+      }
+      if (!isYoloTrainingMonitorWsConnected()) {
+        return { canceled: true, savedPath: "", errorMessage: "YOLO 监控 WebSocket 未连接。", downloadId: "" }
       }
 
       pruneYoloModelDownloadJobs()
@@ -2907,7 +2992,7 @@ ipc.registerService(AppService({
 
       const targetPath = buildUniqueFilePath(dialogResult.paths[0], fileName)
       const downloadId = randomUUID()
-      startHttpModelDownloadJob(downloadId, url, targetPath)
+      startWsModelDownloadJob(downloadId, jobSlug, filePath, targetPath)
       return { canceled: false, savedPath: "", errorMessage: "", downloadId }
     } catch (error) {
       return {
@@ -3085,6 +3170,113 @@ ipc.registerService(AppService({
         task,
       })
       return { ok: true, responseJson: JSON.stringify(result), errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        responseJson: "",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async StartYoloBatchFileUpload(request) {
+    const globalConfigDir = request.globalConfigDir?.trim() ?? ""
+    const modelSlug = request.modelSlug?.trim() ?? ""
+    const sourcePath = request.sourcePath?.trim() ?? ""
+    const kind = (request.kind?.trim() === "data_yaml" ? "data_yaml" : "weights") as "data_yaml" | "weights"
+    const started = startYoloBatchFileUploadFromPath({
+      globalConfigDir,
+      modelSlug,
+      kind,
+      sourcePath,
+    })
+    return { jobId: started.jobId, errorMessage: started.errorMessage }
+  },
+  async GetYoloBatchFileUploadJob(request) {
+    const jobId = request.jobId?.trim() ?? ""
+    if (!jobId) {
+      return { found: false, job: undefined, errorMessage: "job_id 为空" }
+    }
+    const job = getYoloBatchFileUploadJob(jobId)
+    if (!job) {
+      return { found: false, job: undefined, errorMessage: "" }
+    }
+    return {
+      found: true,
+      job: {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        message: job.message,
+        kind: job.kind,
+        dataYaml: job.dataYaml,
+        weightsPt: job.weightsPt,
+        errorMessage: job.errorMessage,
+      },
+      errorMessage: "",
+    }
+  },
+  async StartYoloBatchWeightsUpload(request) {
+    const globalConfigDir = request.globalConfigDir?.trim() ?? ""
+    const modelSlug = request.modelSlug?.trim() ?? ""
+    const sourcePtPath = request.sourcePtPath?.trim() ?? ""
+    const started = startYoloBatchWeightsUploadFromPath({
+      globalConfigDir,
+      modelSlug,
+      sourcePtPath,
+    })
+    return { jobId: started.jobId, errorMessage: started.errorMessage }
+  },
+  async GetYoloBatchWeightsUploadJob(request) {
+    const jobId = request.jobId?.trim() ?? ""
+    if (!jobId) {
+      return { found: false, job: undefined, errorMessage: "job_id 为空" }
+    }
+    const job = getYoloBatchWeightsUploadJob(jobId)
+    if (!job) {
+      return { found: false, job: undefined, errorMessage: "" }
+    }
+    return {
+      found: true,
+      job: {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        message: job.message,
+        weightsPt: job.weightsPt,
+        errorMessage: job.errorMessage,
+      },
+      errorMessage: "",
+    }
+  },
+  async ConnectBackendYoloBatchPredictWs(request) {
+    try {
+      await connectYoloBatchPredictWs(request.url || "", request.clientId || "")
+      return { ok: true, errorMessage: "" }
+    } catch (error) {
+      return {
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async DisconnectBackendYoloBatchPredictWs(_request) {
+    await disconnectYoloBatchPredictWs()
+    return { ok: true }
+  },
+  async IsBackendYoloBatchPredictWsConnected(_request) {
+    return { connected: isYoloBatchPredictWsConnected() }
+  },
+  async YoloBatchPredictImage(request) {
+    try {
+      if (!isYoloBatchPredictWsConnected()) {
+        return { ok: false, responseJson: "", errorMessage: "YOLO 推理 WebSocket 未连接" }
+      }
+      const payload = await yoloBatchPredictImageViaWs({
+        modelSlug: request.modelSlug || "",
+        imagePath: request.imagePath || "",
+        timeoutMs: request.timeoutMs > 0 ? request.timeoutMs : undefined,
+      })
+      return { ok: true, responseJson: JSON.stringify(payload), errorMessage: "" }
     } catch (error) {
       return {
         ok: false,

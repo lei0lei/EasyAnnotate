@@ -1,10 +1,14 @@
-import { postLocalImageAsMultipart } from "@/lib/backend-image-upload"
 import { apiV1Root, encodeUrlPathSegments, fetchWithTimeout, readFetchError } from "@/lib/backend-http"
+import { yoloBatchPredictImageViaWs } from "@/lib/backend-yolo-batch-predict-ws"
 import type { YoloBatchPredictResult } from "@/lib/yolo-predict-to-annotation"
-import { uploadYoloBatchFileWithProgress, type YoloBatchUploadProgress } from "@/lib/yolo-batch-chunk-transfer"
-import { getYoloBatchLocalBackendDir, isYoloBatchRemoteBackend } from "@/lib/yolo-batch-backend"
+import {
+  uploadYoloBatchFileFromPathWithProgress,
+  type YoloBatchUploadProgress,
+} from "@/lib/yolo-batch-file-upload"
+import { isYoloBatchRemoteBackend } from "@/lib/yolo-batch-backend"
 import { probeBackendHealth } from "@/lib/training-yolo-api"
-import { ipc } from "@/gen/ipc"
+
+export type { YoloBatchUploadProgress } from "@/lib/yolo-batch-file-upload"
 
 const FETCH_TIMEOUT_MS = 120_000
 
@@ -106,108 +110,44 @@ export async function prepareYoloBatchModel(body: {
   return res.json()
 }
 
-export type { YoloBatchUploadProgress }
+export type { YoloBatchUploadProgress } from "@/lib/yolo-batch-file-upload"
 
-export async function confirmYoloBatchDataYaml(modelSlug: string): Promise<void> {
-  const res = await fetchWithTimeout(
-    `${yoloBatchRoot()}/models/${encodeUrlPathSegments(modelSlug)}/data-yaml/confirm`,
-    { method: "POST" },
-    FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-}
-
-export async function confirmYoloBatchWeights(modelSlug: string): Promise<void> {
-  const res = await fetchWithTimeout(
-    `${yoloBatchRoot()}/models/${encodeUrlPathSegments(modelSlug)}/weights/confirm`,
-    { method: "POST" },
-    FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-}
-
-async function copyYoloBatchFileLocal(
+export async function uploadYoloBatchDataYamlFromPath(
   modelSlug: string,
-  kind: "data_yaml" | "weights",
   sourcePath: string,
-): Promise<void> {
-  const backendDir = getYoloBatchLocalBackendDir()
-  if (!backendDir) {
-    throw new Error("请先在设置中配置本地 backend 目录")
-  }
-  const copy = await ipc.app.CopyYoloBatchModelFile({
-    backendDirectory: backendDir,
-    modelSlug,
-    sourcePath,
-    kind,
-  })
-  if (!copy.ok) {
-    throw new Error(copy.errorMessage?.trim() || "复制文件到 backend 失败")
-  }
-  if (kind === "data_yaml") {
-    await confirmYoloBatchDataYaml(modelSlug)
-  } else {
-    await confirmYoloBatchWeights(modelSlug)
-  }
-}
-
-export async function uploadYoloBatchDataYaml(
-  modelSlug: string,
-  file: File,
   options?: { onProgress?: (p: YoloBatchUploadProgress) => void },
 ): Promise<void> {
-  if (!isYoloBatchRemoteBackend()) {
-    throw new Error("本地后端请使用文件选择器复制到 backend 目录")
-  }
-  await uploadYoloBatchFileWithProgress(modelSlug, "data_yaml", file, {
-    onProgress: options?.onProgress,
-  })
+  await uploadYoloBatchFileFromPathWithProgress(modelSlug, "data_yaml", sourcePath, options)
 }
 
-export async function uploadYoloBatchWeights(
+export async function uploadYoloBatchWeightsFromPath(
   modelSlug: string,
-  file: File,
+  sourcePtPath: string,
   options?: { onProgress?: (p: YoloBatchUploadProgress) => void },
 ): Promise<void> {
-  if (!isYoloBatchRemoteBackend()) {
-    throw new Error("本地后端请使用文件选择器复制到 backend 目录")
-  }
-  await uploadYoloBatchFileWithProgress(modelSlug, "weights", file, {
-    onProgress: options?.onProgress,
-  })
+  await uploadYoloBatchFileFromPathWithProgress(modelSlug, "weights", sourcePtPath, options)
 }
 
-/** 本地：从磁盘路径复制；远程：分片上传 File。 */
+/** 本地/远程均经主进程 WebSocket 分片上传 data.yaml。 */
 export async function transferYoloBatchDataYaml(
   modelSlug: string,
-  input: { file?: File | null; localPath?: string },
+  input: { localPath?: string },
   options?: { onProgress?: (p: YoloBatchUploadProgress) => void },
 ): Promise<void> {
-  if (isYoloBatchRemoteBackend()) {
-    if (!input.file) throw new Error("请选择 data.yaml 文件")
-    await uploadYoloBatchDataYaml(modelSlug, input.file, options)
-    return
-  }
   const path = input.localPath?.trim()
   if (!path) throw new Error("请选择 data.yaml 文件")
-  await copyYoloBatchFileLocal(modelSlug, "data_yaml", path)
-  options?.onProgress?.({ kind: "data_yaml", percent: 100 })
+  await uploadYoloBatchDataYamlFromPath(modelSlug, path, options)
 }
 
+/** 本地/远程均经主进程 WebSocket 分片上传 .pt。 */
 export async function transferYoloBatchWeights(
   modelSlug: string,
-  input: { file?: File | null; localPath?: string },
+  input: { localPath?: string },
   options?: { onProgress?: (p: YoloBatchUploadProgress) => void },
 ): Promise<void> {
-  if (isYoloBatchRemoteBackend()) {
-    if (!input.file) throw new Error("请选择 .pt 权重文件")
-    await uploadYoloBatchWeights(modelSlug, input.file, options)
-    return
-  }
   const path = input.localPath?.trim()
   if (!path) throw new Error("请选择 .pt 权重文件")
-  await copyYoloBatchFileLocal(modelSlug, "weights", path)
-  options?.onProgress?.({ kind: "weights", percent: 100 })
+  await uploadYoloBatchWeightsFromPath(modelSlug, path, options)
 }
 
 export async function finalizeYoloBatchModel(modelSlug: string): Promise<YoloBatchModel> {
@@ -259,20 +199,8 @@ export async function predictYoloBatchImage(
   modelSlug: string,
   imagePath: string,
 ): Promise<YoloBatchPredictResult> {
-  const slug = modelSlug.trim()
-  const path = imagePath.trim()
-  const base = `${yoloBatchRoot()}/models/${encodeUrlPathSegments(slug)}`
-  if (isYoloBatchRemoteBackend()) {
-    const res = await postLocalImageAsMultipart(`${base}/predict-upload`, path, undefined, FETCH_TIMEOUT_MS)
-    return res.json() as Promise<YoloBatchPredictResult>
-  }
-  const res = await fetchWithTimeout(
-    `${base}/predict?${new URLSearchParams({ image_path: path })}`,
-    { method: "POST" },
-    FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-  return res.json() as Promise<YoloBatchPredictResult>
+  const payload = await yoloBatchPredictImageViaWs(modelSlug.trim(), imagePath.trim(), FETCH_TIMEOUT_MS)
+  return payload as YoloBatchPredictResult
 }
 
 export async function deleteYoloBatchModel(modelSlug: string): Promise<void> {

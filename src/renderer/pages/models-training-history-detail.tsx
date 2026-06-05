@@ -17,6 +17,7 @@ import {
   type YoloTrainingResultImage,
   type YoloWorkspaceSnapshot,
 } from "@/lib/training-yolo-api"
+import { useYoloMonitorWsLifecycle } from "@/hooks/use-yolo-monitor-ws-lifecycle"
 import { useYoloTrainingMessages } from "@/lib/i18n"
 import { buildTrainParamSections } from "@/lib/yolo-train-params-view"
 import { formatYoloBackendEndpointLabel } from "@/lib/yolo-dataset-upload"
@@ -51,6 +52,8 @@ export default function ModelsTrainingHistoryDetailPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  useYoloMonitorWsLifecycle(Boolean(jobSlug && backendOk === true))
 
   const refreshJobState = useCallback(
     (opts?: { silent?: boolean }) => {

@@ -19,7 +19,7 @@ import { probeBackendHealth } from "@/lib/training-yolo-api"
 import { GpuSwitch } from "@/pages/models-backend"
 import { cn } from "@/lib/utils"
 import { ArrowLeft, Loader2, Upload } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom"
 
 const VALID_TASKS: YoloBatchTaskId[] = ["detect", "segment", "pose", "obb"]
@@ -41,9 +41,6 @@ export default function ModelsYoloBatchNewPage() {
   const navigate = useNavigate()
   const task = (taskParam?.trim().toLowerCase() ?? "") as YoloBatchTaskId
 
-  const yamlRef = useRef<HTMLInputElement>(null)
-  const ptRef = useRef<HTMLInputElement>(null)
-
   const isRemote = isYoloBatchRemoteBackend()
   const backendEndpoint = formatYoloBackendEndpointLabel()
 
@@ -56,10 +53,8 @@ export default function ModelsYoloBatchNewPage() {
   const [maxDet, setMaxDet] = useState("300")
   const [useGpu, setUseGpu] = useState(true)
   const [yamlLabel, setYamlLabel] = useState<string | null>(null)
-  const [yamlFile, setYamlFile] = useState<File | null>(null)
   const [yamlLocalPath, setYamlLocalPath] = useState("")
   const [ptLabel, setPtLabel] = useState<string | null>(null)
-  const [ptFile, setPtFile] = useState<File | null>(null)
   const [ptLocalPath, setPtLocalPath] = useState("")
   const [busy, setBusy] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<YoloBatchUploadProgress | null>(null)
@@ -80,7 +75,7 @@ export default function ModelsYoloBatchNewPage() {
     return <Navigate to="/models/yolo-batch" replace />
   }
 
-  async function pickLocalYaml() {
+  async function pickYaml() {
     const picked = await ipc.app.SelectFiles({
       title: "选择 data.yaml",
       defaultPath: "",
@@ -88,10 +83,9 @@ export default function ModelsYoloBatchNewPage() {
     if (picked.canceled || !picked.paths[0]) return
     setYamlLocalPath(picked.paths[0])
     setYamlLabel(picked.paths[0].split(/[/\\]/).pop() ?? picked.paths[0])
-    setYamlFile(null)
   }
 
-  async function pickLocalPt() {
+  async function pickPt() {
     const picked = await ipc.app.SelectFiles({
       title: "选择 YOLO 权重 .pt",
       defaultPath: "",
@@ -99,7 +93,6 @@ export default function ModelsYoloBatchNewPage() {
     if (picked.canceled || !picked.paths[0]) return
     setPtLocalPath(picked.paths[0])
     setPtLabel(picked.paths[0].split(/[/\\]/).pop() ?? picked.paths[0])
-    setPtFile(null)
   }
 
   const handleCreate = async () => {
@@ -108,8 +101,8 @@ export default function ModelsYoloBatchNewPage() {
       setError("请填写模型名称")
       return
     }
-    const hasYaml = isRemote ? Boolean(yamlFile) : Boolean(yamlLocalPath)
-    const hasPt = isRemote ? Boolean(ptFile) : Boolean(ptLocalPath)
+    const hasYaml = Boolean(yamlLocalPath)
+    const hasPt = Boolean(ptLocalPath)
     if (!hasYaml) {
       setError("请上传 data.yaml（含类别名 names）")
       return
@@ -154,16 +147,8 @@ export default function ModelsYoloBatchNewPage() {
       })
       const slug = prepared.model_slug
 
-      await transferYoloBatchDataYaml(
-        slug,
-        isRemote ? { file: yamlFile } : { localPath: yamlLocalPath },
-        { onProgress: setUploadProgress },
-      )
-      await transferYoloBatchWeights(
-        slug,
-        isRemote ? { file: ptFile } : { localPath: ptLocalPath },
-        { onProgress: setUploadProgress },
-      )
+      await transferYoloBatchDataYaml(slug, { localPath: yamlLocalPath }, { onProgress: setUploadProgress })
+      await transferYoloBatchWeights(slug, { localPath: ptLocalPath }, { onProgress: setUploadProgress })
       await finalizeYoloBatchModel(slug)
       navigate("/models/yolo-batch")
     } catch (e) {
@@ -208,8 +193,8 @@ export default function ModelsYoloBatchNewPage() {
         <CardContent className="space-y-1 py-3 text-sm text-muted-foreground">
           <p>
             {isRemote
-              ? "已连接远程后端：模型文件将分片上传到远程服务器的"
-              : "使用本地后端：将通过文件选择复制到本地 backend 目录的"}
+              ? "已连接远程后端：模型文件将经 WebSocket 分片上传到远程服务器的"
+              : "使用本地后端：模型文件将经 WebSocket 分片上传到"}
             <code className="text-xs"> external/model_temp</code>
           </p>
           {backendCtx ? (
@@ -280,61 +265,23 @@ export default function ModelsYoloBatchNewPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            {isRemote ? (
-              <input
-                ref={yamlRef}
-                type="file"
-                accept=".yaml,.yml"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null
-                  setYamlFile(f)
-                  setYamlLabel(f?.name ?? null)
-                }}
-              />
-            ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => (isRemote ? yamlRef.current?.click() : void pickLocalYaml())}
-            >
+            <Button type="button" variant="outline" disabled={busy} onClick={() => void pickYaml()}>
               <Upload className="mr-2 h-4 w-4" aria-hidden />
-              {isRemote ? "选择并上传 data.yaml" : "选择 data.yaml（复制到本地 backend）"}
+              选择 data.yaml（WebSocket 上传）
             </Button>
             <span className="text-sm text-muted-foreground">{yamlLabel ?? "未选择"}</span>
             {yamlPct != null ? <span className="text-xs text-muted-foreground">{yamlPct}%</span> : null}
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {isRemote ? (
-              <input
-                ref={ptRef}
-                type="file"
-                accept=".pt"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null
-                  setPtFile(f)
-                  setPtLabel(f?.name ?? null)
-                }}
-              />
-            ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => (isRemote ? ptRef.current?.click() : void pickLocalPt())}
-            >
+            <Button type="button" variant="outline" disabled={busy} onClick={() => void pickPt()}>
               <Upload className="mr-2 h-4 w-4" aria-hidden />
-              {isRemote ? "选择并上传 .pt" : "选择 .pt（复制到本地 backend）"}
+              选择 .pt 权重（WebSocket 上传）
             </Button>
             <span className="text-sm text-muted-foreground">{ptLabel ?? "未选择"}</span>
             {ptPct != null ? <span className="text-xs text-muted-foreground">{ptPct}%</span> : null}
           </div>
           <p className="text-xs text-muted-foreground">
-            {isRemote
-              ? "远程模式使用 5MB 分片上传（与 YOLO 训练数据集相同），适合大权重文件。"
-              : "本地模式通过主进程复制到 backend/external/model_temp，无需经浏览器上传。"}
+            data.yaml 与 .pt 权重均经 WebSocket 5MB 分片上传（本地/远程同一通道）。
             {" "}
             data.yaml 须包含 <code className="text-xs">names</code> 类别列表。
           </p>

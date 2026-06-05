@@ -15,3 +15,5 @@ class WsConnection:
     pending_sam_prepare: Any | None = None
     pending_yolo_chunk: Any | None = None
     pending_yolo_base_model: Any | None = None
+    pending_yolo_batch_chunk: Any | None = None
+    pending_yolo_batch_predict: Any | None = None

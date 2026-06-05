@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.train import yolo_batch_chunk_transfer, yolo_batch_runner, yolo_batch_workspace
+from app.train import yolo_batch_runner, yolo_batch_workspace
 
 router = APIRouter()
 
@@ -32,12 +29,6 @@ class UpdateModelBody(BaseModel):
     imgsz: int | None = Field(None, ge=32, le=4096)
     max_det: int | None = Field(None, ge=1, le=10_000)
     use_gpu: bool | None = None
-
-
-class ChunkUploadInitBody(BaseModel):
-    filename: str = Field(..., min_length=1)
-    total_size: int = Field(..., ge=1)
-    upload_id: str | None = Field(None, description="续传时传入已有 upload_id")
 
 
 def _require_slug(model_slug: str) -> str:
@@ -117,130 +108,6 @@ def update_model(model_slug: str, body: UpdateModelBody) -> dict[str, Any]:
     return _enrich_running(snap)
 
 
-@router.post("/models/{model_slug}/data-yaml/upload/init")
-def data_yaml_upload_init(model_slug: str, body: ChunkUploadInitBody) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    try:
-        return yolo_batch_chunk_transfer.init_upload(
-            slug,
-            "data_yaml",
-            filename=body.filename,
-            total_size=body.total_size,
-            upload_id=body.upload_id,
-        )
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.put("/models/{model_slug}/data-yaml/upload/chunk")
-async def data_yaml_upload_chunk(
-    request: Request,
-    model_slug: str,
-    upload_id: str = Query(...),
-    chunk_index: int = Query(..., ge=0),
-) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    data = await request.body()
-    try:
-        return yolo_batch_chunk_transfer.save_upload_chunk(slug, upload_id, chunk_index, data)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/data-yaml/upload/complete")
-def data_yaml_upload_complete(model_slug: str, upload_id: str = Query(...)) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    try:
-        return yolo_batch_chunk_transfer.complete_upload(slug, upload_id)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/weights/upload/init")
-def weights_upload_init(model_slug: str, body: ChunkUploadInitBody) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    try:
-        return yolo_batch_chunk_transfer.init_upload(
-            slug,
-            "weights",
-            filename=body.filename,
-            total_size=body.total_size,
-            upload_id=body.upload_id,
-        )
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.put("/models/{model_slug}/weights/upload/chunk")
-async def weights_upload_chunk(
-    request: Request,
-    model_slug: str,
-    upload_id: str = Query(...),
-    chunk_index: int = Query(..., ge=0),
-) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    data = await request.body()
-    try:
-        return yolo_batch_chunk_transfer.save_upload_chunk(slug, upload_id, chunk_index, data)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/weights/upload/complete")
-def weights_upload_complete(model_slug: str, upload_id: str = Query(...)) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    try:
-        return yolo_batch_chunk_transfer.complete_upload(slug, upload_id)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/data-yaml/confirm")
-def confirm_data_yaml(model_slug: str) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    try:
-        return yolo_batch_workspace.confirm_data_yaml_on_disk(slug)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/weights/confirm")
-def confirm_weights(model_slug: str) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    try:
-        return yolo_batch_workspace.confirm_weights_on_disk(slug)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/data-yaml/upload")
-async def upload_data_yaml(model_slug: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    """小文件直传（本地或远程）；大文件请用分片上传。"""
-    slug = _require_slug(model_slug)
-    if not file.filename or not (
-        file.filename.lower().endswith(".yaml") or file.filename.lower().endswith(".yml")
-    ):
-        raise HTTPException(status_code=400, detail="仅支持 .yaml / .yml")
-    raw = await file.read()
-    try:
-        return yolo_batch_workspace.save_data_yaml_upload(slug, raw)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/weights/upload")
-async def upload_weights(model_slug: str, file: UploadFile = File(...)) -> dict[str, Any]:
-    """小文件直传；大文件请用分片上传。"""
-    slug = _require_slug(model_slug)
-    if not file.filename or not file.filename.lower().endswith(".pt"):
-        raise HTTPException(status_code=400, detail="仅支持 .pt 权重")
-    raw = await file.read()
-    try:
-        return yolo_batch_workspace.save_weights_upload(slug, raw)
-    except (FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
 @router.post("/models/{model_slug}/finalize")
 def finalize_model(model_slug: str) -> dict[str, Any]:
     slug = _require_slug(model_slug)
@@ -283,39 +150,3 @@ def delete_model(model_slug: str) -> dict[str, Any]:
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return {"ok": True, "model_slug": slug}
-
-
-@router.post("/models/{model_slug}/predict")
-def predict_one(
-    model_slug: str,
-    image_path: str = Query(..., description="本地图片绝对路径（仅后端可访问该路径时）"),
-) -> dict[str, Any]:
-    slug = _require_slug(model_slug)
-    try:
-        return yolo_batch_runner.predict_image(slug, image_path.strip())
-    except (RuntimeError, FileNotFoundError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@router.post("/models/{model_slug}/predict-upload")
-async def predict_upload(model_slug: str, image: UploadFile = File(...)) -> dict[str, Any]:
-    """远程后端：由客户端上传图片字节后推理。"""
-    slug = _require_slug(model_slug)
-    raw = await image.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="图片为空")
-    suffix = Path(image.filename or "image.bin").suffix or ".jpg"
-    tmp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(prefix="ea-yolo-batch-", suffix=suffix, delete=False) as f:
-            f.write(raw)
-            tmp_path = f.name
-        return yolo_batch_runner.predict_image(slug, tmp_path)
-    except (RuntimeError, FileNotFoundError, ValueError, ImportError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass

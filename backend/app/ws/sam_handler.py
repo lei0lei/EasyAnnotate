@@ -98,7 +98,7 @@ async def handle_sam_text(conn: WsConnection, msg_type: str, request_id: str | N
         if not conn.client_id:
             await _reply_error(conn, request_id, "send hello first", code="not_authenticated")
             return True
-        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None:
+        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_yolo_batch_chunk is not None or conn.pending_yolo_batch_predict is not None:
             await _reply_error(conn, request_id, "binary upload already in progress", code="upload_busy")
             return True
         if conn.pending_sam_prepare is not None:

@@ -11,6 +11,7 @@ import {
   YoloTextInput,
 } from "@/components/yolo-advanced-board"
 import { ipc } from "@/gen/ipc"
+import { useYoloMonitorWsLifecycle } from "@/hooks/use-yolo-monitor-ws-lifecycle"
 import { loadAppConfig } from "@/lib/app-config-storage"
 import {
   augmentFieldVisible,
@@ -180,6 +181,8 @@ export default function ModelsTrainingYoloPage() {
 
   const isLocalBackend = !loadAppConfig().backend.remoteConnected
   const backendEndpoint = formatYoloBackendEndpointLabel()
+
+  useYoloMonitorWsLifecycle(training && backendOk === true)
 
   const refreshBackend = useCallback(() => {
     void probeBackendHealth().then(setBackendOk)

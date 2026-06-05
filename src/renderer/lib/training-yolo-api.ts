@@ -1,5 +1,6 @@
 import { ipc } from "@/gen/ipc"
 import { loadAppConfig } from "@/lib/app-config-storage"
+import { fetchYoloMonitorResultImageBytes, yoloMonitorRpc } from "@/lib/backend-yolo-monitor-ws"
 import { apiV1Root, encodeUrlPathSegments, fetchWithTimeout, readFetchError } from "@/lib/backend-http"
 
 const YOLO_FETCH_TIMEOUT_MS = 60_000
@@ -126,14 +127,8 @@ export async function fetchYoloTrainingHistory(): Promise<YoloHistoryItem[]> {
 }
 
 export async function fetchYoloTrainingLogs(jobSlug: string): Promise<string> {
-  const res = await fetchWithTimeout(
-    `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/logs`,
-    undefined,
-    YOLO_LOGS_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-  const data = (await res.json()) as { logs: string }
-  return data.logs ?? ""
+  const data = await yoloMonitorRpc("training.yolo.logs.get", { job_slug: jobSlug }, YOLO_LOGS_TIMEOUT_MS)
+  return String(data.logs ?? "")
 }
 
 export type YoloTrainingResultImage = {
@@ -153,34 +148,31 @@ export type YoloTrainingResultImagesResponse = {
 export async function fetchYoloTrainingResultImages(
   jobSlug: string,
 ): Promise<YoloTrainingResultImagesResponse> {
-  const res = await fetchWithTimeout(
-    `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results`,
-    undefined,
-    YOLO_FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-  return res.json() as Promise<YoloTrainingResultImagesResponse>
+  const data = await yoloMonitorRpc("training.yolo.results.list", { job_slug: jobSlug }, YOLO_FETCH_TIMEOUT_MS)
+  return {
+    job_slug: String(data.job_slug ?? jobSlug),
+    runs_dir: String(data.runs_dir ?? ""),
+    run_dir: (data.run_dir as string | null | undefined) ?? null,
+    items: Array.isArray(data.items) ? (data.items as YoloTrainingResultImage[]) : [],
+  }
 }
 
+/** @deprecated 结果图经 WebSocket 拉取，不再使用 HTTP URL */
 export function yoloTrainingResultImageUrl(jobSlug: string, imagePath: string, mtime?: number): string {
   const q = new URLSearchParams({ path: imagePath })
   if (mtime != null && mtime > 0) q.set("t", String(mtime))
   return `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/results/image?${q}`
 }
 
-/** 经 IPC 代理拉取结果图并转为 blob URL（打包版 WebView 无法直连 http://127.0.0.1）。 */
+/** 经 IPC + WebSocket 拉取结果图并转为 blob URL。 */
 export async function fetchYoloTrainingResultImageObjectUrl(
   jobSlug: string,
   imagePath: string,
   mtime?: number,
 ): Promise<string> {
-  const res = await fetchWithTimeout(
-    yoloTrainingResultImageUrl(jobSlug, imagePath, mtime),
-    undefined,
-    YOLO_FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-  const blob = await res.blob()
+  void mtime
+  const { bytes, contentType } = await fetchYoloMonitorResultImageBytes(jobSlug, imagePath, YOLO_FETCH_TIMEOUT_MS)
+  const blob = new Blob([new Uint8Array(bytes)], { type: contentType })
   return URL.createObjectURL(blob)
 }
 
@@ -201,15 +193,15 @@ export type YoloTrainingModelFilesResponse = {
 export async function fetchYoloTrainingModelFiles(
   jobSlug: string,
 ): Promise<YoloTrainingModelFilesResponse> {
-  const res = await fetchWithTimeout(
-    `${yoloRoot()}/history/${encodeUrlPathSegments(jobSlug)}/models`,
-    undefined,
-    YOLO_FETCH_TIMEOUT_MS,
-  )
-  if (!res.ok) throw new Error(await readFetchError(res))
-  return res.json() as Promise<YoloTrainingModelFilesResponse>
+  const data = await yoloMonitorRpc("training.yolo.models.list", { job_slug: jobSlug }, YOLO_FETCH_TIMEOUT_MS)
+  return {
+    job_slug: String(data.job_slug ?? jobSlug),
+    job_dir: String(data.job_dir ?? ""),
+    items: Array.isArray(data.items) ? (data.items as YoloTrainingModelFile[]) : [],
+  }
 }
 
+/** @deprecated 模型下载经 WebSocket 分片，不再使用 HTTP URL */
 export function yoloTrainingModelDownloadUrl(jobSlug: string, filePath: string, mtime?: number): string {
   const q = new URLSearchParams({ path: filePath })
   if (mtime != null && mtime > 0) q.set("t", String(mtime))
@@ -228,7 +220,8 @@ export async function downloadYoloTrainingModelWithSaveDialog(
   file: YoloTrainingModelFile,
 ): Promise<{ canceled: boolean; savedPath: string; errorMessage: string }> {
   const response = await ipc.app.DownloadYoloTrainingModel({
-    downloadUrl: yoloTrainingModelDownloadUrl(jobSlug, file.path, file.mtime),
+    jobSlug,
+    filePath: file.path,
     suggestedFileName: file.name,
   })
   if (response.canceled) {
@@ -327,10 +320,11 @@ export async function fetchYoloDevices(): Promise<YoloDevicesResponse> {
 }
 
 export async function fetchYoloTrainStatus(jobSlug: string): Promise<{ job: YoloTrainJob; workspace: YoloWorkspaceSnapshot }> {
-  const q = new URLSearchParams({ job_slug: jobSlug })
-  const res = await fetchWithTimeout(`${yoloRoot()}/status?${q}`, undefined, YOLO_FETCH_TIMEOUT_MS)
-  if (!res.ok) throw new Error(await readFetchError(res))
-  return res.json()
+  const data = await yoloMonitorRpc("training.yolo.status.get", { job_slug: jobSlug }, YOLO_FETCH_TIMEOUT_MS)
+  return {
+    job: data.job as YoloTrainJob,
+    workspace: data.workspace as YoloWorkspaceSnapshot,
+  }
 }
 
 export async function unpackYoloDataset(

@@ -746,6 +746,53 @@ message IsBackendSamWsConnectedResponse {
   bool connected = 1;
 }
 
+/** YOLO 训练监控 WebSocket（训练页/历史详情生命周期内单连接） */
+message ConnectBackendYoloMonitorWsRequest {
+  string url = 1;
+  string client_id = 2;
+}
+
+message ConnectBackendYoloMonitorWsResponse {
+  bool ok = 1;
+  string error_message = 2;
+}
+
+message DisconnectBackendYoloMonitorWsRequest {}
+
+message DisconnectBackendYoloMonitorWsResponse {
+  bool ok = 1;
+}
+
+message IsBackendYoloMonitorWsConnectedRequest {}
+
+message IsBackendYoloMonitorWsConnectedResponse {
+  bool connected = 1;
+}
+
+message YoloMonitorWsSendJsonRequest {
+  string json_text = 1;
+  int32 timeout_ms = 2;
+}
+
+message YoloMonitorWsSendJsonResponse {
+  bool ok = 1;
+  string error_message = 2;
+  string response_json = 3;
+}
+
+message YoloMonitorWsFetchResultImageRequest {
+  string job_slug = 1;
+  string path = 2;
+  int32 timeout_ms = 3;
+}
+
+message YoloMonitorWsFetchResultImageResponse {
+  bool ok = 1;
+  bytes body = 2;
+  string content_type = 3;
+  string error_message = 4;
+}
+
 /** 将本地 zip 复制到 backend/external/temp/<训练名>/dataset.zip */
 message CopyYoloTrainingDatasetZipRequest {
   string backend_directory = 1;
@@ -807,6 +854,107 @@ message UploadYoloBaseModelFromPathResponse {
   string error_message = 3;
 }
 
+/** 主进程从本地路径经 WebSocket 分片上传 YOLO batch 模型文件（data.yaml / .pt）。 */
+message StartYoloBatchFileUploadRequest {
+  string global_config_dir = 1;
+  string model_slug = 2;
+  string source_path = 3;
+  /** data_yaml | weights */
+  string kind = 4;
+}
+
+message StartYoloBatchFileUploadResponse {
+  string job_id = 1;
+  string error_message = 2;
+}
+
+message GetYoloBatchFileUploadJobRequest {
+  string job_id = 1;
+}
+
+message YoloBatchFileUploadJobItem {
+  string id = 1;
+  string status = 2;
+  int32 progress = 3;
+  string message = 4;
+  string kind = 5;
+  string data_yaml = 6;
+  string weights_pt = 7;
+  string error_message = 8;
+}
+
+message GetYoloBatchFileUploadJobResponse {
+  bool found = 1;
+  YoloBatchFileUploadJobItem job = 2;
+  string error_message = 3;
+}
+
+/** @deprecated 使用 StartYoloBatchFileUpload */
+message StartYoloBatchWeightsUploadRequest {
+  string global_config_dir = 1;
+  string model_slug = 2;
+  string source_pt_path = 3;
+}
+
+message StartYoloBatchWeightsUploadResponse {
+  string job_id = 1;
+  string error_message = 2;
+}
+
+message GetYoloBatchWeightsUploadJobRequest {
+  string job_id = 1;
+}
+
+message YoloBatchWeightsUploadJobItem {
+  string id = 1;
+  string status = 2;
+  int32 progress = 3;
+  string message = 4;
+  string weights_pt = 5;
+  string error_message = 6;
+}
+
+message GetYoloBatchWeightsUploadJobResponse {
+  bool found = 1;
+  YoloBatchWeightsUploadJobItem job = 2;
+  string error_message = 3;
+}
+
+/** YOLO batch 自动标注推理 WebSocket（任务批量 predict 生命周期内单连接） */
+message ConnectBackendYoloBatchPredictWsRequest {
+  string url = 1;
+  string client_id = 2;
+}
+
+message ConnectBackendYoloBatchPredictWsResponse {
+  bool ok = 1;
+  string error_message = 2;
+}
+
+message DisconnectBackendYoloBatchPredictWsRequest {}
+
+message DisconnectBackendYoloBatchPredictWsResponse {
+  bool ok = 1;
+}
+
+message IsBackendYoloBatchPredictWsConnectedRequest {}
+
+message IsBackendYoloBatchPredictWsConnectedResponse {
+  bool connected = 1;
+}
+
+message YoloBatchPredictImageRequest {
+  string model_slug = 1;
+  string image_path = 2;
+  int32 timeout_ms = 3;
+}
+
+message YoloBatchPredictImageResponse {
+  bool ok = 1;
+  string error_message = 2;
+  string response_json = 3;
+}
+
 /** 将本地 yaml / pt 复制到 backend/external/model_temp/<模型 slug>/ */
 message CopyYoloBatchModelFileRequest {
   string backend_directory = 1;
@@ -822,10 +970,11 @@ message CopyYoloBatchModelFileResponse {
   string dest_path = 3;
 }
 
-/** 选择保存目录后，经 download_url 从训练后端 HTTP 流式下载（本地/远程同一通道） */
+/** 选择保存目录后，经 WebSocket 分片下载训练模型 .pt */
 message DownloadYoloTrainingModelRequest {
-  string download_url = 1;
-  string suggested_file_name = 2;
+  string job_slug = 1;
+  string file_path = 2;
+  string suggested_file_name = 3;
 }
 
 message DownloadYoloTrainingModelResponse {
@@ -909,10 +1058,23 @@ service AppService {
   rpc IsBackendSamWsConnected(IsBackendSamWsConnectedRequest) returns (IsBackendSamWsConnectedResponse);
   rpc SamWsPrepareImage(SamWsPrepareImageRequest) returns (SamWsPrepareImageResponse);
   rpc SamWsSendJson(SamWsSendJsonRequest) returns (SamWsSendJsonResponse);
+  rpc ConnectBackendYoloMonitorWs(ConnectBackendYoloMonitorWsRequest) returns (ConnectBackendYoloMonitorWsResponse);
+  rpc DisconnectBackendYoloMonitorWs(DisconnectBackendYoloMonitorWsRequest) returns (DisconnectBackendYoloMonitorWsResponse);
+  rpc IsBackendYoloMonitorWsConnected(IsBackendYoloMonitorWsConnectedRequest) returns (IsBackendYoloMonitorWsConnectedResponse);
+  rpc YoloMonitorWsSendJson(YoloMonitorWsSendJsonRequest) returns (YoloMonitorWsSendJsonResponse);
+  rpc YoloMonitorWsFetchResultImage(YoloMonitorWsFetchResultImageRequest) returns (YoloMonitorWsFetchResultImageResponse);
   rpc CopyYoloTrainingDatasetZip(CopyYoloTrainingDatasetZipRequest) returns (CopyYoloTrainingDatasetZipResponse);
   rpc StartYoloDatasetZipUpload(StartYoloDatasetZipUploadRequest) returns (StartYoloDatasetZipUploadResponse);
   rpc GetYoloDatasetZipUploadJob(GetYoloDatasetZipUploadJobRequest) returns (GetYoloDatasetZipUploadJobResponse);
   rpc UploadYoloBaseModelFromPath(UploadYoloBaseModelFromPathRequest) returns (UploadYoloBaseModelFromPathResponse);
+  rpc StartYoloBatchFileUpload(StartYoloBatchFileUploadRequest) returns (StartYoloBatchFileUploadResponse);
+  rpc GetYoloBatchFileUploadJob(GetYoloBatchFileUploadJobRequest) returns (GetYoloBatchFileUploadJobResponse);
+  rpc StartYoloBatchWeightsUpload(StartYoloBatchWeightsUploadRequest) returns (StartYoloBatchWeightsUploadResponse);
+  rpc GetYoloBatchWeightsUploadJob(GetYoloBatchWeightsUploadJobRequest) returns (GetYoloBatchWeightsUploadJobResponse);
+  rpc ConnectBackendYoloBatchPredictWs(ConnectBackendYoloBatchPredictWsRequest) returns (ConnectBackendYoloBatchPredictWsResponse);
+  rpc DisconnectBackendYoloBatchPredictWs(DisconnectBackendYoloBatchPredictWsRequest) returns (DisconnectBackendYoloBatchPredictWsResponse);
+  rpc IsBackendYoloBatchPredictWsConnected(IsBackendYoloBatchPredictWsConnectedRequest) returns (IsBackendYoloBatchPredictWsConnectedResponse);
+  rpc YoloBatchPredictImage(YoloBatchPredictImageRequest) returns (YoloBatchPredictImageResponse);
   rpc CopyYoloBatchModelFile(CopyYoloBatchModelFileRequest) returns (CopyYoloBatchModelFileResponse);
   rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);
   rpc GetYoloModelDownloadStatus(GetYoloModelDownloadStatusRequest) returns (GetYoloModelDownloadStatusResponse);
