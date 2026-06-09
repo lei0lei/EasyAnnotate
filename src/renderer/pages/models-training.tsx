@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { probeBackendHealth } from "@/lib/training-yolo-api"
 import { cn } from "@/lib/utils"
-import { ArrowLeft, Box, ChevronRight, History, LineChart } from "lucide-react"
+import { ArrowLeft, Box, ChevronRight, Cpu, History, LineChart } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 
@@ -75,6 +75,21 @@ export default function ModelsTrainingPage() {
           <CardContent>
             <Button asChild variant="default" className="w-full" disabled={backendOk === false}>
               <Link to="/models/training/yolo">进入 YOLO 训练</Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/80 shadow-sm sm:col-span-2">
+          <CardHeader>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Cpu className="h-5 w-5" aria-hidden />
+            </div>
+            <CardTitle className="text-lg">TensorRT 模型转换</CardTitle>
+            <CardDescription>将 ONNX 模型转换为 TensorRT engine（需配置 onnx2tensorRT 工具路径）</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild variant="default" className="w-full">
+              <Link to="/models/training/tensorrt">进入 TensorRT 转换</Link>
             </Button>
           </CardContent>
         </Card>

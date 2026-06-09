@@ -1,11 +1,10 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process"
+import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { createReadStream, createWriteStream } from "node:fs"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { pipeline } from "node:stream/promises"
-import { fileURLToPath } from "node:url"
 import { normalizeXAnyLabelDoc } from "../renderer/lib/xanylabeling-format"
 import type { ProjectRecord } from "./project-storage"
 
@@ -84,7 +83,6 @@ type ExportWorkerTraceEvent = {
 
 const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
 const exportJobs = new Map<string, ExportJobRecord>()
-const activeExportChildren = new Map<string, { child: ChildProcess; pollTimer: ReturnType<typeof setInterval> }>()
 const exportProgressThrottle = new Map<string, number>()
 const MAX_IMAGE_DIMENSION = 65535
 const MAX_YOLO_SEGMENT_POINTS = 120
@@ -119,6 +117,8 @@ function exportRequestPath(jobId: string): string {
 function exportStatePath(jobId: string): string {
   return path.join(os.tmpdir(), `ea-export-state-${jobId}.json`)
 }
+
+export { exportStatePath }
 
 function isExportChildProcess(): boolean {
   return process.env.EA_EXPORT_CHILD === "1" && Boolean(process.env.EA_EXPORT_JOB_ID?.trim())
@@ -181,6 +181,10 @@ function isYoloExportFormat(format: ExportFormat): boolean {
 
 function isStreamingExportFormat(format: ExportFormat): boolean {
   return isYoloExportFormat(format) || format === "xanylabeling"
+}
+
+export function isDatasetExportChildFormat(format: string): boolean {
+  return isStreamingExportFormat(format as ExportFormat)
 }
 
 function appendTraceLine(filePath: string, event: ExportWorkerTraceEvent): void {
@@ -389,7 +393,7 @@ function composeJobMessage(statusMessage: string, logLines: string[]): string {
   return `${statusMessage}${EXPORT_LOG_SEPARATOR}${logLines.join("\n")}`
 }
 
-function updateJob(jobId: string, patch: Partial<ExportJobRecord>): void {
+export function updateJob(jobId: string, patch: Partial<ExportJobRecord>): void {
   const current = exportJobs.get(jobId)
   if (!current) return
 
@@ -1530,7 +1534,7 @@ function collectClassNamesForExport(project: ProjectRecord, _images: ExportImage
   return classNamesFromProjectTags(project)
 }
 
-async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void> {
+export async function runExport(job: ExportJobRecord, req: ExportRequest): Promise<void> {
   updateJob(job.id, { status: "running", progress: 1, message: "开始导出" })
   if (isYoloExportFormat(req.exportFormat)) {
     try {
@@ -1669,232 +1673,6 @@ export function listDatasetExportJobsForIpc(): ExportJobRecord[] {
   }))
 }
 
-function findProjectRoot(): string | null {
-  const seeds = new Set<string>([process.cwd()])
-  try {
-    seeds.add(path.dirname(fileURLToPath(import.meta.url)))
-  } catch {
-    /* ignore */
-  }
-  for (const seed of seeds) {
-    let dir = path.resolve(seed)
-    for (let depth = 0; depth < 12; depth += 1) {
-      const pkgPath = path.join(dir, "package.json")
-      if (fs.existsSync(pkgPath)) {
-        try {
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as { name?: string }
-          if (pkg.name === "easy-annotate") return dir
-        } catch {
-          /* ignore invalid package.json */
-        }
-      }
-      const parent = path.dirname(dir)
-      if (parent === dir) break
-      dir = parent
-    }
-  }
-  return null
-}
-
-function resolveSystemNodeExecutable(): string | null {
-  const execBase = path.basename(process.execPath).toLowerCase()
-  if (execBase === "node.exe" || execBase === "node") {
-    return process.execPath
-  }
-
-  for (const envCandidate of [process.env.NODE_EXE, process.env.npm_node_execpath]) {
-    const trimmed = (envCandidate || "").trim()
-    if (trimmed && fs.existsSync(trimmed)) return trimmed
-  }
-
-  if (process.platform === "win32") {
-    try {
-      const output = execFileSync("where.exe", ["node"], { encoding: "utf8", windowsHide: true }).trim()
-      const candidate = output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find(Boolean)
-      if (candidate && fs.existsSync(candidate)) return candidate
-    } catch {
-      /* ignore */
-    }
-    const programFiles = process.env.ProgramFiles || "C:\\Program Files"
-    const winCandidates = [
-      path.join(programFiles, "nodejs", "node.exe"),
-      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "nodejs", "node.exe"),
-    ]
-    for (const candidate of winCandidates) {
-      if (fs.existsSync(candidate)) return candidate
-    }
-  } else {
-    try {
-      const output = execFileSync("which", ["node"], { encoding: "utf8" }).trim()
-      if (output && fs.existsSync(output)) return output
-    } catch {
-      /* ignore */
-    }
-  }
-  return null
-}
-
-type ExportChildLaunch = {
-  command: string
-  args: string[]
-  cwd: string
-  mode: "bundled"
-}
-
-function resolveExportChildLaunch(
-  jobId: string,
-  reqPath: string,
-): { launch: ExportChildLaunch | null; reason: string } {
-  const root = findProjectRoot()
-  const nodeExe = resolveSystemNodeExecutable()
-  if (!nodeExe) {
-    return { launch: null, reason: "未找到 Node.js（请安装 Node 并加入 PATH，或安装到 Program Files\\nodejs）" }
-  }
-
-  if (!root) {
-    return {
-      launch: null,
-      reason: `未找到项目根目录（当前 cwd=${process.cwd()}）`,
-    }
-  }
-
-  const bundledScript = path.join(root, "out", "main", "dataset-export-child.js")
-  const bundledDir = path.dirname(bundledScript)
-  const bundledAssetsDir = path.join(bundledDir, "assets")
-
-  if (!fs.existsSync(bundledScript)) {
-    return {
-      launch: null,
-      reason: `未找到 ${bundledScript}，请在项目根目录执行：npx vite build --mode main`,
-    }
-  }
-  if (!fs.existsSync(bundledAssetsDir)) {
-    return {
-      launch: null,
-      reason: `缺少 ${bundledAssetsDir}，请重新执行：npx vite build --mode main`,
-    }
-  }
-
-  return {
-    launch: {
-      command: nodeExe,
-      args: [bundledScript, jobId, reqPath],
-      cwd: bundledDir,
-      mode: "bundled",
-    },
-    reason: "",
-  }
-}
-
-function cleanupExportChild(jobId: string): void {
-  const active = activeExportChildren.get(jobId)
-  if (!active) return
-  clearInterval(active.pollTimer)
-  activeExportChildren.delete(jobId)
-}
-
-function spawnExportChild(job: ExportJobRecord, req: ExportRequest): boolean {
-  const reqPath = exportRequestPath(job.id)
-  try {
-    fs.writeFileSync(reqPath, JSON.stringify({ job, req }), "utf8")
-    writeExportStateFile(job.id, job)
-  } catch (error) {
-    updateJob(job.id, {
-      status: "failed",
-      progress: 100,
-      statusMessage: error instanceof Error ? error.message : String(error),
-    })
-    return false
-  }
-
-  const resolved = resolveExportChildLaunch(job.id, reqPath)
-  if (!resolved.launch) {
-    writeExportStage(job.id, `child launch failed: ${resolved.reason}`)
-    updateJob(job.id, {
-      status: "failed",
-      progress: 100,
-      statusMessage: `无法启动导出子进程：${resolved.reason}`,
-      message: `无法启动导出子进程：${resolved.reason}`,
-    })
-    try {
-      fs.unlinkSync(reqPath)
-    } catch {
-      /* ignore */
-    }
-    return false
-  }
-  const launch = resolved.launch
-
-  writeExportStage(job.id, `spawn child mode=${launch.mode} ${launch.command} ${launch.args.join(" ")}`)
-
-  const child = spawn(launch.command, launch.args, {
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    cwd: launch.cwd,
-    env: {
-      ...process.env,
-      EA_EXPORT_CHILD: "1",
-      EA_EXPORT_JOB_ID: job.id,
-    },
-  })
-
-  child.stderr?.on("data", (chunk: Buffer) => {
-    const text = chunk.toString().trim()
-    if (text) writeExportStage(job.id, `child stderr: ${text.slice(0, 200)}`)
-  })
-
-  const pollTimer = setInterval(() => {
-    syncExportJobFromStateFile(job.id)
-  }, 400)
-
-  activeExportChildren.set(job.id, { child, pollTimer })
-
-  child.on("error", (error) => {
-    cleanupExportChild(job.id)
-    updateJob(job.id, {
-      status: "failed",
-      progress: 100,
-      statusMessage: `导出子进程错误：${error.message}`,
-    })
-    try {
-      fs.unlinkSync(reqPath)
-    } catch {
-      /* ignore */
-    }
-  })
-
-  child.on("close", (code) => {
-    cleanupExportChild(job.id)
-    syncExportJobFromStateFile(job.id)
-    const state = exportJobs.get(job.id)
-    if (code !== 0 && state?.status !== "success" && state?.status !== "failed") {
-      updateJob(job.id, {
-        status: "failed",
-        progress: 100,
-        statusMessage: `导出子进程异常退出（code=${code ?? "null"}）`,
-      })
-    }
-    try {
-      fs.unlinkSync(reqPath)
-    } catch {
-      /* ignore */
-    }
-    try {
-      const finalState = exportJobs.get(job.id)
-      if (finalState?.status === "success" || finalState?.status === "failed") {
-        fs.unlinkSync(exportStatePath(job.id))
-      }
-    } catch {
-      /* ignore */
-    }
-  })
-
-  return true
-}
-
 export async function runExportFromChildArgv(jobId: string, reqPath: string): Promise<void> {
   process.env.EA_EXPORT_CHILD = "1"
   process.env.EA_EXPORT_JOB_ID = jobId
@@ -1911,18 +1689,14 @@ export async function runExportFromChildArgv(jobId: string, reqPath: string): Pr
   await runExport(payload.job, payload.req)
 }
 
-export function startDatasetExportJob(req: ExportRequest): { jobId: string } {
+export function beginExportJob(req: ExportRequest): ExportJobRecord {
   const job = createJobRecord(req)
   exportJobs.set(job.id, job)
+  return job
+}
 
-  if (isStreamingExportFormat(req.exportFormat)) {
-    const spawned = spawnExportChild(job, req)
-    if (spawned) {
-      return { jobId: job.id }
-    }
-    return { jobId: job.id }
-  }
-
+export function startDatasetExportJob(req: ExportRequest): { jobId: string } {
+  const job = beginExportJob(req)
   setImmediate(() => {
     void runExport(job, req).catch((error) => {
       updateJob(job.id, {

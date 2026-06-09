@@ -1,9 +1,9 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { resolveChildScriptLaunch } from "./child-process-launch.js"
 import { runTaskDelete, type TaskDeleteRequest } from "./task-delete-core"
 
 type DeleteStatus = "queued" | "running" | "success" | "failed"
@@ -120,103 +120,27 @@ function updateDeleteJob(jobId: string, patch: Partial<TaskDeleteJobRecord>): vo
   }
 }
 
-function findProjectRoot(): string | null {
-  const seeds = [process.cwd(), path.dirname(fileURLToPath(import.meta.url))]
-  for (const seed of seeds) {
-    let dir = path.resolve(seed)
-    for (let depth = 0; depth < 12; depth += 1) {
-      const pkgPath = path.join(dir, "package.json")
-      if (fs.existsSync(pkgPath)) {
-        try {
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as { name?: string }
-          if (pkg.name === "easy-annotate") return dir
-        } catch {
-          /* ignore */
-        }
-      }
-      const parent = path.dirname(dir)
-      if (parent === dir) break
-      dir = parent
-    }
-  }
-  return null
-}
-
-function resolveSystemNodeExecutable(): string | null {
-  const execBase = path.basename(process.execPath).toLowerCase()
-  if (execBase === "node.exe" || execBase === "node") {
-    return process.execPath
-  }
-  for (const envCandidate of [process.env.NODE_EXE, process.env.npm_node_execpath]) {
-    const trimmed = (envCandidate || "").trim()
-    if (trimmed && fs.existsSync(trimmed)) return trimmed
-  }
-  if (process.platform === "win32") {
-    try {
-      const output = execFileSync("where.exe", ["node"], { encoding: "utf8", windowsHide: true }).trim()
-      const candidate = output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find(Boolean)
-      if (candidate && fs.existsSync(candidate)) return candidate
-    } catch {
-      /* ignore */
-    }
-    const programFiles = process.env.ProgramFiles || "C:\\Program Files"
-    const winCandidates = [
-      path.join(programFiles, "nodejs", "node.exe"),
-      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "nodejs", "node.exe"),
-    ]
-    for (const candidate of winCandidates) {
-      if (fs.existsSync(candidate)) return candidate
-    }
-  } else {
-    try {
-      const output = execFileSync("which", ["node"], { encoding: "utf8" }).trim()
-      if (output && fs.existsSync(output)) return output
-    } catch {
-      /* ignore */
-    }
-  }
-  return null
-}
-
 type DeleteChildLaunch = {
   command: string
   args: string[]
   cwd: string
-  mode: "bundled"
+  mode: "packaged" | "dev"
 }
 
 function resolveDeleteChildLaunch(
   jobId: string,
   reqPath: string,
 ): { launch: DeleteChildLaunch | null; reason: string } {
-  const root = findProjectRoot()
-  const nodeExe = resolveSystemNodeExecutable()
-  if (!nodeExe) {
-    return { launch: null, reason: "未找到 Node.js（请安装 Node 并加入 PATH，或安装到 Program Files\\nodejs）" }
+  const resolved = resolveChildScriptLaunch("task-delete-child.js", [jobId, reqPath])
+  if (!resolved.launch) {
+    return { launch: null, reason: resolved.reason }
   }
-  if (!root) {
-    return {
-      launch: null,
-      reason: "未找到项目根目录（需包含 package.json 且 name 为 easy-annotate）",
-    }
-  }
-  const bundledScript = path.join(root, "out", "main", "task-delete-child.js")
-  if (!fs.existsSync(bundledScript)) {
-    return {
-      launch: null,
-      reason: `未找到删除子进程脚本：${bundledScript}（请先运行 npx vite build --mode main）`,
-    }
-  }
-  const bundledDir = path.dirname(bundledScript)
   return {
     launch: {
-      command: nodeExe,
-      args: [bundledScript, jobId, reqPath],
-      cwd: bundledDir,
-      mode: "bundled",
+      command: resolved.launch.command,
+      args: resolved.launch.args,
+      cwd: resolved.launch.cwd,
+      mode: resolved.launch.mode,
     },
     reason: "",
   }

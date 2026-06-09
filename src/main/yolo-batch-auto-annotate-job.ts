@@ -1,9 +1,9 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { fileURLToPath } from "node:url"
+import { resolveChildScriptLaunch } from "./child-process-launch.js"
 import { getDefaultGlobalConfigDir } from "./app-config-disk"
 import type { YoloAutoAnnotateRunRequest } from "./yolo-batch-auto-annotate-runner"
 
@@ -99,89 +99,19 @@ function updateJob(jobId: string, patch: Partial<YoloAutoAnnotateJobRecord>): vo
   writeStateFile(jobId, next)
 }
 
-function findProjectRoot(): string | null {
-  const seeds = new Set<string>([process.cwd()])
-  try {
-    seeds.add(path.dirname(fileURLToPath(import.meta.url)))
-  } catch {
-    /* ignore */
-  }
-  for (const seed of seeds) {
-    let dir = path.resolve(seed)
-    for (let depth = 0; depth < 12; depth += 1) {
-      const pkgPath = path.join(dir, "package.json")
-      if (fs.existsSync(pkgPath)) {
-        try {
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as { name?: string }
-          if (pkg.name === "easy-annotate") return dir
-        } catch {
-          /* ignore */
-        }
-      }
-      const parent = path.dirname(dir)
-      if (parent === dir) break
-      dir = parent
-    }
-  }
-  return null
-}
-
-function resolveSystemNodeExecutable(): string | null {
-  const execBase = path.basename(process.execPath).toLowerCase()
-  if (execBase === "node.exe" || execBase === "node") {
-    return process.execPath
-  }
-  for (const envCandidate of [process.env.NODE_EXE, process.env.npm_node_execpath]) {
-    const trimmed = (envCandidate || "").trim()
-    if (trimmed && fs.existsSync(trimmed)) return trimmed
-  }
-  if (process.platform === "win32") {
-    try {
-      const output = execFileSync("where.exe", ["node"], { encoding: "utf8", windowsHide: true }).trim()
-      const candidate = output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find(Boolean)
-      if (candidate && fs.existsSync(candidate)) return candidate
-    } catch {
-      /* ignore */
-    }
-  }
-  return null
-}
-
 function resolveChildLaunch(jobId: string): { launch: ChildLaunch | null; reason: string } {
-  const root = findProjectRoot()
-  const nodeExe = resolveSystemNodeExecutable()
-  if (!nodeExe) {
-    return { launch: null, reason: "未找到 Node.js" }
-  }
-  if (!root) {
-    return { launch: null, reason: `未找到项目根目录（cwd=${process.cwd()}）` }
-  }
-  const bundledScript = path.join(root, "out", "main", "yolo-batch-auto-annotate-child.js")
-  const bundledDir = path.dirname(bundledScript)
-  const bundledAssetsDir = path.join(bundledDir, "assets")
-  if (!fs.existsSync(bundledScript)) {
-    return {
-      launch: null,
-      reason: `未找到 ${bundledScript}，请执行：npx vite build --mode main`,
-    }
-  }
-  if (!fs.existsSync(bundledAssetsDir)) {
-    return {
-      launch: null,
-      reason: `缺少 ${bundledAssetsDir}，请重新执行：npx vite build --mode main`,
-    }
-  }
   const req = requestPath(jobId)
   const state = statePath(jobId)
   const cancel = cancelFlagPath(jobId)
+  const resolved = resolveChildScriptLaunch("yolo-batch-auto-annotate-child.js", [jobId, req, state, cancel])
+  if (!resolved.launch) {
+    return { launch: null, reason: resolved.reason }
+  }
   return {
     launch: {
-      command: nodeExe,
-      args: [bundledScript, jobId, req, state, cancel],
-      cwd: bundledDir,
+      command: resolved.launch.command,
+      args: resolved.launch.args,
+      cwd: resolved.launch.cwd,
     },
     reason: "",
   }

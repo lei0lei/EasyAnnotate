@@ -14,6 +14,7 @@ import ModelsSam2AnnotationPage from "@/pages/models-sam2-annotation"
 import ModelsTrainingPage from "@/pages/models-training"
 import ModelsTrainingDinov2Page from "@/pages/models-training-dinov2"
 import ModelsTrainingYoloPage from "@/pages/models-training-yolo"
+import ModelsTrainingTensorRtPage from "@/pages/models-training-tensorrt"
 import ModelsTrainingHistoryPage from "@/pages/models-training-history"
 import ModelsTrainingHistoryDetailPage from "@/pages/models-training-history-detail"
 import ModelsYoloBatchPage from "@/pages/models-yolo-batch"
@@ -81,6 +82,7 @@ export default function App() {
             <Route path="training" element={<ModelsTrainingPage />} />
             <Route path="training/dinov2" element={<ModelsTrainingDinov2Page />} />
             <Route path="training/yolo" element={<ModelsTrainingYoloPage />} />
+            <Route path="training/tensorrt" element={<ModelsTrainingTensorRtPage />} />
             <Route path="training/history" element={<ModelsTrainingHistoryPage />} />
             <Route path="training/history/:jobSlug" element={<ModelsTrainingHistoryDetailPage />} />
             <Route path="yolo-batch" element={<ModelsYoloBatchPage />} />

@@ -6,7 +6,7 @@
   "scripts": {
     "postinstall": "node ./node_modules/@mobrowser/cli/proto.js",
     "dev": "mobrowser dev",
-    "build": "mobrowser build",
+    "build": "mobrowser build && node ./scripts/stage-packaged-runtime.mjs",
     "test": "vitest run --config vitest.config.ts",
     "gen": "mobrowser gen",
     "gen:proto": "node ./node_modules/@mobrowser/cli/proto.js",

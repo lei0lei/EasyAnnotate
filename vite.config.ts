@@ -33,6 +33,7 @@ function defineMainConfig(): UserConfig {
           "yolo-dataset-upload-child": path.resolve(__dirname, "./src/main/yolo-dataset-upload-child.ts"),
           "yolo-batch-file-upload-child": path.resolve(__dirname, "./src/main/yolo-batch-file-upload-child.ts"),
           "yolo-batch-auto-annotate-child": path.resolve(__dirname, "./src/main/yolo-batch-auto-annotate-child.ts"),
+          "tensorrt-conversion-child": path.resolve(__dirname, "./src/main/tensorrt-conversion-child.ts"),
         },
         external: [
           "mobrowser",

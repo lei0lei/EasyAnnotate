@@ -6,6 +6,10 @@ build/
 dist/
 out/
 
+# Packaged child-worker staging (must not live in project resources/ before mobrowser build).
+resources/child-workers/
+resources/node/
+
 # Generated code.
 gen/
 

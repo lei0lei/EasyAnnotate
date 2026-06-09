@@ -71,6 +71,9 @@ export default function SettingsPage() {
   }))
   const [shortcutCaptureRowId, setShortcutCaptureRowId] = useState<string | null>(null)
   const [selectingGlobalConfigDir, setSelectingGlobalConfigDir] = useState(false)
+  const [onnx2tensorRtDir, setOnnx2tensorRtDir] = useState(initial.storagePaths.onnx2tensorRtDir ?? "")
+  const [onnx2tensorRtStatus, setOnnx2tensorRtStatus] = useState<CompletionStatus>(null)
+  const [selectingOnnx2tensorRtDir, setSelectingOnnx2tensorRtDir] = useState(false)
   const initialAppearance = annotationAppearancePrefs.get()
   const [annotationLineWidthScale, setAnnotationLineWidthScale] = useState(initialAppearance.lineWidthScale)
   const [annotationPointSizeScale, setAnnotationPointSizeScale] = useState(initialAppearance.pointSizeScale)
@@ -97,6 +100,51 @@ export default function SettingsPage() {
       setSelectingGlobalConfigDir(false)
     }
   }, [globalConfigDir])
+
+  const handleSelectOnnx2tensorRtDir = useCallback(async () => {
+    setSelectingOnnx2tensorRtDir(true)
+    try {
+      const result = await ipc.app.SelectDirectory({
+        title: "onnx2tensorRT 路径",
+        defaultPath: onnx2tensorRtDir,
+      })
+      if (result.errorMessage) {
+        window.alert(`无法打开目录选择窗口：${result.errorMessage}\n请先手动输入目录路径，或重启开发服务后再试。`)
+        return
+      }
+      if (!result.canceled && result.path) {
+        setOnnx2tensorRtDir(result.path)
+      }
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "未知错误"
+      window.alert(`无法打开目录选择窗口：${message}\n请确认已重启开发服务，或先手动输入目录路径。`)
+    } finally {
+      setSelectingOnnx2tensorRtDir(false)
+    }
+  }, [onnx2tensorRtDir])
+
+  const handleApplyOnnx2tensorRtDir = useCallback(() => {
+    const resolved = onnx2tensorRtDir.trim()
+    updateAppConfig({
+      storagePaths: {
+        ...loadAppConfig().storagePaths,
+        onnx2tensorRtDir: resolved,
+      },
+    })
+    setOnnx2tensorRtDir(resolved)
+    setOnnx2tensorRtStatus("applied")
+  }, [onnx2tensorRtDir])
+
+  const handleOnnx2tensorRtDefaults = useCallback(() => {
+    updateAppConfig({
+      storagePaths: {
+        ...loadAppConfig().storagePaths,
+        onnx2tensorRtDir: "",
+      },
+    })
+    setOnnx2tensorRtDir("")
+    setOnnx2tensorRtStatus("reset")
+  }, [])
 
   useEffect(() => {
     void ipc.app
@@ -182,6 +230,7 @@ export default function SettingsPage() {
     } else {
       updateAppConfig({
         storagePaths: {
+          ...loadAppConfig().storagePaths,
           databaseDir: "",
           assetsDir: "",
           globalConfigDir: resolvedGlobalConfigDir,
@@ -210,6 +259,7 @@ export default function SettingsPage() {
     } else {
       updateAppConfig({
         storagePaths: {
+          ...loadAppConfig().storagePaths,
           databaseDir: "",
           assetsDir: "",
           globalConfigDir: resolvedGlobalConfigDir,
@@ -608,6 +658,68 @@ export default function SettingsPage() {
                   </Button>
                 </div>
                 <CompletionIcon status={storageStatus} />
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <Separator className="bg-border/60" />
+
+        <section>
+          <Card className="border-border/80 shadow-sm">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <FolderOpen className="h-4 w-4" aria-hidden />
+                </div>
+                <CardTitle className="text-base">onnx2tensorRT路径</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  id={`${baseId}-onnx2tensorrt-dir`}
+                  value={onnx2tensorRtDir}
+                  onChange={(e) => setOnnx2tensorRtDir(e.target.value)}
+                  placeholder="例如 D:\tools\onnx2tensorRT"
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-label="onnx2tensorRT路径"
+                  className="font-mono text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="shrink-0 gap-1.5"
+                  disabled={selectingOnnx2tensorRtDir}
+                  onClick={() => void handleSelectOnnx2tensorRtDir()}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" aria-hidden />
+                  {selectingOnnx2tensorRtDir ? "选择中..." : "选择目录"}
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    onClick={handleApplyOnnx2tensorRtDir}
+                  >
+                    应用
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-[6.75rem]"
+                    onClick={handleOnnx2tensorRtDefaults}
+                  >
+                    使用默认
+                  </Button>
+                </div>
+                <CompletionIcon status={onnx2tensorRtStatus} />
               </div>
             </CardContent>
           </Card>

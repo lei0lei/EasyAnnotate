@@ -156,9 +156,11 @@ import {
 import {
   buildUniqueExportFolderPath,
   buildUniqueZipPath,
+  isDatasetExportChildFormat,
   listDatasetExportJobsForIpc,
   startDatasetExportJob,
 } from "./dataset-export";
+import { startStreamingDatasetExportJob } from "./dataset-export-spawn";
 import { runAnnotatedTaskFilesImport, runAnnotatedTaskZipImport } from "./annotated-task-import-core";
 import {
   connectBackendSamWs,
@@ -185,6 +187,12 @@ import {
   listTaskDeleteJobsAsExportJobsForIpc,
   startTaskDeleteJob,
 } from "./task-delete";
+import {
+  checkOnnx2TensorRtTool,
+  copyOnnxToTensorRtOutputDir,
+  getTensorRtConversionJob,
+  startTensorRtConversion,
+} from "./tensorrt-conversion-job";
 import { runTaskDelete } from "./task-delete-core";
 import {
   probeLocalBackendHealth,
@@ -2666,7 +2674,7 @@ ipc.registerService(AppService({
       const fileCountById = new Map(projectTasks.map((t) => [t.id, Math.max(0, Math.floor(Number(t.fileCount) || 0))]))
       const exportTaskIds = taskId ? [taskId] : (request.taskNames ?? []).map((item) => (item.taskId || "").trim()).filter(Boolean)
       const estimatedImageCount = exportTaskIds.reduce((sum, id) => sum + (fileCountById.get(id) ?? 0), 0)
-      const started = startDatasetExportJob({
+      const exportReq = {
         project,
         projectId,
         taskId: taskId || undefined,
@@ -2679,7 +2687,10 @@ ipc.registerService(AppService({
         outputPath,
         taskNameById: Object.fromEntries((request.taskNames ?? []).map((item) => [item.taskId, item.taskName])),
         estimatedImageCount,
-      })
+      }
+      const started = isDatasetExportChildFormat(exportFormat)
+        ? startStreamingDatasetExportJob(exportReq)
+        : startDatasetExportJob(exportReq)
       return { canceled: false, jobId: started.jobId, errorMessage: "" }
     } catch (error) {
       return {
@@ -3358,5 +3369,58 @@ ipc.registerService(AppService({
   async CancelYoloBatchAutoAnnotateJob(request) {
     const jobId = request.jobId?.trim() ?? ""
     return { ok: cancelYoloAutoAnnotateJob(jobId) }
+  },
+  async CheckOnnx2TensorRtTool(request) {
+    const toolDir = request.onnx2tensorRtDir?.trim() ?? ""
+    const checked = checkOnnx2TensorRtTool(toolDir)
+    return {
+      toolDirExists: checked.toolDirExists,
+      exeExists: checked.exeExists,
+      exePath: checked.exePath,
+      errorMessage: "",
+    }
+  },
+  async CopyOnnxToTensorRtOutputDir(request) {
+    const copied = copyOnnxToTensorRtOutputDir(
+      request.sourceOnnxPath?.trim() ?? "",
+      request.outputDir?.trim() ?? "",
+    )
+    return {
+      ok: copied.ok,
+      destPath: copied.destPath,
+      fileName: copied.fileName,
+      errorMessage: copied.errorMessage,
+    }
+  },
+  async StartTensorRtConversion(request) {
+    const started = startTensorRtConversion({
+      onnx2tensorRtDir: request.onnx2tensorRtDir?.trim() ?? "",
+      outputDir: request.outputDir?.trim() ?? "",
+      onnxFileName: request.onnxFileName?.trim() ?? "",
+    })
+    return { jobId: started.jobId, errorMessage: started.errorMessage }
+  },
+  async GetTensorRtConversionJob(request) {
+    const jobId = request.jobId?.trim() ?? ""
+    if (!jobId) {
+      return { found: false, job: undefined, errorMessage: "job_id 为空" }
+    }
+    const job = getTensorRtConversionJob(jobId)
+    if (!job) {
+      return { found: false, job: undefined, errorMessage: "" }
+    }
+    return {
+      found: true,
+      job: {
+        id: job.id,
+        status: job.status,
+        message: job.message,
+        errorMessage: job.errorMessage,
+        enginePath: job.enginePath,
+        startedAt: job.startedAt,
+        logPath: job.logPath,
+      },
+      errorMessage: "",
+    }
   },
 }))

@@ -1061,6 +1061,60 @@ message GetYoloModelDownloadStatusResponse {
   string error_message = 3;
 }
 
+message CheckOnnx2TensorRtToolRequest {
+  string onnx2tensor_rt_dir = 1;
+}
+
+message CheckOnnx2TensorRtToolResponse {
+  bool tool_dir_exists = 1;
+  bool exe_exists = 2;
+  string exe_path = 3;
+  string error_message = 4;
+}
+
+message CopyOnnxToTensorRtOutputDirRequest {
+  string source_onnx_path = 1;
+  string output_dir = 2;
+}
+
+message CopyOnnxToTensorRtOutputDirResponse {
+  bool ok = 1;
+  string dest_path = 2;
+  string file_name = 3;
+  string error_message = 4;
+}
+
+message StartTensorRtConversionRequest {
+  string onnx2tensor_rt_dir = 1;
+  string output_dir = 2;
+  string onnx_file_name = 3;
+}
+
+message StartTensorRtConversionResponse {
+  string job_id = 1;
+  string error_message = 2;
+}
+
+message TensorRtConversionJob {
+  string id = 1;
+  string status = 2;
+  string message = 3;
+  string error_message = 4;
+  string engine_path = 5;
+  string started_at = 6;
+  string log_path = 7;
+}
+
+message GetTensorRtConversionJobRequest {
+  string job_id = 1;
+}
+
+message GetTensorRtConversionJobResponse {
+  bool found = 1;
+  TensorRtConversionJob job = 2;
+  string error_message = 3;
+}
+
 service AppService {
   rpc SetTheme(SetThemeRequest) returns (google.protobuf.Empty);
   rpc MinimizeWindow(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -1148,4 +1202,8 @@ service AppService {
   rpc CopyYoloBatchModelFile(CopyYoloBatchModelFileRequest) returns (CopyYoloBatchModelFileResponse);
   rpc DownloadYoloTrainingModel(DownloadYoloTrainingModelRequest) returns (DownloadYoloTrainingModelResponse);
   rpc GetYoloModelDownloadStatus(GetYoloModelDownloadStatusRequest) returns (GetYoloModelDownloadStatusResponse);
+  rpc CheckOnnx2TensorRtTool(CheckOnnx2TensorRtToolRequest) returns (CheckOnnx2TensorRtToolResponse);
+  rpc CopyOnnxToTensorRtOutputDir(CopyOnnxToTensorRtOutputDirRequest) returns (CopyOnnxToTensorRtOutputDirResponse);
+  rpc StartTensorRtConversion(StartTensorRtConversionRequest) returns (StartTensorRtConversionResponse);
+  rpc GetTensorRtConversionJob(GetTensorRtConversionJobRequest) returns (GetTensorRtConversionJobResponse);
 }

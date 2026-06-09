@@ -23,6 +23,8 @@ export type AppConfig = {
     databaseDir: string
     assetsDir: string
     globalConfigDir: string
+    /** onnx2tensorRT 工具/脚本根目录 */
+    onnx2tensorRtDir: string
   }
   pageFlow: {
     workflow: {
@@ -46,7 +48,7 @@ const DEFAULT: AppConfig = {
   version: APP_CONFIG_VERSION,
   /** 与 backend/start.ps1 中 uvicorn --port 8000 对齐 */
   backend: { protocol: "http", host: "127.0.0.1", port: "8000", basePath: "", localBackendDir: "", remoteConnected: false },
-  storagePaths: { databaseDir: "", assetsDir: "", globalConfigDir: "" },
+  storagePaths: { databaseDir: "", assetsDir: "", globalConfigDir: "", onnx2tensorRtDir: "" },
   pageFlow: {
     workflow: { openEditorOnCreate: true },
     models: { defaultPage: "hub" },

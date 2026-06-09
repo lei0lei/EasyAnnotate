@@ -443,9 +443,12 @@ function ProjectTaskDetailContentBody({ projectId, taskId, annotationStore }: Pr
     if (toolbarAnnotationPrimingPendingRef.current) {
       toolbarAnnotationPrimingPendingRef.current = false
       setAnnotationHabitPrimed(true)
-      lastDrawingToolRef.current = rightToolMode
-      lastAnnotationLabelRef.current = rectPendingLabel.trim()
     }
+    // 手动工具确认后更新「上次标注」记忆，并取消 AI 工具的 N 续标优先权
+    lastDrawingToolRef.current = rightToolMode
+    lastAnnotationLabelRef.current = rectPendingLabel.trim()
+    sam2ResumeAfterNCommitRef.current = false
+    diffusionResumeAfterNCommitRef.current = false
     handleRectPickerConfirmFromBindings()
   }, [handleRectPickerConfirmFromBindings, rectPendingLabel, rightToolMode])
 
