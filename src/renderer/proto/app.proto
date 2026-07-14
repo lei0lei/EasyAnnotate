@@ -325,6 +325,39 @@ message StartAnnotatedTaskZipImportResponse {
   string job_id = 2;
 }
 
+message BeginAnnotatedTaskFilesImportRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  string task_id = 3;
+  string subset = 4;
+  string import_format = 5;
+}
+
+message BeginAnnotatedTaskFilesImportResponse {
+  string error_message = 1;
+  string staging_id = 2;
+}
+
+message StageAnnotatedTaskFilesImportRequest {
+  string staging_id = 1;
+  repeated string image_paths = 2;
+  repeated string label_paths = 3;
+  repeated string yolo_class_paths = 4;
+}
+
+message StageAnnotatedTaskFilesImportResponse {
+  string error_message = 1;
+}
+
+message CommitAnnotatedTaskFilesImportRequest {
+  string staging_id = 1;
+}
+
+message CommitAnnotatedTaskFilesImportResponse {
+  string error_message = 1;
+  string job_id = 2;
+}
+
 message StartTaskDeleteRequest {
   string global_config_dir = 1;
   string database_dir = 2;
@@ -455,6 +488,69 @@ message RemoveDeletedLabelsFromProjectAnnotationsRequest {
 message RemoveDeletedLabelsFromProjectAnnotationsResponse {
   string error_message = 1;
   int32 updated_file_count = 2;
+}
+
+/** 统计项目任务目录下的标注 JSON 数量（不把路径传回 renderer）。 */
+message CollectProjectAnnotationJsonPathsRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  repeated string task_ids = 3;
+}
+
+message CollectProjectAnnotationJsonPathsResponse {
+  string error_message = 1;
+  int32 total_count = 2;
+}
+
+/** 在主进程创建标签清理会话；清理与保存项目均在主进程后台执行。 */
+message StartTagAnnotationCleanupSessionRequest {
+  string global_config_dir = 1;
+  string project_id = 2;
+  repeated string task_ids = 3;
+  repeated string deleted_labels = 4;
+  string project_name = 5;
+  string project_info = 6;
+  repeated ProjectTag tags = 7;
+}
+
+message StartTagAnnotationCleanupSessionResponse {
+  string error_message = 1;
+  string session_id = 2;
+  int32 total_count = 3;
+}
+
+message GetTagAnnotationCleanupSessionStatusRequest {
+  string session_id = 1;
+}
+
+message GetTagAnnotationCleanupSessionStatusResponse {
+  bool found = 1;
+  bool finished = 2;
+  bool failed = 3;
+  bool cancelled = 4;
+  int32 done = 5;
+  int32 total = 6;
+  int32 progress = 7;
+  string message = 8;
+  int32 updated_file_count = 9;
+  string error_message = 10;
+  bool project_saved = 11;
+}
+
+message CancelTagAnnotationCleanupSessionRequest {
+  string session_id = 1;
+}
+
+message CancelTagAnnotationCleanupSessionResponse {
+  string error_message = 1;
+}
+
+message DisposeTagAnnotationCleanupSessionRequest {
+  string session_id = 1;
+}
+
+message DisposeTagAnnotationCleanupSessionResponse {
+  string error_message = 1;
 }
 
 message GetProjectTaskAnnotatedCountsRequest {
@@ -1135,6 +1231,9 @@ service AppService {
   rpc ImportAnnotatedTaskZip(ImportAnnotatedTaskZipRequest) returns (ImportAnnotatedTaskZipResponse);
   rpc ImportAnnotatedTaskFiles(ImportAnnotatedTaskFilesRequest) returns (ImportAnnotatedTaskFilesResponse);
   rpc StartAnnotatedTaskZipImport(StartAnnotatedTaskZipImportRequest) returns (StartAnnotatedTaskZipImportResponse);
+  rpc BeginAnnotatedTaskFilesImport(BeginAnnotatedTaskFilesImportRequest) returns (BeginAnnotatedTaskFilesImportResponse);
+  rpc StageAnnotatedTaskFilesImport(StageAnnotatedTaskFilesImportRequest) returns (StageAnnotatedTaskFilesImportResponse);
+  rpc CommitAnnotatedTaskFilesImport(CommitAnnotatedTaskFilesImportRequest) returns (CommitAnnotatedTaskFilesImportResponse);
   rpc StartTaskDelete(StartTaskDeleteRequest) returns (StartTaskDeleteResponse);
   rpc ListAnnotatedTaskImportJobs(google.protobuf.Empty) returns (ListAnnotatedTaskImportJobsResponse);
   rpc GetAnnotatedTaskImportJob(GetAnnotatedTaskImportJobRequest) returns (GetAnnotatedTaskImportJobResponse);
@@ -1144,6 +1243,11 @@ service AppService {
   rpc GetProjectTaskAnnotatedCounts(GetProjectTaskAnnotatedCountsRequest) returns (GetProjectTaskAnnotatedCountsResponse);
   rpc SaveProjectTasks(SaveProjectTasksRequest) returns (SaveProjectTasksResponse);
   rpc RemoveDeletedLabelsFromProjectAnnotations(RemoveDeletedLabelsFromProjectAnnotationsRequest) returns (RemoveDeletedLabelsFromProjectAnnotationsResponse);
+  rpc CollectProjectAnnotationJsonPaths(CollectProjectAnnotationJsonPathsRequest) returns (CollectProjectAnnotationJsonPathsResponse);
+  rpc StartTagAnnotationCleanupSession(StartTagAnnotationCleanupSessionRequest) returns (StartTagAnnotationCleanupSessionResponse);
+  rpc GetTagAnnotationCleanupSessionStatus(GetTagAnnotationCleanupSessionStatusRequest) returns (GetTagAnnotationCleanupSessionStatusResponse);
+  rpc CancelTagAnnotationCleanupSession(CancelTagAnnotationCleanupSessionRequest) returns (CancelTagAnnotationCleanupSessionResponse);
+  rpc DisposeTagAnnotationCleanupSession(DisposeTagAnnotationCleanupSessionRequest) returns (DisposeTagAnnotationCleanupSessionResponse);
   rpc GetProjectExportVersions(GetProjectExportVersionsRequest) returns (GetProjectExportVersionsResponse);
   rpc SaveProjectExportVersions(SaveProjectExportVersionsRequest) returns (SaveProjectExportVersionsResponse);
   rpc ReadImageFile(ReadImageFileRequest) returns (ReadImageFileResponse);

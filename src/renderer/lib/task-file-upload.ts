@@ -104,6 +104,36 @@ export function annotationExtensionForImportFormat(importFormat: string): string
   return importFormat.trim().toLowerCase() === "xanylabeling" ? ".json" : ".txt"
 }
 
+/** 为一批图片挑选同名标注路径，减少 staging IPC  payload。 */
+export function labelPathsForImageBatch(
+  imagePaths: string[],
+  allLabelPaths: string[],
+): string[] {
+  const stemToLabel = new Map<string, string>()
+  for (const labelPath of allLabelPaths) {
+    const trimmed = labelPath.trim()
+    if (!trimmed) continue
+    const fileName = fileNameFromPath(trimmed)
+    const dot = fileName.lastIndexOf(".")
+    const stem = (dot >= 0 ? fileName.slice(0, dot) : fileName).toLowerCase()
+    if (stem && !stemToLabel.has(stem)) {
+      stemToLabel.set(stem, trimmed)
+    }
+  }
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const imagePath of imagePaths) {
+    const fileName = fileNameFromPath(imagePath)
+    const dot = fileName.lastIndexOf(".")
+    const stem = (dot >= 0 ? fileName.slice(0, dot) : fileName).toLowerCase()
+    const labelPath = stemToLabel.get(stem)
+    if (!labelPath || seen.has(labelPath)) continue
+    seen.add(labelPath)
+    out.push(labelPath)
+  }
+  return out
+}
+
 export function splitAnnotatedUploadPaths(
   paths: string[],
   importFormat: string,
@@ -213,7 +243,7 @@ export function candidatesFromBrowserFiles(input: FileList | File[]): {
   return { accepted, skippedWithoutPath }
 }
 
-/** 新建任务「上传图片」单次最多导入张数。 */
+/** 单次上传图片上限（新建任务、补充图片等每次提交各自独立计数，非任务总量上限）。 */
 export const TASK_CREATE_IMAGE_UPLOAD_LIMIT = 500
 
 /** 每批 IPC 上传的图片数；过大 protobuf 会导致 MōBrowser 进程闪退。 */

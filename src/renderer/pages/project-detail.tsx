@@ -16,10 +16,6 @@ import {
   updateProject,
 } from "@/lib/projects-api"
 import { loadImageObjectUrl, resolveTaskFirstImagePath } from "@/lib/auto-thumbnails"
-import {
-  removeShapesWithDeletedLabelsFromProject,
-  removedTagNamesSince,
-} from "@/lib/project-tag-annotation-cleanup"
 import { normalizeSkeletonTemplateSpec, skeletonTemplateSpecEqual } from "@/lib/skeleton-template"
 import { removeLegacyExportVersionsStorageKey } from "@/lib/project-export-storage"
 import { deleteTask, formatTaskTime, loadTasks, persistTasks, removeLegacyTasksStorageKey, updateTaskAnnotatedFileCount, type TaskItem } from "@/lib/project-tasks-storage"
@@ -180,7 +176,6 @@ export default function ProjectDetailPage() {
   const [autoAnnotateProgressByTaskId, setAutoAnnotateProgressByTaskId] = useState<
     Record<string, YoloAutoAnnotateProgress>
   >({})
-
   function flashSaveStatus(status: "success" | "error") {
     if (saveFlashTimerRef.current) {
       window.clearTimeout(saveFlashTimerRef.current)
@@ -430,22 +425,9 @@ export default function ProjectDetailPage() {
   }, [currentTags, initialTags, name, project, projectInfo])
 
   async function handleSaveProject() {
-    if (!projectId) return
+    if (!projectId || saving) return
     setSaving(true)
     try {
-      const removedNames = removedTagNamesSince(initialTags, currentTags)
-      if (removedNames.length > 0) {
-        const cleanup = await removeShapesWithDeletedLabelsFromProject({
-          projectId,
-          tasks,
-          deletedLabels: new Set(removedNames),
-        })
-        if (cleanup.errorMessage) {
-          flashSaveStatus("error")
-          return
-        }
-      }
-
       const result = await updateProject({
         id: projectId,
         name: name.trim(),
@@ -465,7 +447,7 @@ export default function ProjectDetailPage() {
       setProjectInfo(result.project.projectInfo)
       setTags(normalizeTags(result.project.tags))
       flashSaveStatus("success")
-    } catch (error) {
+    } catch {
       flashSaveStatus("error")
     } finally {
       setSaving(false)

@@ -171,6 +171,7 @@ export default function ModelsTrainingYoloPage() {
   const [imgsz, setImgsz] = useState(640)
   const [device, setDevice] = useState("cpu")
   const [exportOnnx, setExportOnnx] = useState(false)
+  const [onnxSimplify, setOnnxSimplify] = useState(false)
   const [devices, setDevices] = useState<YoloDeviceOption[]>([])
   const [deviceEnvironment, setDeviceEnvironment] = useState<YoloCudaEnvironment | null>(null)
 
@@ -604,6 +605,7 @@ export default function ModelsTrainingYoloPage() {
         use_custom_optimizer: optimizerEnabled,
         optimizer: optimizerEnabled ? buildOptimizerTrainPayload(optimizerValues, task) : null,
         export_onnx: exportOnnx,
+        onnx_simplify: onnxSimplify,
       })
     } catch (e) {
       setTraining(false)
@@ -913,8 +915,24 @@ export default function ModelsTrainingYoloPage() {
                   id="yolo-export-onnx"
                   checked={exportOnnx}
                   disabled={!jobReady || training}
-                  onCheckedChange={setExportOnnx}
+                  onCheckedChange={(checked) => {
+                    setExportOnnx(checked)
+                    if (!checked) setOnnxSimplify(false)
+                  }}
                   label={exportOnnx ? m.switchOn : m.switchOff}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-4">
+                <div className="min-w-0">
+                  <p className="text-sm text-foreground">{m.paramOnnxSimplify}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{m.paramOnnxSimplifyHint}</p>
+                </div>
+                <GpuSwitch
+                  id="yolo-onnx-simplify"
+                  checked={onnxSimplify}
+                  disabled={!jobReady || training || !exportOnnx}
+                  onCheckedChange={setOnnxSimplify}
+                  label={onnxSimplify ? m.switchOn : m.switchOff}
                 />
               </div>
             </CardContent>

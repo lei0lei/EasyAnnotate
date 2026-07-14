@@ -6,6 +6,8 @@ import {
   candidatesFromBrowserFiles,
   pickTaskUploadFilesViaDialog,
   saveTaskUploadCandidates,
+  TASK_CREATE_IMAGE_UPLOAD_LIMIT,
+  TASK_UPLOAD_BATCH_SIZE,
   TASK_UPLOAD_PREVIEW_LIMIT,
   type TaskUploadCandidate,
 } from "@/lib/task-file-upload"
@@ -68,7 +70,12 @@ export default function ProjectTaskAppendImagesPage() {
     }
   }, [projectId])
 
-  const canSubmit = useMemo(() => !!projectId && !!taskId && !!task && files.length > 0, [files.length, projectId, task, taskId])
+  const uploadLimitExceeded = files.length > TASK_CREATE_IMAGE_UPLOAD_LIMIT
+
+  const canSubmit = useMemo(
+    () => !!projectId && !!taskId && !!task && files.length > 0 && !uploadLimitExceeded,
+    [files.length, projectId, task, taskId, uploadLimitExceeded],
+  )
 
   function mergeCandidates(incoming: TaskUploadCandidate[]) {
     if (incoming.length === 0) return
@@ -106,6 +113,12 @@ export default function ProjectTaskAppendImagesPage() {
 
   async function handleSubmit() {
     if (!projectId || !taskId || !task || !canSubmit || submitting) return
+    if (files.length > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
+      setErrorMessage(
+        `已选择 ${files.length} 张图片，超过单次上传上限 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。`,
+      )
+      return
+    }
     setSubmitting(true)
     setErrorMessage(null)
     setUploadProgress({ done: 0, total: files.length })
@@ -121,7 +134,7 @@ export default function ProjectTaskAppendImagesPage() {
         setErrorMessage(`上传文件失败：${result.errorMessage}`)
         return
       }
-      await appendTaskFileCount(projectId, taskId, files.length)
+      await appendTaskFileCount(projectId, taskId, result.savedCount)
       navigate(`/projects/${projectId}/tasks/${taskId}`, { replace: true })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -158,6 +171,18 @@ export default function ProjectTaskAppendImagesPage() {
 
           <div className="space-y-2">
             <p className="text-sm font-medium text-foreground">文件上传</p>
+            <p className="text-xs text-muted-foreground">
+              单次最多 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张（每批 {TASK_UPLOAD_BATCH_SIZE} 张上传）。
+            </p>
+            {uploadLimitExceeded ? (
+              <p className="text-xs text-destructive">
+                已选择 {files.length} 张图片，超过单次上限 {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张，请减少后重试。
+              </p>
+            ) : files.length > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                已选 {files.length} / {TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button type="button" variant="default" size="sm" onClick={() => void handlePickFiles()}>
                 选择文件

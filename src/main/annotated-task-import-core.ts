@@ -507,7 +507,7 @@ export type AnnotatedFilesImportRequest = {
   importFormat: string
 }
 
-const MAX_ANNOTATED_FILES_IMPORT = 500
+const MAX_ANNOTATED_FILES_IMPORT = 500 // 单次导入上限（与 TASK_CREATE_IMAGE_UPLOAD_LIMIT 一致）
 
 export async function runAnnotatedTaskFilesImport(
   request: AnnotatedFilesImportRequest,
@@ -540,7 +540,7 @@ export async function runAnnotatedTaskFilesImport(
       .filter((item) => fs.existsSync(item))
     if (images.length <= 0) return emptyResult("未选择有效图片文件。")
     if (images.length > MAX_ANNOTATED_FILES_IMPORT) {
-      return emptyResult(`图片数量不能超过 ${MAX_ANNOTATED_FILES_IMPORT} 张。`)
+      return emptyResult(`单次最多导入 ${MAX_ANNOTATED_FILES_IMPORT} 张图片（本次 ${images.length} 张）。`)
     }
 
     const labelByStem = new Map<string, string>()
@@ -692,6 +692,9 @@ export async function runAnnotatedTaskZipImport(
     const allFiles = await walkFilesRecursiveAsync(extractDir)
     const images = allFiles.filter((p) => IMAGE_EXTS.has(path.extname(p).toLowerCase()))
     if (images.length <= 0) return emptyResult("zip 内未找到可导入图片。")
+    if (images.length > MAX_ANNOTATED_FILES_IMPORT) {
+      return emptyResult(`单次最多导入 ${MAX_ANNOTATED_FILES_IMPORT} 张图片（ZIP 内 ${images.length} 张）。`)
+    }
 
     const txtSet = new Set<string>()
     const txtPathByRelLower = new Map<string, string>()

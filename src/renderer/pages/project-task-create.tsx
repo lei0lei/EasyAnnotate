@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { PageTabs } from "@/components/page-tabs"
 import { appendTaskFileCount, createTask, deleteTask, updateTaskAnnotatedFileCount } from "@/lib/project-tasks-storage"
-import { deleteTaskData, getProject, countTaskImageZip, startAnnotatedTaskZipImport, getAnnotatedTaskImportJob, importTaskImageZip, importAnnotatedTaskFiles, type ProjectItem } from "@/lib/projects-api"
+import { deleteTaskData, getProject, countTaskImageZip, startAnnotatedTaskFilesImport, startAnnotatedTaskZipImport, getAnnotatedTaskImportJob, importTaskImageZip, type ProjectItem } from "@/lib/projects-api"
 import {
   markProjectBootstrapAfterImport,
   projectDetailNavStateAfterImport,
@@ -76,6 +76,7 @@ export default function ProjectTaskCreatePage() {
     summaryParts: string[]
     importedAnyImage: boolean
     taskCreated: boolean
+    importKind: "zip" | "files"
   }
   const pendingCreateRef = useRef<PendingAfterImport | null>(null)
   const importCompletionHandledRef = useRef("")
@@ -173,7 +174,9 @@ export default function ProjectTaskCreatePage() {
               }
               const summaryParts = [
                 ...(pending?.summaryParts ?? []),
-                `标注 ZIP 导入 ${current.importedImageCount} 张图片 / ${current.importedAnnotationCount} 份标注（${current.detectedFormat || "unknown"}）`,
+                pending?.importKind === "files"
+                  ? `标注文件导入 ${current.importedImageCount} 张图片 / ${current.importedAnnotationCount} 份标注（${current.detectedFormat || "unknown"}）`
+                  : `标注 ZIP 导入 ${current.importedImageCount} 张图片 / ${current.importedAnnotationCount} 份标注（${current.detectedFormat || "unknown"}）`,
               ]
               if (pageAliveRef.current) {
                 setImportSummary(summaryParts.join("；"))
@@ -574,7 +577,17 @@ export default function ProjectTaskCreatePage() {
 
       if (hasAnnotatedFileSelection) {
         const imagePaths = annotatedImageFiles.map((item) => item.sourcePath.trim()).filter(Boolean)
-        const importResult = await importAnnotatedTaskFiles({
+        setImportProgress(0)
+        setImportMessage("正在启动导入…")
+        importCompletionHandledRef.current = ""
+        await createTask(projectId, {
+          id: taskId,
+          name: name.trim(),
+          subset: subset.trim(),
+          fileCount: totalImageCount,
+        })
+        importedAnyImage = importedAnyImage || totalImageCount > 0
+        const started = await startAnnotatedTaskFilesImport({
           projectId,
           taskId,
           subset: subset.trim(),
@@ -583,31 +596,25 @@ export default function ProjectTaskCreatePage() {
           yoloClassPaths: annotatedYoloClassPaths,
           importFormat: annotatedImportFormat,
         })
-        if (importResult.errorMessage) {
+        if (started.errorMessage) {
+          await deleteTask(projectId, taskId).catch(() => undefined)
           await deleteTaskData({ projectId, taskId }).catch(() => undefined)
-          setErrorMessage(`导入图片及标注失败：${importResult.errorMessage}`)
+          setErrorMessage(`导入图片及标注失败：${started.errorMessage}`)
           return
         }
-        importedAnyImage = importResult.importedImageCount > 0
-        totalImageCount = importResult.importedImageCount
-        summaryParts.push(
-          `导入 ${importResult.importedImageCount} 张图片 / ${importResult.importedAnnotationCount} 份标注（${importResult.detectedFormat || annotatedImportFormat}）`,
-        )
-        setImportSummary(summaryParts.join("；"))
-        await createTask(projectId, {
-          id: taskId,
+        markProjectBootstrapAfterImport(projectId)
+        importJobStarted = true
+        pendingCreateRef.current = {
+          taskId,
           name: name.trim(),
           subset: subset.trim(),
-          fileCount: totalImageCount,
-        })
-        if (importResult.importedAnnotationCount > 0) {
-          await updateTaskAnnotatedFileCount(projectId, taskId, importResult.importedAnnotationCount)
+          totalImageCount,
+          summaryParts,
+          importedAnyImage,
+          taskCreated: true,
+          importKind: "files",
         }
-        markProjectBootstrapAfterImport(projectId)
-        navigate(`/projects/${projectId}`, {
-          replace: true,
-          state: projectDetailNavStateAfterImport(),
-        })
+        setActiveImportJobId(started.jobId)
         return
       }
 
@@ -645,6 +652,7 @@ export default function ProjectTaskCreatePage() {
           summaryParts,
           importedAnyImage,
           taskCreated: true,
+          importKind: "zip",
         }
         setActiveImportJobId(started.jobId)
         return

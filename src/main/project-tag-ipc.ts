@@ -34,19 +34,21 @@ export function protoProjectTagsToRecords(tags: ProjectTag[]): ProjectTagRecord[
     const kind = typeof t.kind === "string" && t.kind.trim() === "skeleton" ? "skeleton" : "plain"
     if (kind === "skeleton" && t.skeletonTemplate) {
       const st = t.skeletonTemplate
+      const points = Array.isArray(st.points) ? st.points : []
+      const edges = Array.isArray(st.edges) ? st.edges : []
       return {
         name: t.name,
         color: t.color,
         kind: "skeleton",
         skeletonTemplate: {
           version: 1,
-          points: st.points.map((p) => ({
+          points: points.map((p) => ({
             id: p.id,
             label: p.label,
             x: p.x,
             y: p.y,
           })),
-          edges: st.edges.map((e) => ({ from: e.from, to: e.to })),
+          edges: edges.map((e) => ({ from: e.from, to: e.to })),
         },
       }
     }

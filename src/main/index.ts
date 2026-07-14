@@ -38,6 +38,16 @@ import {
   SaveProjectTasksResponse,
   RemoveDeletedLabelsFromProjectAnnotationsRequest,
   RemoveDeletedLabelsFromProjectAnnotationsResponse,
+  CollectProjectAnnotationJsonPathsRequest,
+  CollectProjectAnnotationJsonPathsResponse,
+  StartTagAnnotationCleanupSessionRequest,
+  StartTagAnnotationCleanupSessionResponse,
+  GetTagAnnotationCleanupSessionStatusRequest,
+  GetTagAnnotationCleanupSessionStatusResponse,
+  CancelTagAnnotationCleanupSessionRequest,
+  CancelTagAnnotationCleanupSessionResponse,
+  DisposeTagAnnotationCleanupSessionRequest,
+  DisposeTagAnnotationCleanupSessionResponse,
   GetProjectExportVersionsRequest,
   GetProjectExportVersionsResponse,
   SaveProjectExportVersionsRequest,
@@ -60,6 +70,12 @@ import {
   ImportAnnotatedTaskFilesResponse,
   StartAnnotatedTaskZipImportRequest,
   StartAnnotatedTaskZipImportResponse,
+  BeginAnnotatedTaskFilesImportRequest,
+  BeginAnnotatedTaskFilesImportResponse,
+  StageAnnotatedTaskFilesImportRequest,
+  StageAnnotatedTaskFilesImportResponse,
+  CommitAnnotatedTaskFilesImportRequest,
+  CommitAnnotatedTaskFilesImportResponse,
   StartTaskDeleteRequest,
   StartTaskDeleteResponse,
   GetAnnotatedTaskImportJobRequest,
@@ -119,7 +135,14 @@ import {
 } from "./app-config-disk";
 import { validateProjectDirectory } from "./project-directory";
 import { protoProjectTagsToRecords, projectTagRecordsToProto } from "./project-tag-ipc";
-import { removeDeletedLabelsFromProjectAnnotations } from "./project-tag-annotation-cleanup";
+import {
+  cancelTagAnnotationCleanupSession,
+  countProjectAnnotationJsonFiles,
+  disposeTagAnnotationCleanupSession,
+  getTagAnnotationCleanupSessionStatus,
+  removeDeletedLabelsFromProjectAnnotations,
+  startTagAnnotationCleanupSession,
+} from "./project-tag-annotation-cleanup";
 import {
   deleteProjectExportVersionsFile,
   readProjectExportVersionsJson,
@@ -183,6 +206,11 @@ import {
   startAnnotatedTaskImportJob,
   getAnnotatedImportJobRecord,
 } from "./task-import";
+import {
+  beginAnnotatedTaskFilesImportStaging,
+  commitAnnotatedTaskFilesImportStaging,
+  stageAnnotatedTaskFilesImportPaths,
+} from "./task-import-files-staging";
 import {
   listTaskDeleteJobsAsExportJobsForIpc,
   startTaskDeleteJob,
@@ -921,7 +949,7 @@ function walkFilesRecursive(rootDir: string): string[] {
   return out
 }
 
-/** 与 renderer task-file-upload.ts TASK_CREATE_IMAGE_UPLOAD_LIMIT 保持一致 */
+/** 与 renderer task-file-upload.ts TASK_CREATE_IMAGE_UPLOAD_LIMIT 保持一致：单次上传上限。 */
 const TASK_CREATE_IMAGE_UPLOAD_LIMIT = 500
 
 const TASK_IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"])
@@ -1813,10 +1841,9 @@ ipc.registerService(AppService({
         const fileName = path.basename(rawFileName).trim()
         return fileName && isTaskImageFilePath(fileName)
       }).length
-      const existingImageCount = countImagesInTaskDir(taskDir)
-      if (existingImageCount + incomingImageCount > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
+      if (incomingImageCount > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
         return {
-          errorMessage: `单次任务最多导入 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张图片（当前已有 ${existingImageCount} 张，本次 ${incomingImageCount} 张）。`,
+          errorMessage: `单次最多上传 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张图片（本次 ${incomingImageCount} 张）。`,
           savedPaths: [],
         }
       }
@@ -1927,11 +1954,9 @@ ipc.registerService(AppService({
       const taskDir = path.join(taskRootDir, subset)
       await fs.promises.mkdir(taskDir, { recursive: true })
 
-      const existingImageCount = countImagesInTaskDir(taskDir)
-      const totalAfterImport = existingImageCount + images.length
-      if (totalAfterImport > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
+      if (images.length > TASK_CREATE_IMAGE_UPLOAD_LIMIT) {
         return {
-          errorMessage: `单次任务最多导入 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张图片（当前已有 ${existingImageCount} 张，ZIP 内 ${images.length} 张）。`,
+          errorMessage: `单次最多上传 ${TASK_CREATE_IMAGE_UPLOAD_LIMIT} 张图片（ZIP 内 ${images.length} 张）。`,
           savedPaths: [],
           importedImageCount: 0,
         }
@@ -2062,6 +2087,64 @@ ipc.registerService(AppService({
         importFormat,
       })
       return { errorMessage: started.errorMessage, jobId: started.jobId }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        jobId: "",
+      }
+    }
+  },
+  async BeginAnnotatedTaskFilesImport(
+    request: BeginAnnotatedTaskFilesImportRequest,
+  ): Promise<BeginAnnotatedTaskFilesImportResponse> {
+    try {
+      const importFormat = (request.importFormat || "xanylabeling").trim().toLowerCase()
+      const allowFormats = new Set(["xanylabeling", "yolo-detect", "yolo-obb", "yolo-segment", "yolo-pose"])
+      if (!allowFormats.has(importFormat)) {
+        return { errorMessage: `不支持的导入格式：${importFormat}`, stagingId: "" }
+      }
+      const project = getProject(request.globalConfigDir, request.projectId)
+      if (!project) {
+        return { errorMessage: "项目不存在。", stagingId: "" }
+      }
+      const started = beginAnnotatedTaskFilesImportStaging({
+        globalConfigDir: request.globalConfigDir,
+        projectId: request.projectId,
+        taskId: request.taskId,
+        subset: request.subset,
+        importFormat,
+      })
+      return { errorMessage: started.errorMessage, stagingId: started.stagingId }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        stagingId: "",
+      }
+    }
+  },
+  async StageAnnotatedTaskFilesImport(
+    request: StageAnnotatedTaskFilesImportRequest,
+  ): Promise<StageAnnotatedTaskFilesImportResponse> {
+    try {
+      const staged = stageAnnotatedTaskFilesImportPaths({
+        stagingId: request.stagingId,
+        imagePaths: (request.imagePaths ?? []).map((item) => resolveExistingIpcPath(item)).filter(Boolean),
+        labelPaths: (request.labelPaths ?? []).map((item) => resolveExistingIpcPath(item)).filter(Boolean),
+        yoloClassPaths: (request.yoloClassPaths ?? []).map((item) => resolveExistingIpcPath(item)).filter(Boolean),
+      })
+      return { errorMessage: staged.errorMessage }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }
+    }
+  },
+  async CommitAnnotatedTaskFilesImport(
+    request: CommitAnnotatedTaskFilesImportRequest,
+  ): Promise<CommitAnnotatedTaskFilesImportResponse> {
+    try {
+      const committed = commitAnnotatedTaskFilesImportStaging(request.stagingId)
+      return { errorMessage: committed.errorMessage, jobId: committed.jobId }
     } catch (error) {
       return {
         errorMessage: error instanceof Error ? error.message : String(error),
@@ -2275,7 +2358,7 @@ ipc.registerService(AppService({
     request: RemoveDeletedLabelsFromProjectAnnotationsRequest,
   ): Promise<RemoveDeletedLabelsFromProjectAnnotationsResponse> {
     try {
-      const result = removeDeletedLabelsFromProjectAnnotations({
+      const result = await removeDeletedLabelsFromProjectAnnotations({
         globalConfigDir: request.globalConfigDir ?? "",
         projectId: request.projectId ?? "",
         taskIds: request.taskIds ?? [],
@@ -2290,6 +2373,106 @@ ipc.registerService(AppService({
         errorMessage: error instanceof Error ? error.message : String(error),
         updatedFileCount: 0,
       }
+    }
+  },
+  async CollectProjectAnnotationJsonPaths(
+    request: CollectProjectAnnotationJsonPathsRequest,
+  ): Promise<CollectProjectAnnotationJsonPathsResponse> {
+    try {
+      const result = countProjectAnnotationJsonFiles({
+        globalConfigDir: request.globalConfigDir ?? "",
+        projectId: request.projectId ?? "",
+        taskIds: request.taskIds ?? [],
+      })
+      return {
+        errorMessage: result.errorMessage,
+        totalCount: result.totalCount,
+      }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        totalCount: 0,
+      }
+    }
+  },
+  async StartTagAnnotationCleanupSession(
+    request: StartTagAnnotationCleanupSessionRequest,
+  ): Promise<StartTagAnnotationCleanupSessionResponse> {
+    try {
+      const result = startTagAnnotationCleanupSession({
+        globalConfigDir: request.globalConfigDir ?? "",
+        projectId: request.projectId ?? "",
+        taskIds: request.taskIds ?? [],
+        deletedLabels: request.deletedLabels ?? [],
+        projectName: request.projectName ?? "",
+        projectInfo: request.projectInfo ?? "",
+        tags: request.tags ?? [],
+      })
+      return {
+        errorMessage: result.errorMessage,
+        sessionId: result.sessionId,
+        totalCount: result.totalCount,
+      }
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : String(error),
+        sessionId: "",
+        totalCount: 0,
+      }
+    }
+  },
+  async GetTagAnnotationCleanupSessionStatus(
+    request: GetTagAnnotationCleanupSessionStatusRequest,
+  ): Promise<GetTagAnnotationCleanupSessionStatusResponse> {
+    try {
+      const result = getTagAnnotationCleanupSessionStatus(request.sessionId ?? "")
+      return {
+        found: result.found,
+        finished: result.finished,
+        failed: result.failed,
+        cancelled: result.cancelled,
+        done: result.done,
+        total: result.total,
+        progress: result.progress,
+        message: result.message,
+        updatedFileCount: result.updatedFileCount,
+        errorMessage: result.errorMessage,
+        projectSaved: result.projectSaved,
+      }
+    } catch (error) {
+      return {
+        found: false,
+        finished: true,
+        failed: true,
+        cancelled: false,
+        done: 0,
+        total: 0,
+        progress: 0,
+        message: "",
+        updatedFileCount: 0,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        projectSaved: false,
+      }
+    }
+  },
+  async CancelTagAnnotationCleanupSession(
+    request: CancelTagAnnotationCleanupSessionRequest,
+  ): Promise<CancelTagAnnotationCleanupSessionResponse> {
+    try {
+      const result = cancelTagAnnotationCleanupSession(request.sessionId ?? "")
+      return { errorMessage: result.errorMessage }
+    } catch (error) {
+      return { errorMessage: error instanceof Error ? error.message : String(error) }
+    }
+  },
+  async DisposeTagAnnotationCleanupSession(
+    request: DisposeTagAnnotationCleanupSessionRequest,
+  ): Promise<DisposeTagAnnotationCleanupSessionResponse> {
+    try {
+      const result = disposeTagAnnotationCleanupSession(request.sessionId ?? "")
+      return { errorMessage: result.errorMessage }
+    } catch (error) {
+      return { errorMessage: error instanceof Error ? error.message : String(error) }
     }
   },
   async GetProjectTaskAnnotatedCounts(

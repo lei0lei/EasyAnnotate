@@ -504,6 +504,7 @@ export async function startYoloTraining(
     use_custom_optimizer: boolean
     optimizer: Record<string, unknown> | null
     export_onnx: boolean
+    onnx_simplify: boolean
   },
 ): Promise<void> {
   const res = await fetchWithTimeout(

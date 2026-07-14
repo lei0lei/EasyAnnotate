@@ -8,6 +8,7 @@ import {
   normalizeSkeletonTemplateSpec,
   type SkeletonTemplateSpec,
 } from "@/lib/skeleton-template"
+import { labelPathsForImageBatch, TASK_UPLOAD_BATCH_SIZE } from "@/lib/task-file-upload"
 
 export type ProjectItem = {
   id: string
@@ -80,7 +81,7 @@ function protoTemplateToSpec(pb: SkeletonTemplatePb | undefined): SkeletonTempla
 }
 
 /** IPC / protobuf 仅序列化 ProtoProjectTag 上的字段，须与 mapProject 对称 */
-function projectTagsToProto(tags: ProjectTag[]): ProtoProjectTag[] {
+export function projectTagsToProto(tags: ProjectTag[]): ProtoProjectTag[] {
   return tags.map((t) => {
     if (t.kind === "skeleton") {
       return {
@@ -342,6 +343,55 @@ export async function startAnnotatedTaskZipImport(payload: {
   return {
     errorMessage: response.errorMessage || "",
     jobId: response.jobId || "",
+  }
+}
+
+export async function startAnnotatedTaskFilesImport(payload: {
+  projectId: string
+  taskId: string
+  subset: string
+  imagePaths: string[]
+  labelPaths: string[]
+  yoloClassPaths: string[]
+  importFormat: string
+}): Promise<{ errorMessage: string; jobId: string }> {
+  const imagePaths = payload.imagePaths.map((item) => item.trim()).filter(Boolean)
+  if (imagePaths.length <= 0) {
+    return { errorMessage: "未选择有效图片文件。", jobId: "" }
+  }
+
+  const begin = await ipc.app.BeginAnnotatedTaskFilesImport({
+    globalConfigDir: globalConfigDir(),
+    projectId: payload.projectId,
+    taskId: payload.taskId,
+    subset: payload.subset,
+    importFormat: payload.importFormat,
+  })
+  if (begin.errorMessage) {
+    return { errorMessage: begin.errorMessage, jobId: "" }
+  }
+  const stagingId = begin.stagingId || ""
+  if (!stagingId) {
+    return { errorMessage: "无法创建导入暂存。", jobId: "" }
+  }
+
+  for (let offset = 0; offset < imagePaths.length; offset += TASK_UPLOAD_BATCH_SIZE) {
+    const batch = imagePaths.slice(offset, offset + TASK_UPLOAD_BATCH_SIZE)
+    const stage = await ipc.app.StageAnnotatedTaskFilesImport({
+      stagingId,
+      imagePaths: batch,
+      labelPaths: labelPathsForImageBatch(batch, payload.labelPaths),
+      yoloClassPaths: offset === 0 ? payload.yoloClassPaths : [],
+    })
+    if (stage.errorMessage) {
+      return { errorMessage: stage.errorMessage, jobId: "" }
+    }
+  }
+
+  const commit = await ipc.app.CommitAnnotatedTaskFilesImport({ stagingId })
+  return {
+    errorMessage: commit.errorMessage || "",
+    jobId: commit.jobId || "",
   }
 }
 

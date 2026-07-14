@@ -29,6 +29,8 @@ export type YoloTrainingMessages = {
   paramDevice: string
   paramExportOnnx: string
   paramExportOnnxHint: string
+  paramOnnxSimplify: string
+  paramOnnxSimplifyHint: string
   boardAugment: string
   boardOptimizer: string
   switchOn: string
@@ -131,6 +133,8 @@ const zhCN: YoloTrainingMessages = {
   paramDevice: "设备",
   paramExportOnnx: "训练后导出 ONNX",
   paramExportOnnxHint: "训练成功后使用 Ultralytics export，输入尺寸与上方 imgsz 一致",
+  paramOnnxSimplify: "ONNX simplify",
+  paramOnnxSimplifyHint: "用 onnxslim 精简图；Windows 本地建议关闭，避免导出卡住",
   boardAugment: "图像增强",
   boardOptimizer: "优化器",
   switchOn: "启用",
@@ -240,6 +244,8 @@ const en: YoloTrainingMessages = {
   paramDevice: "Device",
   paramExportOnnx: "Export ONNX after training",
   paramExportOnnxHint: "Runs Ultralytics export when training finishes; imgsz matches the value above",
+  paramOnnxSimplify: "ONNX simplify",
+  paramOnnxSimplifyHint: "Slim the graph with onnxslim; keep off on Windows local to avoid export hangs",
   boardAugment: "Augmentation",
   boardOptimizer: "Optimizer",
   switchOn: "On",

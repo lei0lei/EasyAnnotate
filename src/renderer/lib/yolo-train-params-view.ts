@@ -25,6 +25,7 @@ const COMMON_LABELS: Record<string, string> = {
   device: "设备 device",
   time_hours: "训练时限（小时）",
   export_onnx: "训练后导出 ONNX",
+  onnx_simplify: "ONNX simplify",
 }
 
 const augmentLabelByKey = new Map(
@@ -137,6 +138,12 @@ export function buildTrainParamSections(workspace: YoloWorkspaceSnapshot): Train
     commonRows.push({
       label: COMMON_LABELS.export_onnx,
       value: formatBoolFlag(trainParams.export_onnx),
+    })
+  }
+  if ("onnx_simplify" in trainParams) {
+    commonRows.push({
+      label: COMMON_LABELS.onnx_simplify,
+      value: formatBoolFlag(trainParams.onnx_simplify),
     })
   }
   if (commonRows.length > 0) {

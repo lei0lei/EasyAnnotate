@@ -5,11 +5,17 @@ import os from "node:os"
 import path from "node:path"
 import { resolveChildScriptLaunch } from "./child-process-launch.js"
 import {
+  runAnnotatedTaskFilesImport,
   runAnnotatedTaskZipImport,
+  type AnnotatedFilesImportRequest,
   type AnnotatedImportRequest,
 } from "./annotated-task-import-core"
 
 type ImportStatus = "queued" | "running" | "success" | "failed"
+
+export type ImportChildPayloadReq =
+  | (AnnotatedImportRequest & { importKind?: "zip" })
+  | (AnnotatedFilesImportRequest & { importKind: "files" })
 
 export type AnnotatedImportJobRecord = {
   id: string
@@ -184,7 +190,7 @@ function cleanupImportChild(jobId: string): void {
   activeImportChildren.delete(jobId)
 }
 
-function spawnImportChild(job: AnnotatedImportJobRecord, req: AnnotatedImportRequest): boolean {
+function spawnImportChild(job: AnnotatedImportJobRecord, req: ImportChildPayloadReq): boolean {
   const reqPath = importRequestPath(job.id)
   try {
     fs.writeFileSync(reqPath, JSON.stringify({ job, req }), "utf8")
@@ -336,26 +342,32 @@ async function runImportInProcess(job: AnnotatedImportJobRecord, req: AnnotatedI
   })
 }
 
-export async function runImportFromChildArgv(jobId: string, reqPath: string): Promise<void> {
-  process.env.EA_IMPORT_CHILD = "1"
-  process.env.EA_IMPORT_JOB_ID = jobId
-  const raw = fs.readFileSync(reqPath, "utf8")
-  const payload = JSON.parse(raw) as { job: AnnotatedImportJobRecord; req: AnnotatedImportRequest }
-  if (!payload?.job?.id || !payload.req) {
-    throw new Error("Invalid import request payload")
-  }
+async function runImportFromChildPayload(jobId: string, payload: {
+  job: AnnotatedImportJobRecord
+  req: ImportChildPayloadReq
+}): Promise<void> {
   importJobs.set(jobId, payload.job)
   writeImportStateFile(jobId, payload.job)
   updateImportJob(jobId, { status: "running", progress: 1, statusMessage: "正在导入…" })
 
-  const result = await runAnnotatedTaskZipImport(payload.req, (patch) => {
+  const onProgress = (patch: {
+    progress?: number
+    statusMessage?: string
+    importedImageCount?: number
+    importedAnnotationCount?: number
+  }) => {
     updateImportJob(jobId, {
       progress: patch.progress,
       statusMessage: patch.statusMessage,
       importedImageCount: patch.importedImageCount,
       importedAnnotationCount: patch.importedAnnotationCount,
     })
-  })
+  }
+
+  const result =
+    payload.req.importKind === "files"
+      ? await runAnnotatedTaskFilesImport(payload.req, onProgress)
+      : await runAnnotatedTaskZipImport(payload.req, onProgress)
 
   if (result.errorMessage) {
     updateImportJob(jobId, {
@@ -375,6 +387,17 @@ export async function runImportFromChildArgv(jobId: string, reqPath: string): Pr
     detectedFormat: result.detectedFormat,
     statusMessage: `导入完成：${result.importedImageCount} 张图片 / ${result.importedAnnotationCount} 份标注`,
   })
+}
+
+export async function runImportFromChildArgv(jobId: string, reqPath: string): Promise<void> {
+  process.env.EA_IMPORT_CHILD = "1"
+  process.env.EA_IMPORT_JOB_ID = jobId
+  const raw = fs.readFileSync(reqPath, "utf8")
+  const payload = JSON.parse(raw) as { job: AnnotatedImportJobRecord; req: ImportChildPayloadReq }
+  if (!payload?.job?.id || !payload.req) {
+    throw new Error("Invalid import request payload")
+  }
+  await runImportFromChildPayload(jobId, payload)
 }
 
 export const ANNOTATED_IMPORT_EXPORT_FORMAT = "annotated-import"
@@ -440,7 +463,7 @@ export function startAnnotatedTaskImportJob(req: AnnotatedImportRequest): { jobI
   const job = createImportJobRecord(req)
   importJobs.set(job.id, job)
 
-  const spawned = spawnImportChild(job, req)
+  const spawned = spawnImportChild(job, { ...req, importKind: "zip" })
   if (spawned) {
     return { jobId: job.id, errorMessage: "" }
   }
@@ -452,6 +475,52 @@ export function startAnnotatedTaskImportJob(req: AnnotatedImportRequest): { jobI
       failed?.errorMessage ||
       failed?.statusMessage ||
       "无法启动导入子进程（请先运行 npx vite build --mode main 并重启应用）",
+  }
+}
+
+function createFilesImportJobRecord(req: AnnotatedFilesImportRequest): AnnotatedImportJobRecord {
+  const now = nowIso()
+  return {
+    id: randomUUID(),
+    projectId: req.projectId,
+    taskId: req.taskId,
+    subset: req.subset,
+    zipPath: "",
+    importFormat: req.importFormat,
+    status: "queued",
+    progress: 0,
+    message: "等待导入…",
+    statusMessage: "等待导入…",
+    importedImageCount: 0,
+    importedAnnotationCount: 0,
+    detectedFormat: "",
+    errorMessage: "",
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+export function startAnnotatedTaskFilesImportJob(req: AnnotatedFilesImportRequest): {
+  jobId: string
+  errorMessage: string
+  job: AnnotatedImportJobRecord | null
+} {
+  const job = createFilesImportJobRecord(req)
+  importJobs.set(job.id, job)
+
+  const spawned = spawnImportChild(job, { ...req, importKind: "files" })
+  if (spawned) {
+    return { jobId: job.id, errorMessage: "", job }
+  }
+
+  const failed = importJobs.get(job.id)
+  return {
+    jobId: job.id,
+    errorMessage:
+      failed?.errorMessage ||
+      failed?.statusMessage ||
+      "无法启动导入子进程（请先运行 npx vite build --mode main 并重启应用）",
+    job,
   }
 }
 
