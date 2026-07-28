@@ -1009,6 +1009,17 @@ function removeExt(relPath: string): string {
   return path.join(parsed.dir, parsed.name)
 }
 
+function yoloImageRelativePath(item: ExportImageItem, keepProjectStructure: boolean): string {
+  const relPath = keepProjectStructure ? item.relativeWithinSubset : item.fileName
+  return keepProjectStructure
+    ? path.join(item.subset, "images", relPath)
+    : path.join("images", item.subset, relPath)
+}
+
+function yoloDataImagePath(imageRel: string): string {
+  return `data/${imageRel.split(path.sep).join("/")}`
+}
+
 function copyImage(imagePath: string, targetPath: string): string {
   ensureDir(path.dirname(targetPath))
   fs.copyFileSync(imagePath, targetPath)
@@ -1099,9 +1110,7 @@ async function exportOneYoloImage(
   sink: ExportSink,
 ): Promise<void> {
   const relPath = keepProjectStructure ? item.relativeWithinSubset : item.fileName
-  const imageRel = keepProjectStructure
-    ? path.join(item.subset, "images", relPath)
-    : path.join("images", item.subset, relPath)
+  const imageRel = yoloImageRelativePath(item, keepProjectStructure)
   const labelRel = keepProjectStructure
     ? path.join(item.subset, "labels", `${removeExt(relPath)}.txt`)
     : path.join("labels", item.subset, `${removeExt(relPath)}.txt`)
@@ -1189,6 +1198,7 @@ async function runYoloExport(job: ExportJobRecord, req: ExportRequest): Promise<
   writeExportStage(job.id, `stagingDir=${stagingDir}`)
 
   const splitSet = new Set<string>()
+  const imagePathsBySubset = new Map<string, string[]>()
   let done = 0
   const exportProgressCap = compressToZip ? 82 : 99
   const updateProgress = (message: string) => {
@@ -1231,6 +1241,9 @@ async function runYoloExport(job: ExportJobRecord, req: ExportRequest): Promise<
           )
           throw error
         }
+        const imagePaths = imagePathsBySubset.get(item.subset) ?? []
+        imagePaths.push(yoloDataImagePath(yoloImageRelativePath(item, keepProjectStructure)))
+        imagePathsBySubset.set(item.subset, imagePaths)
         done += 1
         updateProgress(`导出 ${item.fileName}`)
         if (done === 1 || done % 10 === 0) {
@@ -1245,6 +1258,10 @@ async function runYoloExport(job: ExportJobRecord, req: ExportRequest): Promise<
     if (done === 0) {
       updateJob(job.id, { status: "failed", progress: 100, message: "没有可导出的图片" })
       return
+    }
+
+    for (const [subset, imagePaths] of imagePathsBySubset) {
+      await sink.writeTextFile(`${subset}.txt`, `${imagePaths.join("\n")}\n`)
     }
 
     if (req.exportFormat === "yolo-pose" && poseLayout) {

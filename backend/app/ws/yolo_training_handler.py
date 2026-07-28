@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import tempfile
 import uuid
@@ -19,6 +20,8 @@ from app.train import yolo_workspace
 from app.ws.connection import WsConnection
 from app.ws.protocol_helpers import ws_reply_error as _reply_error
 from app.ws.protocol_helpers import ws_reply_ok as _reply_ok
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,6 +40,15 @@ class _PendingYoloBaseModel:
     family: str
     task: str
     filename: str
+    byte_length: int
+
+
+@dataclass
+class _PendingYoloBaseModelChunk:
+    request_id: str
+    job_slug: str
+    upload_id: str
+    chunk_index: int
     byte_length: int
 
 
@@ -105,6 +117,70 @@ async def handle_yolo_training_text(conn: WsConnection, msg_type: str, request_i
             await _reply_ok(conn, rid, "training.yolo.dataset.upload.complete.ok", result)
         except (FileNotFoundError, ValueError) as e:
             await _reply_error(conn, rid, str(e), code="invalid_upload")
+        return True
+
+    if msg_type == "training.yolo.base_model.upload.init":
+        rid = request_id or uuid.uuid4().hex
+        job_slug = str(payload.get("job_slug", "")).strip()
+        family = str(payload.get("family", "")).strip()
+        task = str(payload.get("task", "")).strip()
+        filename = str(payload.get("filename", "upload.pt")).strip() or "upload.pt"
+        try:
+            total_size = int(payload.get("total_size", 0))
+        except (TypeError, ValueError):
+            total_size = 0
+        try:
+            result = await asyncio.to_thread(
+                yolo_chunk_transfer.init_base_model_upload,
+                job_slug,
+                filename=filename,
+                total_size=total_size,
+                family=family,
+                task=task,
+            )
+            await _reply_ok(conn, rid, "training.yolo.base_model.upload.init.ok", result)
+        except (FileNotFoundError, ValueError) as e:
+            await _reply_error(conn, rid, str(e), code="invalid_upload")
+        return True
+
+    if msg_type == "training.yolo.base_model.upload.chunk.begin":
+        if conn.pending_yolo_chunk is not None or conn.pending_yolo_base_model is not None or conn.pending_yolo_batch_chunk is not None or conn.pending_yolo_batch_predict is not None or conn.pending_sam_prepare is not None:
+            await _reply_error(conn, request_id, "binary upload already in progress", code="upload_busy")
+            return True
+        job_slug = str(payload.get("job_slug", "")).strip()
+        upload_id = str(payload.get("upload_id", "")).strip()
+        try:
+            chunk_index = int(payload.get("chunk_index", -1))
+            byte_length = int(payload.get("byte_length", 0))
+        except (TypeError, ValueError):
+            chunk_index = -1
+            byte_length = 0
+        if not job_slug or not upload_id or chunk_index < 0 or byte_length <= 0:
+            await _reply_error(conn, request_id, "invalid base model chunk payload", code="invalid_upload")
+            return True
+        rid = request_id or uuid.uuid4().hex
+        conn.pending_yolo_base_model = _PendingYoloBaseModelChunk(
+            request_id=rid,
+            job_slug=job_slug,
+            upload_id=upload_id,
+            chunk_index=chunk_index,
+            byte_length=byte_length,
+        )
+        await _reply_ok(conn, rid, "training.yolo.base_model.upload.chunk.ready", {"byte_length": byte_length})
+        return True
+
+    if msg_type == "training.yolo.base_model.upload.complete":
+        rid = request_id or uuid.uuid4().hex
+        job_slug = str(payload.get("job_slug", "")).strip()
+        upload_id = str(payload.get("upload_id", "")).strip()
+        try:
+            result = await asyncio.to_thread(yolo_chunk_transfer.complete_base_model_upload, job_slug, upload_id)
+            await _reply_ok(conn, rid, "training.yolo.base_model.upload.complete.ok", result)
+        except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
+            await _reply_error(conn, rid, str(e), code="invalid_upload")
+        except Exception as e:
+            _log.exception("YOLO base model upload completion failed")
+            await _reply_error(conn, rid, str(e).strip() or type(e).__name__, code="server_error")
         return True
 
     if msg_type == "training.yolo.base_model.upload.begin":
@@ -337,6 +413,22 @@ async def handle_yolo_training_binary(conn: WsConnection, data: bytes) -> bool:
                 code="invalid_upload",
             )
             return True
+        if isinstance(pending_pt, _PendingYoloBaseModelChunk):
+            try:
+                result = await asyncio.to_thread(
+                    yolo_chunk_transfer.save_base_model_upload_chunk,
+                    pending_pt.job_slug,
+                    pending_pt.upload_id,
+                    pending_pt.chunk_index,
+                    data,
+                )
+                await _reply_ok(conn, rid, "training.yolo.base_model.upload.chunk.ok", result)
+            except (FileNotFoundError, ValueError, OSError) as e:
+                await _reply_error(conn, rid, str(e), code="invalid_upload")
+            except Exception as e:
+                _log.exception("YOLO base model chunk upload failed")
+                await _reply_error(conn, rid, str(e).strip() or type(e).__name__, code="server_error")
+            return True
         tmp = ""
         try:
             with tempfile.NamedTemporaryFile(prefix="ea-yolo-ws-", suffix=".pt", delete=False) as f:
@@ -364,6 +456,9 @@ async def handle_yolo_training_binary(conn: WsConnection, data: bytes) -> bool:
             )
         except (ValueError, RuntimeError, FileNotFoundError) as e:
             await _reply_error(conn, rid, str(e), code="invalid_upload")
+        except Exception as e:
+            _log.exception("Legacy YOLO base model upload failed")
+            await _reply_error(conn, rid, str(e).strip() or type(e).__name__, code="server_error")
         finally:
             if tmp:
                 Path(tmp).unlink(missing_ok=True)

@@ -291,6 +291,7 @@ export async function uploadYoloBaseModelViaWs(args: {
   sourcePtPath: string
   family: string
   task: string
+  onChunkProgress?: (done: number, total: number) => void
   timeoutMs?: number
 }): Promise<YoloBaseModelUploadResult> {
   const timeoutMs = args.timeoutMs ?? 10 * 60 * 1000
@@ -298,38 +299,93 @@ export async function uploadYoloBaseModelViaWs(args: {
   if (!fs.existsSync(sourcePtPath)) {
     throw new Error(`权重文件不存在：${sourcePtPath}`)
   }
-  const bytes = fs.readFileSync(sourcePtPath)
+  const stat = fs.statSync(sourcePtPath)
+  const totalSize = stat.size
   const filename = path.basename(sourcePtPath)
+  const totalChunks = Math.ceil(totalSize / CHUNK_SIZE)
 
   await connectYoloTrainingWs(args.wsUrl, args.clientId, timeoutMs)
   try {
-    const beginId = randomUUID()
-    const readyRes = await sendJsonAndWait(
+    const initId = randomUUID()
+    const initRes = await sendJsonAndWait(
       {
-        id: beginId,
-        type: "training.yolo.base_model.upload.begin",
+        id: initId,
+        type: "training.yolo.base_model.upload.init",
         payload: {
           job_slug: args.jobSlug,
           family: args.family,
           task: args.task,
           filename,
-          byte_length: bytes.byteLength,
+          total_size: totalSize,
         },
       },
       timeoutMs,
     )
-    if (readyRes.type !== "training.yolo.base_model.upload.ready") {
-      throw new Error(`upload 未就绪：${readyRes.type}`)
+    if (initRes.type !== "training.yolo.base_model.upload.init.ok") {
+      throw new Error(`init 失败：${initRes.type}`)
     }
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new Error("WebSocket 未连接")
+    const initPayload = initRes.payload ?? {}
+    const uploadId = String(initPayload.upload_id ?? "")
+    if (!uploadId) throw new Error("init 响应缺少 upload_id")
+
+    const missingRaw = initPayload.missing_chunks
+    const missing: number[] = Array.isArray(missingRaw)
+      ? missingRaw.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n >= 0)
+      : Array.from({ length: totalChunks }, (_, i) => i)
+
+    const fd = await fs.promises.open(sourcePtPath, "r")
+    try {
+      for (let i = 0; i < missing.length; i++) {
+        const chunkIndex = missing[i]!
+        const start = chunkIndex * CHUNK_SIZE
+        const length = Math.min(CHUNK_SIZE, totalSize - start)
+        const buffer = Buffer.alloc(length)
+        await fd.read(buffer, 0, length, start)
+
+        const beginId = randomUUID()
+        const readyRes = await sendJsonAndWait(
+          {
+            id: beginId,
+            type: "training.yolo.base_model.upload.chunk.begin",
+            payload: {
+              job_slug: args.jobSlug,
+              upload_id: uploadId,
+              chunk_index: chunkIndex,
+              byte_length: length,
+            },
+          },
+          timeoutMs,
+        )
+        if (readyRes.type !== "training.yolo.base_model.upload.chunk.ready") {
+          throw new Error(`chunk ${chunkIndex} 未就绪：${readyRes.type}`)
+        }
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          throw new Error("WebSocket 未连接")
+        }
+        ws.send(buffer, { binary: true })
+        const chunkRes = await waitForMessage(beginId, timeoutMs)
+        if (chunkRes.type !== "training.yolo.base_model.upload.chunk.ok") {
+          throw new Error(`chunk ${chunkIndex} 失败：${chunkRes.type}`)
+        }
+        args.onChunkProgress?.(i + 1, missing.length)
+      }
+    } finally {
+      await fd.close()
     }
-    ws.send(bytes, { binary: true })
-    const okRes = await waitForMessage(beginId, timeoutMs)
-    if (okRes.type !== "training.yolo.base_model.upload.ok") {
-      throw new Error(`upload 失败：${okRes.type}`)
+
+    const completeId = randomUUID()
+    const completeRes = await sendJsonAndWait(
+      {
+        id: completeId,
+        type: "training.yolo.base_model.upload.complete",
+        payload: { job_slug: args.jobSlug, upload_id: uploadId },
+      },
+      30 * 60 * 1000,
+    )
+    if (completeRes.type !== "training.yolo.base_model.upload.complete.ok") {
+      throw new Error(`complete 失败：${completeRes.type}`)
     }
-    const payload = okRes.payload ?? {}
+    const payload = completeRes.payload ?? {}
     const warnings = payload.weight_warnings
     return {
       weight_meta: (payload.weight_meta as Record<string, unknown> | null) ?? null,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import uuid
@@ -17,6 +18,8 @@ from app.sam_session.service import decode_in_session, prepare_session, release_
 from app.ws.connection import WsConnection
 from app.ws.protocol_helpers import ws_reply_error as _reply_error
 from app.ws.protocol_helpers import ws_reply_ok as _reply_ok
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -146,6 +149,10 @@ async def handle_sam_text(conn: WsConnection, msg_type: str, request_id: str | N
             await _reply_error(conn, rid, str(e), code="invalid_decode")
         except ImportError as e:
             await _reply_error(conn, rid, str(e), code="server_error")
+        except Exception as e:
+            _log.exception("SAM WebSocket decode failed")
+            detail = str(e).strip() or type(e).__name__
+            await _reply_error(conn, rid, detail, code="server_error")
         return True
 
     if msg_type == "sam.release":

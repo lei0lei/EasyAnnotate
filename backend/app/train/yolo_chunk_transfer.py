@@ -14,6 +14,7 @@ from app.train.yolo_workspace import (
     get_job_dir,
     load_meta,
     resolve_training_model_file,
+    save_uploaded_base_model,
     save_meta,
     unpack_dataset_zip,
 )
@@ -186,6 +187,165 @@ def complete_dataset_upload(job_slug: str, upload_id: str) -> dict[str, Any]:
         "dataset_zip": str(dest),
         "data_yaml": str(data_yaml),
         "dataset_zip_filename": job_meta.get("dataset_zip_filename"),
+    }
+
+
+def init_base_model_upload(
+    job_slug: str,
+    *,
+    filename: str,
+    total_size: int,
+    family: str,
+    task: str,
+    upload_id: str | None = None,
+) -> dict[str, Any]:
+    slug = assert_safe_job_slug(job_slug)
+    if total_size < 1:
+        raise ValueError("文件大小无效")
+    name = Path(filename or "").name.strip()
+    if not name.lower().endswith(".pt"):
+        raise ValueError("仅支持 .pt 权重")
+    family_value = family.strip()
+    task_value = task.strip()
+    if not family_value or not task_value:
+        raise ValueError("family 和 task 不能为空")
+
+    total_chunks = (total_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+    session_id = (upload_id or "").strip() or uuid4().hex
+    session_dir = _upload_session_dir(slug, session_id)
+    meta_path = _upload_meta_path(session_dir)
+
+    if meta_path.is_file():
+        meta = _load_upload_meta(session_dir)
+        if (
+            meta.get("kind") != "base_model"
+            or int(meta.get("total_size") or 0) != total_size
+            or str(meta.get("filename") or "") != name
+            or str(meta.get("family") or "") != family_value
+            or str(meta.get("task") or "") != task_value
+        ):
+            shutil.rmtree(session_dir, ignore_errors=True)
+            meta = {}
+    else:
+        meta = {}
+
+    if not meta:
+        meta = {
+            "kind": "base_model",
+            "filename": name,
+            "family": family_value,
+            "task": task_value,
+            "total_size": total_size,
+            "total_chunks": total_chunks,
+            "received_chunks": [],
+        }
+        _save_upload_meta(session_dir, meta)
+
+    received = sorted(
+        {
+            int(x)
+            for x in meta.get("received_chunks") or []
+            if isinstance(x, int) or (isinstance(x, str) and x.isdigit())
+        },
+    )
+    missing = [i for i in range(total_chunks) if i not in set(received)]
+    return {
+        "upload_id": session_id,
+        "chunk_size": CHUNK_SIZE,
+        "total_size": total_size,
+        "total_chunks": total_chunks,
+        "uploaded_chunks": received,
+        "missing_chunks": missing,
+    }
+
+
+def save_base_model_upload_chunk(
+    job_slug: str,
+    upload_id: str,
+    chunk_index: int,
+    data: bytes,
+) -> dict[str, Any]:
+    slug = assert_safe_job_slug(job_slug)
+    if chunk_index < 0:
+        raise ValueError("无效的分片序号")
+    if not data:
+        raise ValueError("分片数据为空")
+
+    session_dir = _upload_session_dir(slug, upload_id)
+    meta = _load_upload_meta(session_dir)
+    if meta.get("kind") != "base_model":
+        raise ValueError("上传会话类型不匹配")
+    total_chunks = int(meta.get("total_chunks") or 0)
+    total_size = int(meta.get("total_size") or 0)
+    if chunk_index >= total_chunks:
+        raise ValueError("分片序号超出范围")
+
+    expected = CHUNK_SIZE
+    if chunk_index == total_chunks - 1:
+        remainder = total_size % CHUNK_SIZE
+        if remainder > 0:
+            expected = remainder
+    if len(data) != expected:
+        raise ValueError(f"分片大小应为 {expected} 字节，实际 {len(data)} 字节")
+
+    (session_dir / f"part-{chunk_index:06d}").write_bytes(data)
+    received = {
+        int(x)
+        for x in meta.get("received_chunks") or []
+        if isinstance(x, int) or (isinstance(x, str) and x.isdigit())
+    }
+    received.add(chunk_index)
+    uploaded = sorted(received)
+    meta["received_chunks"] = uploaded
+    _save_upload_meta(session_dir, meta)
+    return {
+        "upload_id": upload_id,
+        "chunk_index": chunk_index,
+        "uploaded_chunks": uploaded,
+        "missing_chunks": [i for i in range(total_chunks) if i not in received],
+    }
+
+
+def complete_base_model_upload(job_slug: str, upload_id: str) -> dict[str, Any]:
+    slug = assert_safe_job_slug(job_slug)
+    session_dir = _upload_session_dir(slug, upload_id)
+    meta = _load_upload_meta(session_dir)
+    if meta.get("kind") != "base_model":
+        raise ValueError("上传会话类型不匹配")
+
+    total_chunks = int(meta.get("total_chunks") or 0)
+    received = {
+        int(x)
+        for x in meta.get("received_chunks") or []
+        if isinstance(x, int) or (isinstance(x, str) and x.isdigit())
+    }
+    missing = [i for i in range(total_chunks) if i not in received]
+    if missing:
+        raise ValueError(f"仍有 {len(missing)} 个分片未上传")
+
+    assembled = session_dir / "assembled.pt"
+    with assembled.open("wb") as out:
+        for i in range(total_chunks):
+            part = session_dir / f"part-{i:06d}"
+            if not part.is_file():
+                raise FileNotFoundError(f"缺少分片 {i}")
+            with part.open("rb") as src:
+                shutil.copyfileobj(src, out)
+
+    path = save_uploaded_base_model(
+        slug,
+        assembled,
+        original_filename=str(meta.get("filename") or "upload.pt"),
+        family=str(meta.get("family") or ""),
+        task=str(meta.get("task") or ""),
+    )
+    job_meta = load_meta(slug)
+    shutil.rmtree(session_dir, ignore_errors=True)
+    return {
+        "ok": True,
+        "base_model": str(path),
+        "weight_meta": job_meta.get("base_model_weight_meta"),
+        "weight_warnings": job_meta.get("base_model_weight_warnings") or [],
     }
 
 
