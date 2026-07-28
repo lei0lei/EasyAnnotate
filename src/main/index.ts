@@ -152,8 +152,9 @@ import { deleteProjectTasksFile, readProjectTasks, writeProjectTasks } from "./p
 import { createProject, deleteProject, getProject, listProjects, updateProject } from "./project-storage";
 import {
   getYoloDatasetZipUploadJob,
-  resolveApiV1Root,
+  startYoloBaseModelUploadFromPath,
   startYoloDatasetZipUploadFromPath,
+  waitForYoloUploadJob,
 } from "./yolo-dataset-upload";
 import {
   getYoloBatchFileUploadJob,
@@ -172,10 +173,6 @@ import {
   isYoloBatchPredictWsConnected,
   yoloBatchPredictImageViaWs,
 } from "./backend-yolo-batch-predict-ws";
-import {
-  apiRootToWsUrl,
-  uploadYoloBaseModelViaWs,
-} from "./backend-yolo-training-ws";
 import {
   buildUniqueExportFolderPath,
   buildUniqueZipPath,
@@ -3376,23 +3373,19 @@ ipc.registerService(AppService({
     if (!jobSlug || !sourcePtPath) {
       return { ok: false, responseJson: "", errorMessage: "job_slug 与 source_pt_path 不能为空" }
     }
-    const { apiRoot, errorMessage } = resolveApiV1Root(globalConfigDir)
-    if (errorMessage) {
-      return { ok: false, responseJson: "", errorMessage }
-    }
-    if (!apiRoot) {
-      return { ok: false, responseJson: "", errorMessage: "无法解析后端地址" }
-    }
     try {
-      const result = await uploadYoloBaseModelViaWs({
-        wsUrl: apiRootToWsUrl(apiRoot),
-        clientId: `yolo-train-${randomUUID()}`,
+      const started = startYoloBaseModelUploadFromPath({
+        globalConfigDir,
         jobSlug,
         sourcePtPath,
         family,
         task,
       })
-      return { ok: true, responseJson: JSON.stringify(result), errorMessage: "" }
+      if (started.errorMessage || !started.jobId) {
+        return { ok: false, responseJson: "", errorMessage: started.errorMessage || "无法启动权重上传" }
+      }
+      const job = await waitForYoloUploadJob(started.jobId)
+      return { ok: true, responseJson: job.responseJson || "{}", errorMessage: "" }
     } catch (error) {
       return {
         ok: false,

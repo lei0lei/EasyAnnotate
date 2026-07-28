@@ -5,28 +5,41 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { resolveChildScriptLaunch } from "./child-process-launch.js"
 import { readAppConfigFromDisk } from "./app-config-disk"
-import { apiRootToWsUrl, uploadYoloDatasetZipViaWs } from "./backend-yolo-training-ws"
+import { apiRootToWsUrl, uploadYoloBaseModelViaWs, uploadYoloDatasetZipViaWs } from "./backend-yolo-training-ws"
 
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 60 * 1000
 const STATE_SYNC_POLL_MS = 400
 
 export type YoloDatasetUploadJobRecord = {
   id: string
+  uploadKind: "dataset_zip" | "base_model"
   status: "running" | "success" | "failed"
   progress: number
   phase: "uploading" | "unpacking" | "idle"
   message: string
   dataYaml: string
   datasetZipFilename: string
+  responseJson: string
   errorMessage: string
 }
 
-type YoloUploadRequest = {
-  jobId: string
-  jobSlug: string
-  sourceZipPath: string
-  apiRoot: string
-}
+type YoloUploadRequest =
+  | {
+      kind: "dataset_zip"
+      jobId: string
+      jobSlug: string
+      sourceZipPath: string
+      apiRoot: string
+    }
+  | {
+      kind: "base_model"
+      jobId: string
+      jobSlug: string
+      sourcePtPath: string
+      family: string
+      task: string
+      apiRoot: string
+    }
 
 type UploadChildLaunch = {
   command: string
@@ -120,21 +133,48 @@ function updateJob(jobId: string, patch: Partial<YoloDatasetUploadJobRecord>): v
 
 async function runUploadJob(
   jobId: string,
-  apiRoot: string,
-  jobSlug: string,
-  sourceZipPath: string,
+  req: YoloUploadRequest,
 ): Promise<void> {
   updateJob(jobId, { message: "连接 WebSocket…", progress: 0, phase: "uploading" })
 
-  const wsUrl = apiRootToWsUrl(apiRoot)
+  const wsUrl = apiRootToWsUrl(req.apiRoot)
   const clientId = `yolo-train-${randomUUID()}`
 
   try {
+    if (req.kind === "base_model") {
+      const result = await uploadYoloBaseModelViaWs({
+        wsUrl,
+        clientId,
+        jobSlug: req.jobSlug,
+        sourcePtPath: req.sourcePtPath,
+        family: req.family,
+        task: req.task,
+        onChunkProgress: (done, total) => {
+          const ratio = total > 0 ? done / total : 0
+          updateJob(jobId, {
+            message: `上传权重分片 ${done}/${total}`,
+            progress: Math.min(90, Math.max(0, Math.round(ratio * 90))),
+            phase: "uploading",
+          })
+        },
+        timeoutMs: UPLOAD_TIMEOUT_MS,
+      })
+      updateJob(jobId, {
+        status: "success",
+        progress: 100,
+        phase: "idle",
+        message: "权重上传完成",
+        responseJson: JSON.stringify(result),
+        errorMessage: "",
+      })
+      return
+    }
+
     const result = await uploadYoloDatasetZipViaWs({
       wsUrl,
       clientId,
-      jobSlug,
-      sourceZipPath,
+      jobSlug: req.jobSlug,
+      sourceZipPath: req.sourceZipPath,
       onChunkProgress: (done, total) => {
         const ratio = done / total
         updateJob(jobId, {
@@ -155,7 +195,7 @@ async function runUploadJob(
       phase: "idle",
       message: "上传完成",
       dataYaml: result.data_yaml,
-      datasetZipFilename: result.dataset_zip_filename || path.basename(sourceZipPath),
+      datasetZipFilename: result.dataset_zip_filename || path.basename(req.sourceZipPath),
       errorMessage: "",
     })
   } catch (error) {
@@ -295,24 +335,32 @@ export async function runUploadFromChildArgv(jobId: string, reqPath: string): Pr
 
   const raw = await fs.promises.readFile(reqPath, "utf8")
   const req = JSON.parse(raw) as YoloUploadRequest
-  if (!req?.jobId || !req?.jobSlug || !req?.sourceZipPath || !req?.apiRoot) {
+  if (
+    !req?.jobId ||
+    !req?.jobSlug ||
+    !req?.apiRoot ||
+    (req.kind === "dataset_zip" && !req.sourceZipPath) ||
+    (req.kind === "base_model" && (!req.sourcePtPath || !req.family || !req.task))
+  ) {
     throw new Error("Invalid upload request payload")
   }
 
   const job: YoloDatasetUploadJobRecord = {
     id: jobId,
+    uploadKind: req.kind,
     status: "running",
     progress: 0,
     phase: "uploading",
     message: "开始上传…",
     dataYaml: "",
     datasetZipFilename: "",
+    responseJson: "",
     errorMessage: "",
   }
   jobs.set(jobId, job)
   writeUploadStateFile(jobId, job)
 
-  await runUploadJob(jobId, req.apiRoot, req.jobSlug, req.sourceZipPath)
+  await runUploadJob(jobId, req)
 }
 
 export function startYoloDatasetZipUploadFromPath(args: {
@@ -334,19 +382,22 @@ export function startYoloDatasetZipUploadFromPath(args: {
   const jobId = randomUUID()
   const job: YoloDatasetUploadJobRecord = {
     id: jobId,
+    uploadKind: "dataset_zip",
     status: "running",
     progress: 0,
     phase: "uploading",
     message: "排队中…",
     dataYaml: "",
     datasetZipFilename: "",
+    responseJson: "",
     errorMessage: "",
   }
   jobs.set(jobId, job)
   writeUploadStateFile(jobId, job)
 
   if (isUploadChildProcess()) {
-    void runUploadJob(jobId, apiRoot, jobSlug, sourceZipPath).catch((error) => {
+    const req: YoloUploadRequest = { kind: "dataset_zip", jobId, jobSlug, sourceZipPath, apiRoot }
+    void runUploadJob(jobId, req).catch((error) => {
       updateJob(jobId, {
         status: "failed",
         progress: 100,
@@ -356,10 +407,77 @@ export function startYoloDatasetZipUploadFromPath(args: {
     return { jobId, errorMessage: "" }
   }
 
-  const req: YoloUploadRequest = { jobId, jobSlug, sourceZipPath, apiRoot }
+  const req: YoloUploadRequest = { kind: "dataset_zip", jobId, jobSlug, sourceZipPath, apiRoot }
   spawnUploadChild(job, req)
 
   return { jobId, errorMessage: "" }
+}
+
+export function startYoloBaseModelUploadFromPath(args: {
+  globalConfigDir: string
+  jobSlug: string
+  sourcePtPath: string
+  family: string
+  task: string
+}): { jobId: string; errorMessage: string } {
+  const jobSlug = args.jobSlug.trim()
+  const sourcePtPath = args.sourcePtPath.trim()
+  const family = args.family.trim()
+  const task = args.task.trim()
+  if (!jobSlug) return { jobId: "", errorMessage: "训练任务 ID 为空" }
+  if (!sourcePtPath) return { jobId: "", errorMessage: "未选择权重文件" }
+  if (!fs.existsSync(sourcePtPath)) return { jobId: "", errorMessage: `权重文件不存在：${sourcePtPath}` }
+  if (!sourcePtPath.toLowerCase().endsWith(".pt")) return { jobId: "", errorMessage: "仅支持 .pt 权重" }
+  if (!family || !task) return { jobId: "", errorMessage: "family 与 task 不能为空" }
+
+  const { apiRoot, errorMessage } = resolveApiV1Root(args.globalConfigDir)
+  if (errorMessage) return { jobId: "", errorMessage }
+  if (!apiRoot) return { jobId: "", errorMessage: "无法解析后端地址" }
+
+  const jobId = randomUUID()
+  const job: YoloDatasetUploadJobRecord = {
+    id: jobId,
+    uploadKind: "base_model",
+    status: "running",
+    progress: 0,
+    phase: "uploading",
+    message: "排队中…",
+    dataYaml: "",
+    datasetZipFilename: "",
+    responseJson: "",
+    errorMessage: "",
+  }
+  jobs.set(jobId, job)
+  writeUploadStateFile(jobId, job)
+
+  const req: YoloUploadRequest = {
+    kind: "base_model",
+    jobId,
+    jobSlug,
+    sourcePtPath,
+    family,
+    task,
+    apiRoot,
+  }
+  spawnUploadChild(job, req)
+  return { jobId, errorMessage: "" }
+}
+
+export async function waitForYoloUploadJob(
+  jobId: string,
+  timeoutMs = UPLOAD_TIMEOUT_MS,
+): Promise<YoloDatasetUploadJobRecord> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    syncUploadJobFromStateFile(jobId)
+    const job = jobs.get(jobId)
+    if (job?.status === "success") return job
+    if (job?.status === "failed") {
+      throw new Error(job.errorMessage || "上传失败")
+    }
+    await new Promise((resolve) => setTimeout(resolve, STATE_SYNC_POLL_MS))
+  }
+  throw new Error("上传超时")
 }
 
 export function getYoloDatasetZipUploadJob(jobId: string): YoloDatasetUploadJobRecord | null {
